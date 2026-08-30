@@ -46,6 +46,28 @@ import uavtalk
 from uavtalk_client import SerialTransport, UAVTalkClient, default_xml_dir
 
 
+class Esp32SerialTransport(SerialTransport):
+    """SerialTransport that does not hold the board in reset.
+
+    On the USB-serial adapters used with ESP32 boards, DTR and RTS drive
+    EN/RESET and GPIO0 -- that is how esptool reboots the chip. pyserial
+    asserts both when it opens a port, so a stock SerialTransport wedges the
+    board: zero bytes at every baud, while esptool still talks to it fine.
+
+    Upstream pyuavtalk has the same fix, but this port must work against an
+    UNPATCHED NinjaPilot checkout, so do it here too rather than depend on it.
+    """
+
+    def __init__(self, port, baud):
+        super().__init__(port, baud)
+        try:
+            self.ser.dtr = False
+            self.ser.rts = False
+        except (OSError, IOError):
+            pass  # not every adapter exposes the modem lines
+
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -78,7 +100,7 @@ def main():
         def poll_recv(self, timeout):
             return self.inner.poll_recv(timeout)
 
-    client = UAVTalkClient(LockedTransport(SerialTransport(args.serial, args.baud)), db)
+    client = UAVTalkClient(LockedTransport(Esp32SerialTransport(args.serial, args.baud)), db)
     print("[link]      %s @ %d, %d object definitions" % (args.serial, args.baud, len(db.by_name)))
 
     seen = {}
