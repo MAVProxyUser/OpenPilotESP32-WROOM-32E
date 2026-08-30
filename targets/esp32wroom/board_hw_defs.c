@@ -43,7 +43,9 @@
 
 static const struct pios_esp32_led board_leds[] = {
     {
-        .pin        = GPIO_NUM_2,
+        /* GPIO13 is the plain STAT LED on a Thing Plus. GPIO2 there drives a
+         * WS2812 RGB LED, which will not respond to a simple level. */
+        .pin        = GPIO_NUM_13,
         .active_low = false,
     },
 };
@@ -63,9 +65,14 @@ const struct pios_esp32_led_cfg pios_led_cfg = {
 #ifdef PIOS_INCLUDE_SPI
 
 static const struct pios_esp32_spi_slave board_spi_sensors_slaves[] = {
-    /* slave 0: MPU6000 */
+    /* slave 0: MPU6000 / ICM-20602
+     *
+     * CS is GPIO14, NOT GPIO5. On a SparkFun ESP32 Thing Plus, GPIO5 is the
+     * onboard microSD card's chip select and it sits on this same SPI bus --
+     * using it for the IMU would have the two devices fighting. GPIO5 is fine
+     * on a bare WROOM-32 devkit with no SD slot. */
     {
-        .cs_pin         = GPIO_NUM_5,
+        .cs_pin         = GPIO_NUM_14,
         .mode           = 3,
         /* The MPU6000 only tolerates 1MHz for register access; the burst
          * read of the sensor registers is allowed up to 20MHz. Keep the
@@ -99,7 +106,10 @@ const struct pios_esp32_spi_cfg pios_spi_sensors_cfg = {
 #ifdef PIOS_INCLUDE_MPU6000
 
 const struct pios_esp32_exti_cfg pios_exti_mpu6000_cfg = {
-    .pin           = GPIO_NUM_34,
+    /* GPIO32. GPIO34 is the nicer choice where it exists (input-only, so it
+     * cannot be driven by mistake) but it is not broken out on every board;
+     * 32 is present on the Thing Plus headers. */
+    .pin           = GPIO_NUM_32,
     .vector        = PIOS_MPU6000_IRQHandler,
     .task_stack    = 3072,
     /* Above everything except the timer/IDF internals: a late gyro sample is
@@ -170,13 +180,14 @@ const struct pios_esp32_usart_cfg pios_usart_aux_cfg = {
  * ---------------------------------------------------------------------- */
 #ifdef PIOS_INCLUDE_SERVO
 
+/* GPIO32 is now the IMU data-ready input, and 21/22 are the Qwiic I2C pins on
+ * a Thing Plus, so the servo set is trimmed to four -- which is all a quad
+ * needs. Put them back if you are on a bare devkit and want 6 channels. */
 static const gpio_num_t board_servo_pins[] = {
     GPIO_NUM_25,
     GPIO_NUM_27,
     GPIO_NUM_33,
-    GPIO_NUM_32,
-    GPIO_NUM_22,
-    GPIO_NUM_21,
+    GPIO_NUM_26,
 };
 
 const struct pios_esp32_servo_cfg pios_servo_cfg = {
