@@ -46,6 +46,17 @@ CONFIG_SPI_MASTER_IN_IRAM=y
 # pios_board.h) or the hardware fires before PiOS gets a chance to.
 CONFIG_ESP_TASK_WDT_INIT=y
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=2
+# CONFIG_ESP_TASK_WDT_PANIC is deliberately left unset for now, which means a
+# stalled task is LOGGED but does not reset the board -- weaker than the intent
+# described at the top of pios/esp32/pios_wdg.c. Detection itself is verified
+# working: injecting a flag bit nothing ever sets trips the watchdog 2.0s later
+# and names the task.
+#
+# Arm it (=y) once the xTaskCreate stack-size bug is fixed -- ESP-IDF sizes task
+# stacks in BYTES where the shared modules pass words, so every flight task runs
+# on a quarter of its intended stack, and the resulting memory corruption shows
+# up as intermittent panics in telemetryRxTask and runNextCallback. Arming the
+# watchdog before that is fixed would turn those into in-flight resets.
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n
 CONFIG_ESP_INT_WDT=y
 
