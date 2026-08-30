@@ -83,9 +83,160 @@ index 468f7c008..30959c70f 100644
          }
          t++;
 diff --git a/flight/pios/common/pios_mpu6000.c b/flight/pios/common/pios_mpu6000.c
-index d30a8af64..2985a1824 100644
+index d30a8af64..83c5bfd0a 100644
 --- a/flight/pios/common/pios_mpu6000.c
 +++ b/flight/pios/common/pios_mpu6000.c
+@@ -188,71 +188,79 @@ int32_t PIOS_MPU6000_Init(uint32_t spi_id, uint32_t slave_num, const struct pios
+  * \param[in] PIOS_MPU6000_ConfigTypeDef struct to be used to configure sensor.
+  *
+  */
++
++/*
++ * Bounded register write.
++ *
++ * PIOS_MPU6000_Config() originally retried each write with an unbounded
++ * `PIOS_MPU6000_SetRegBounded(...);`. SetReg reports failure when
++ * the byte clocked back on MISO is non-zero, so a miswired or absent device
++ * (MISO floating high = 0xFF) makes every write "fail" and board init hangs
++ * forever, before telemetry ever starts. The board then looks completely
++ * dead: no console output, no core dump, no reset.
++ */
++#define PIOS_MPU6000_SETREG_RETRIES 10
++
++static bool PIOS_MPU6000_SetRegBounded(uint8_t reg, uint8_t data)
++{
++    for (uint8_t i = 0; i < PIOS_MPU6000_SETREG_RETRIES; i++) {
++        if (PIOS_MPU6000_SetReg(reg, data) == 0) {
++            return true;
++        }
++    }
++    return false;
++}
++
+ static void PIOS_MPU6000_Config(struct pios_mpu6000_cfg const *cfg)
+ {
+     PIOS_MPU6000_Test();
+ 
+     // Reset chip
+-    while (PIOS_MPU6000_SetReg(PIOS_MPU6000_PWR_MGMT_REG, PIOS_MPU6000_PWRMGMT_IMU_RST) != 0) {
+-        ;
+-    }
++    PIOS_MPU6000_SetRegBounded(PIOS_MPU6000_PWR_MGMT_REG, PIOS_MPU6000_PWRMGMT_IMU_RST);
+     PIOS_DELAY_WaitmS(50);
+ 
+     // Reset chip and fifo
+-    while (PIOS_MPU6000_SetReg(PIOS_MPU6000_USER_CTRL_REG,
++    PIOS_MPU6000_SetRegBounded(PIOS_MPU6000_USER_CTRL_REG,
+                                PIOS_MPU6000_USERCTL_GYRO_RST |
+                                PIOS_MPU6000_USERCTL_SIG_COND |
+-                               PIOS_MPU6000_USERCTL_FIFO_RST) != 0) {
+-        ;
+-    }
++                               PIOS_MPU6000_USERCTL_FIFO_RST);
+ 
+     // Wait for reset to finish
+-    while (PIOS_MPU6000_GetReg(PIOS_MPU6000_USER_CTRL_REG) &
+-           (PIOS_MPU6000_USERCTL_GYRO_RST |
+-            PIOS_MPU6000_USERCTL_SIG_COND |
+-            PIOS_MPU6000_USERCTL_FIFO_RST)) {
+-        ;
++    /* Bounded for the same reason as the writes above. */
++    for (uint8_t i = 0; i < PIOS_MPU6000_SETREG_RETRIES; i++) {
++        int32_t uc = PIOS_MPU6000_GetReg(PIOS_MPU6000_USER_CTRL_REG);
++
++        if (uc < 0 || !(uc & (PIOS_MPU6000_USERCTL_GYRO_RST |
++                              PIOS_MPU6000_USERCTL_SIG_COND |
++                              PIOS_MPU6000_USERCTL_FIFO_RST))) {
++            break;
++        }
++        PIOS_DELAY_WaitmS(1);
+     }
+     PIOS_DELAY_WaitmS(10);
+     // Power management configuration
+-    while (PIOS_MPU6000_SetReg(PIOS_MPU6000_PWR_MGMT_REG, cfg->Pwr_mgmt_clk) != 0) {
+-        ;
+-    }
++    PIOS_MPU6000_SetRegBounded(PIOS_MPU6000_PWR_MGMT_REG, cfg->Pwr_mgmt_clk);
+ 
+     // Interrupt configuration
+-    while (PIOS_MPU6000_SetReg(PIOS_MPU6000_INT_CFG_REG, cfg->interrupt_cfg) != 0) {
+-        ;
+-    }
++    PIOS_MPU6000_SetRegBounded(PIOS_MPU6000_INT_CFG_REG, cfg->interrupt_cfg);
+ 
+     // Interrupt configuration
+-    while (PIOS_MPU6000_SetReg(PIOS_MPU6000_INT_EN_REG, cfg->interrupt_en) != 0) {
+-        ;
+-    }
++    PIOS_MPU6000_SetRegBounded(PIOS_MPU6000_INT_EN_REG, cfg->interrupt_en);
+ 
+     // FIFO storage
+-    while (PIOS_MPU6000_SetReg(PIOS_MPU6000_FIFO_EN_REG, cfg->Fifo_store) != 0) {
+-        ;
+-    }
++    PIOS_MPU6000_SetRegBounded(PIOS_MPU6000_FIFO_EN_REG, cfg->Fifo_store);
+     PIOS_MPU6000_ConfigureRanges(cfg->gyro_range, cfg->accel_range, cfg->filter);
+     // Interrupt configuration
+-    while (PIOS_MPU6000_SetReg(PIOS_MPU6000_USER_CTRL_REG, cfg->User_ctl) != 0) {
+-        ;
+-    }
++    PIOS_MPU6000_SetRegBounded(PIOS_MPU6000_USER_CTRL_REG, cfg->User_ctl);
+ 
+     // Interrupt configuration
+-    while (PIOS_MPU6000_SetReg(PIOS_MPU6000_PWR_MGMT_REG, cfg->Pwr_mgmt_clk) != 0) {
+-        ;
+-    }
++    PIOS_MPU6000_SetRegBounded(PIOS_MPU6000_PWR_MGMT_REG, cfg->Pwr_mgmt_clk);
+ 
+     // Interrupt configuration
+-    while (PIOS_MPU6000_SetReg(PIOS_MPU6000_INT_CFG_REG, cfg->interrupt_cfg) != 0) {
+-        ;
+-    }
++    PIOS_MPU6000_SetRegBounded(PIOS_MPU6000_INT_CFG_REG, cfg->interrupt_cfg);
+ 
+     // Interrupt configuration
+-    while (PIOS_MPU6000_SetReg(PIOS_MPU6000_INT_EN_REG, cfg->interrupt_en) != 0) {
+-        ;
+-    }
++    PIOS_MPU6000_SetRegBounded(PIOS_MPU6000_INT_EN_REG, cfg->interrupt_en);
+     if ((PIOS_MPU6000_GetReg(PIOS_MPU6000_INT_EN_REG)) != cfg->interrupt_en) {
+         return;
+     }
+@@ -273,29 +281,21 @@ int32_t PIOS_MPU6000_ConfigureRanges(
+     }
+ 
+     // update filter settings
+-    while (PIOS_MPU6000_SetReg(PIOS_MPU6000_DLPF_CFG_REG, filterSetting) != 0) {
+-        ;
+-    }
++    PIOS_MPU6000_SetRegBounded(PIOS_MPU6000_DLPF_CFG_REG, filterSetting);
+ 
+     // Sample rate divider, chosen upon digital filtering settings
+-    while (PIOS_MPU6000_SetReg(PIOS_MPU6000_SMPLRT_DIV_REG,
++    PIOS_MPU6000_SetRegBounded(PIOS_MPU6000_SMPLRT_DIV_REG,
+                                filterSetting == PIOS_MPU6000_LOWPASS_256_HZ ?
+-                               dev->cfg->Smpl_rate_div_no_dlp : dev->cfg->Smpl_rate_div_dlp) != 0) {
+-        ;
+-    }
++                               dev->cfg->Smpl_rate_div_no_dlp : dev->cfg->Smpl_rate_div_dlp);
+ 
+     dev->filter = filterSetting;
+ 
+     // Gyro range
+-    while (PIOS_MPU6000_SetReg(PIOS_MPU6000_GYRO_CFG_REG, gyroRange) != 0) {
+-        ;
+-    }
++    PIOS_MPU6000_SetRegBounded(PIOS_MPU6000_GYRO_CFG_REG, gyroRange);
+ 
+     dev->gyro_range = gyroRange;
+     // Set the accel range
+-    while (PIOS_MPU6000_SetReg(PIOS_MPU6000_ACCEL_CFG_REG, accelRange) != 0) {
+-        ;
+-    }
++    PIOS_MPU6000_SetRegBounded(PIOS_MPU6000_ACCEL_CFG_REG, accelRange);
+ 
+     dev->accel_range = accelRange;
+     return 0;
 @@ -516,20 +516,42 @@ static float PIOS_MPU6000_GetAccelScale()
   * \return 0 if test succeeded
   * \return non-zero value if test succeeded

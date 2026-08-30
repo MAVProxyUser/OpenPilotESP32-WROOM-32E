@@ -91,9 +91,3 @@ CONFIG_HEAP_TRACING_STANDALONE=n
 # The console moves to UART1 on GPIO13/14, which nothing else on this board
 # uses. Boot log and panics are still reachable with a second USB-serial
 # adapter on GPIO13; UART0 is left to PIOS alone.
-CONFIG_ESP_CONSOLE_UART_CUSTOM=y
-CONFIG_ESP_CONSOLE_UART_CUSTOM_NUM_1=y
-# 22/23 are the Qwiic I2C pins, unused here. NOT 13/14 -- 14 is the IMU
-# chip select on this board.
-CONFIG_ESP_CONSOLE_UART_TX_GPIO=22
-CONFIG_ESP_CONSOLE_UART_RX_GPIO=23

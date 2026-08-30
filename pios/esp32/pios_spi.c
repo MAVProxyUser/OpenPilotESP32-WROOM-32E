@@ -160,12 +160,15 @@ int32_t PIOS_ESP32_SPI_Init(uint32_t *spi_id, const struct pios_esp32_spi_cfg *c
             .flags          = SPI_DEVICE_NO_DUMMY,
         };
 
+        printf("[SPI] adding slave %u (cs=%d)\n", (unsigned)s, (int)sl->cs_pin);
         devcfg.clock_speed_hz = sl->clock_speed_hz;
         if (spi_bus_add_device(cfg->host, &devcfg, &dev->slow[s]) != ESP_OK) {
+            printf("[SPI] slow add_device FAILED\n");
             return -1;
         }
         devcfg.clock_speed_hz = sl->fast_speed_hz;
         if (spi_bus_add_device(cfg->host, &devcfg, &dev->fast[s]) != ESP_OK) {
+            printf("[SPI] fast add_device FAILED\n");
             return -1;
         }
         dev->use_fast[s] = false;
@@ -181,6 +184,8 @@ int32_t PIOS_ESP32_SPI_Init(uint32_t *spi_id, const struct pios_esp32_spi_cfg *c
     dev->active_slave = -1;
     dev->in_use       = true;
 
+    printf("[SPI] bus %u up (sclk=%d mosi=%d miso=%d)\n", (unsigned)slot,
+           (int)cfg->sclk_pin, (int)cfg->mosi_pin, (int)cfg->miso_pin);
     *spi_id = slot;
     return 0;
 }

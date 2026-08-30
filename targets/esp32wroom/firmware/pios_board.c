@@ -204,12 +204,14 @@ void PIOS_Board_Init(void)
      *    arm is far more useful than one that silently wedges, so register
      *    unconditionally and let the alarm carry the bad news.
      */
+    printf("[BOARD] calling PIOS_MPU6000_Init\n");
     PIOS_MPU6000_Init(pios_spi_sensors_id, 0, &pios_mpu6000_cfg);
+    printf("[BOARD] PIOS_MPU6000_Init returned, WHO_AM_I=0x%02X\n", (unsigned)PIOS_MPU6000_ReadID());
 
     int32_t imu_id = PIOS_MPU6000_ReadID();
 
     if (imu_id != 0x68 && imu_id != 0x70 && imu_id != 0x12) {
-        printf("[BOARD] no usable IMU on SPI3 CS=GPIO5: WHO_AM_I=0x%02X "
+        printf("[BOARD] no usable IMU on SPI3 (SCLK=5 MOSI=18 MISO=19 CS=14): WHO_AM_I=0x%02X "
                "(expect 0x68 MPU6000/6050, 0x70 MPU6500, 0x12 ICM-20602; "
                "0x00/0xFF means nothing is answering)\n", (unsigned)imu_id);
         AlarmsSet(SYSTEMALARMS_ALARM_BOOTFAULT, SYSTEMALARMS_ALARM_CRITICAL);
