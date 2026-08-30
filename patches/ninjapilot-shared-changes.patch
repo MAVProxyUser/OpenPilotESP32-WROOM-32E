@@ -1,0 +1,310 @@
+diff --git a/flight/modules/Attitude/attitude.c b/flight/modules/Attitude/attitude.c
+index 57c978da2..7951fa0d7 100644
+--- a/flight/modules/Attitude/attitude.c
++++ b/flight/modules/Attitude/attitude.c
+@@ -83,7 +83,16 @@ PERF_DEFINE_COUNTER(counterAtt);
+ // - 0xA7710004 number of accel samples read for each loop (cc only).
+ 
+ // Private constants
++// Overridable per board, the same way Stabilization, Actuator, Receiver,
++// ManualControl, System and Telemetry already allow. The 540-byte default is
++// tuned for CopterControl's Cortex-M3; Xtensa's windowed ABI needs several
++// times that for the same code, and 540 silently smashes the scheduler's
++// ready list rather than reporting a clean overflow.
++#ifndef PIOS_ATTITUDE_STACK_SIZE
+ #define STACK_SIZE_BYTES    540
++#else
++#define STACK_SIZE_BYTES    PIOS_ATTITUDE_STACK_SIZE
++#endif
+ #define TASK_PRIORITY       (tskIDLE_PRIORITY + 3)
+ 
+ // Attitude module loop interval (defined by sensor rate in pios_config.h)
+@@ -115,7 +124,9 @@ static void AttitudeTask(void *parameters);
+ static float gyro_correct_int[3] = { 0, 0, 0 };
+ static xQueueHandle gyro_queue;
+ 
++#if defined(PIOS_INCLUDE_ADXL345)
+ static int32_t updateSensors(AccelStateData *, GyroStateData *);
++#endif
+ static int32_t updateSensorsCC3D(AccelStateData *accelStateData, GyroStateData *gyrosData);
+ static void updateAttitude(AccelStateData *, GyroStateData *);
+ static void settingsUpdatedCb(UAVObjEvent *objEv);
+@@ -323,7 +334,12 @@ static void AttitudeTask(__attribute__((unused)) void *parameters)
+         if (cc3d) {
+             retval = updateSensorsCC3D(&accelState, &gyros);
+         } else {
++#if defined(PIOS_INCLUDE_ADXL345)
+             retval = updateSensors(&accelState, &gyros);
++#else
++            /* No analog-gyro/ADXL345 path compiled in on this board. */
++            retval = -1;
++#endif
+         }
+ 
+         // Only update attitude when sensor data is good
+@@ -348,6 +364,7 @@ static void AttitudeTask(__attribute__((unused)) void *parameters)
+  * @param[in] attitudeRaw Populate the UAVO instead of saving right here
+  * @return 0 if successfull, -1 if not
+  */
++#if defined(PIOS_INCLUDE_ADXL345)
+ static int32_t updateSensors(AccelStateData *accelState, GyroStateData *gyros)
+ {
+     struct pios_adxl345_data accel_data;
+@@ -461,6 +478,7 @@ static int32_t updateSensors(AccelStateData *accelState, GyroStateData *gyros)
+ 
+     return 0;
+ }
++#endif /* PIOS_INCLUDE_ADXL345 */
+ 
+ /**
+  * Get an update from the sensors
+diff --git a/flight/pios/common/pios_callbackscheduler.c b/flight/pios/common/pios_callbackscheduler.c
+index 468f7c008..30959c70f 100644
+--- a/flight/pios/common/pios_callbackscheduler.c
++++ b/flight/pios/common/pios_callbackscheduler.c
+@@ -272,6 +272,19 @@ DelayedCallbackInfo *PIOS_CALLBACKSCHEDULER_Create(
+     int t = 0;
+     LL_FOREACH(schedulerTasks, task) {
+         if (task->priorityTask == priorityTask) {
++            // Found an existing scheduler task for this priority. Callbacks
++            // registered here SHARE its stack, so it has to be as large as
++            // the largest request -- not merely as large as whatever the
++            // first caller happened to ask for. Without this, a modest
++            // callback registering first silently caps every later one.
++            //
++            // All Create() calls happen before Start() spawns the tasks, so
++            // growing the figure here is honoured. (If a task has already
++            // been spawned, FreeRTOS cannot resize it; that case would need
++            // the caller to register earlier.)
++            if (task->stackSize < stacksize) {
++                task->stackSize = stacksize;
++            }
+             break; // found
+         }
+         t++;
+diff --git a/flight/pios/common/pios_mpu6000.c b/flight/pios/common/pios_mpu6000.c
+index d30a8af64..2985a1824 100644
+--- a/flight/pios/common/pios_mpu6000.c
++++ b/flight/pios/common/pios_mpu6000.c
+@@ -516,20 +516,42 @@ static float PIOS_MPU6000_GetAccelScale()
+  * \return 0 if test succeeded
+  * \return non-zero value if test succeeded
+  */
++/*
++ * Parts this driver can drive.
++ *
++ * The MPU-6500 family (which includes the ICM-206xx) keeps the MPU6000's
++ * register map for everything this driver touches: the 14-byte burst from
++ * ACCEL_XOUT_H (0x3B) is the same AX/AY/AZ/TEMP/GX/GY/GZ layout,
++ * GYRO_CONFIG (0x1B) / ACCEL_CONFIG (0x1C) / CONFIG (0x1A) / SMPLRT_DIV
++ * (0x19) / INT_ENABLE (0x38) / USER_CTRL (0x6A) / PWR_MGMT_1 (0x6B) all
++ * match, and the full-scale codes give identical LSB-per-unit scaling. Only
++ * WHO_AM_I differs, so the ID gate is the only thing that has to know.
++ *
++ * The ICM-20602 additionally has ACCEL_CONFIG2 (0x1D) for the accel DLPF,
++ * which the MPU6000 lacks. Its reset default (218Hz BW, 1kHz output) is what
++ * we want, so it is deliberately left alone.
++ */
++static const uint8_t pios_mpu6000_known_ids[] = {
++    0x68, /* MPU6000 / MPU6050 */
++    0x70, /* MPU6500            */
++    0x12, /* ICM-20602          */
++};
++
+ static int32_t PIOS_MPU6000_Test(void)
+ {
+-    /* Verify that ID matches (MPU6000 ID is 0x69) */
+     int32_t mpu6000_id = PIOS_MPU6000_ReadID();
+ 
+     if (mpu6000_id < 0) {
+         return -1;
+     }
+ 
+-    if (mpu6000_id != 0x68) {
+-        return -2;
++    for (uint8_t i = 0; i < NELEMENTS(pios_mpu6000_known_ids); i++) {
++        if (mpu6000_id == pios_mpu6000_known_ids[i]) {
++            return 0;
++        }
+     }
+ 
+-    return 0;
++    return -2;
+ }
+ 
+ /**
+diff --git a/flight/pios/inc/pios_debug.h b/flight/pios/inc/pios_debug.h
+index 4d481dfbd..5a5fb1527 100644
+--- a/flight/pios/inc/pios_debug.h
++++ b/flight/pios/inc/pios_debug.h
+@@ -47,7 +47,9 @@
+ 
+ extern const char *PIOS_DEBUG_AssertMsg;
+ 
+-#ifdef USE_SIM_POSIX
++#if defined(USE_SIM_POSIX) || defined(USE_ESP32)
++/* No timer-channel debug pins on these targets, and pios_tim_priv.h carries
++ * STM32 peripheral-library types that will not compile here. */
+ void PIOS_DEBUG_Init(void);
+ #else
+ #include <pios_tim_priv.h>
+diff --git a/flight/pios/inc/pios_initcall.h b/flight/pios/inc/pios_initcall.h
+index 2b9f32418..5ef650177 100644
+--- a/flight/pios/inc/pios_initcall.h
++++ b/flight/pios/inc/pios_initcall.h
+@@ -51,7 +51,12 @@ typedef struct {
+ /* Init module section */
+ extern initmodule_t __module_initcall_start[], __module_initcall_end[];
+ 
+-#ifdef USE_SIM_POSIX
++#if defined(USE_SIM_POSIX) || defined(USE_ESP32)
++/* USE_ESP32 shares this path deliberately: the STM32 branch below
++ * collects initcalls into custom linker sections, and ESP-IDF
++ * generates its own linker script, so those sections are not
++ * available to us. The generated InitModules()/StartModules() pair
++ * does the same job with no linker support required. */
+ 
+ extern void InitModules();
+ extern void StartModules();
+@@ -105,7 +110,7 @@ extern void StartModules();
+       } \
+     }
+ 
+-#endif /* USE_SIM_POSIX */
++#endif /* USE_SIM_POSIX || USE_ESP32 */
+ 
+ #endif /* PIOS_INITCALL_H */
+ 
+diff --git a/flight/pios/pios.h b/flight/pios/pios.h
+index d21ee36f8..98f846111 100644
+--- a/flight/pios/pios.h
++++ b/flight/pios/pios.h
+@@ -45,6 +45,11 @@ extern "C" {
+ #ifdef USE_SIM_POSIX
+ /* SimPosix version of this file. This will probably be removed later */
+ #include <pios_sim_posix.h>
++#elif defined(USE_ESP32)
++/* ESP32 (Xtensa LX6/LX7). Like the POSIX branch this bypasses the STM32
++ * include chain entirely -- ESP-IDF owns FreeRTOS, the linker script and the
++ * startup path, so none of the ST peripheral-library headers below apply. */
++#include <pios_esp32.h>
+ #else
+ 
+ /* C Lib includes */
+@@ -315,7 +320,7 @@ extern "C" {
+ /* Performance counters */
+ /* #define IDLE_COUNTS_PER_SEC_AT_NO_LOAD 995998 */
+ 
+-#endif /* USE_SIM_POSIX */
++#endif /* USE_SIM_POSIX / USE_ESP32 */
+ 
+ 
+ #ifdef __cplusplus
+diff --git a/ground/openpilotgcs/src/libs/utils/utils.pro b/ground/openpilotgcs/src/libs/utils/utils.pro
+index e304689f5..5d962ac73 100644
+--- a/ground/openpilotgcs/src/libs/utils/utils.pro
++++ b/ground/openpilotgcs/src/libs/utils/utils.pro
+@@ -136,7 +136,22 @@ CONFIG += depend_includepath
+ 
+ # Custom rule to generate MOC files for Q_OBJECT classes defined in .cpp files
+ submiteditorwidget_moc.target = submiteditorwidget.moc
+-submiteditorwidget_moc.depends = $$PWD/submiteditorwidget.cpp
+-submiteditorwidget_moc.commands = moc $$PWD/submiteditorwidget.cpp -o submiteditorwidget.moc
++# submiteditorwidget.cpp does #include "submiteditorwidget.moc", so the .moc
++# has to exist next to the source. Two separate hazards if the checkout path
++# contains a space (e.g. "OP Revo Redux"), and building through a space-free
++# symlink does NOT avoid them because qmake resolves $$PWD to the real path:
++#
++#   1. an unquoted expansion hands moc three filenames
++#      ("Too many input files specified") -- hence $$shell_quote below;
++#   2. more fundamentally, GNU make cannot express a TARGET whose path
++#      contains a space, so this rule can never fire and make reports
++#      "No rule to make target .../submiteditorwidget.moc".
++#
++# Because of (2) the generated .moc is kept in the source tree as a checked-in
++# build artifact. If it goes missing, regenerate it by hand:
++#
++#   moc src/libs/utils/submiteditorwidget.cpp -o src/libs/utils/submiteditorwidget.moc
++submiteditorwidget_moc.depends = $$quote($$PWD/submiteditorwidget.cpp)
++submiteditorwidget_moc.commands = moc $$shell_quote($$PWD/submiteditorwidget.cpp) -o submiteditorwidget.moc
+ QMAKE_EXTRA_TARGETS += submiteditorwidget_moc
+ PRE_TARGETDEPS += submiteditorwidget.moc
+diff --git a/ground/openpilotgcs/src/plugins/coreplugin/connectionmanager.cpp b/ground/openpilotgcs/src/plugins/coreplugin/connectionmanager.cpp
+index 1a68bc29f..c58bb5f9b 100644
+--- a/ground/openpilotgcs/src/plugins/coreplugin/connectionmanager.cpp
++++ b/ground/openpilotgcs/src/plugins/coreplugin/connectionmanager.cpp
+@@ -503,14 +503,27 @@ void ConnectionManager::updateConnectionDropdown()
+             }
+         }
+     } else {
+-        // NinjaPilot: the flight controller is a network device (UDP telemetry to
+-        // the OSD32MP1), so an idle GCS should offer that first, not a serial port.
++        // NinjaPilot: the flight controller is usually a network device (UDP
++        // telemetry to the OSD32MP1), so an idle GCS offers that first rather
++        // than a serial port.
++        //
++        // The esp32wroom board is the exception -- it speaks UAVTalk over its
++        // USB-serial adapter -- so the preferred device is overridable. Set
++        //   NINJAPILOT_GCS_PREFER="Serial: cu.usbserial-210"
++        // (any prefix of the entry as it appears in the Connections dropdown)
++        // to have the GCS select and auto-connect that instead. Unset, the
++        // behaviour is exactly as before: UDP.
++        QByteArray preferEnv = qgetenv("NINJAPILOT_GCS_PREFER");
++        QString prefer = preferEnv.isEmpty() ? QString("UDP") : QString::fromLocal8Bit(preferEnv);
++
+         for (int i = 0; i < m_availableDevList->count(); i++) {
+-            if (m_availableDevList->itemData(i, Qt::ToolTipRole).toString().startsWith("UDP")) {
++            if (m_availableDevList->itemData(i, Qt::ToolTipRole).toString().startsWith(prefer)) {
+                 m_availableDevList->setCurrentIndex(i);
+                 // ... and connect to it by itself at launch, once. A manual
+                 // disconnect afterwards stays disconnected.
+                 if (!m_udpAutoConnectTried && polling) {
++                    // (the flag name predates the override; it just means
++                    //  "we have already taken our one automatic attempt")
+                     QString devName = m_availableDevList->itemData(i, Qt::ToolTipRole).toString();
+                     foreach(DevListItem d, m_devList) {
+                         if (d.getConName() == devName) {
+diff --git a/ground/openpilotgcs/src/plugins/serialconnection/serialplugin.cpp b/ground/openpilotgcs/src/plugins/serialconnection/serialplugin.cpp
+index f5aee9206..544412934 100644
+--- a/ground/openpilotgcs/src/plugins/serialconnection/serialplugin.cpp
++++ b/ground/openpilotgcs/src/plugins/serialconnection/serialplugin.cpp
+@@ -174,6 +174,17 @@ QIODevice *SerialConnection::openDevice(const QString &deviceName)
+                     && serialHandle->setParity(QSerialPort::NoParity)
+                     && serialHandle->setStopBits(QSerialPort::OneStop)
+                     && serialHandle->setFlowControl(QSerialPort::NoFlowControl)) {
++                    // Deassert DTR and RTS.
++                    //
++                    // QSerialPort asserts both when it opens a port. On the
++                    // USB-serial adapters used by ESP32 boards those lines are
++                    // wired to EN/RESET and GPIO0 (it is how esptool reboots
++                    // the chip), so opening the port holds the board in reset
++                    // and the GCS sits on NO LINK forever while the port shows
++                    // as connected. Harmless on boards that ignore them.
++                    serialHandle->setDataTerminalReady(false);
++                    serialHandle->setRequestToSend(false);
++
+                     qDebug() << "Serial telemetry running at " << m_config->speed();
+                     m_deviceOpened = true;
+                 }
+diff --git a/ground/pyuavtalk/uavtalk_client.py b/ground/pyuavtalk/uavtalk_client.py
+index d927b78b6..b5d759329 100644
+--- a/ground/pyuavtalk/uavtalk_client.py
++++ b/ground/pyuavtalk/uavtalk_client.py
+@@ -72,6 +72,17 @@ class SerialTransport(object):
+     def __init__(self, port, baud):
+         import serial  # only required for --serial
+         self.ser = serial.Serial(port, baud, timeout=0)
++        # On the usual ESP32 USB-serial adapters DTR and RTS are wired to
++        # EN/RESET and GPIO0 (that is how esptool reboots the chip). pyserial
++        # asserts both when it opens the port, which holds the board in reset
++        # -- the symptom is a link that reads zero bytes at every baud while
++        # esptool can still talk to the chip perfectly well. Deassert them so
++        # opening the port is a passive act.
++        try:
++            self.ser.dtr = False
++            self.ser.rts = False
++        except (OSError, IOError):
++            pass  # not all adapters expose the modem lines
+ 
+     def send(self, data):
+         self.ser.write(data)
