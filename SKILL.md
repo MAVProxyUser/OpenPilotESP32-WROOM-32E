@@ -22,6 +22,17 @@ git clone -b v5.3.2 --depth 1 --recursive --shallow-submodules https://github.co
 Source it per shell with `. ~/esp/esp-idf/export.sh`. Do **not** pipe that —
 `. export.sh | tail` runs it in a subshell and the PATH never lands.
 
+It also **exits non-zero on this machine** -- the same Python dependency check
+that breaks `idf.py` (see below) leaves `$?` at 1 even though the toolchain is
+on PATH and everything works. So separate it with `;`, never `&&`:
+
+```bash
+. ~/esp/esp-idf/export.sh >/dev/null 2>&1; ninja -C build
+```
+
+Chained with `&&` the build is silently skipped and you sit there reading stale
+output from the previous run wondering why your change did nothing.
+
 ## Generate the UAVObjects (once, and after any XML change)
 
 The CMake source list references generated sources that live in the NinjaPilot
