@@ -85,9 +85,13 @@ static const struct pios_esp32_spi_slave board_spi_sensors_slaves[] = {
 
 const struct pios_esp32_spi_cfg pios_spi_sensors_cfg = {
     .host       = SPI3_HOST,          /* aka VSPI */
-    .mosi_pin   = GPIO_NUM_23,
+    /* Matches the SparkFun ESP32 Thing Plus silkscreen: 5/SCK, 18/MOSI,
+     * 19/MISO. NOT the ESP32 VSPI defaults (18/23/19) -- and note the USB-C
+     * revision of this board uses those defaults instead, so check the
+     * silkscreen rather than the part name. GPIO23 here is 23/SDA. */
+    .mosi_pin   = GPIO_NUM_18,
     .miso_pin   = GPIO_NUM_19,
-    .sclk_pin   = GPIO_NUM_18,
+    .sclk_pin   = GPIO_NUM_5,
     .dma_channel = SPI_DMA_CH_AUTO,
     .slaves     = board_spi_sensors_slaves,
     .num_slaves = NELEMENTS(board_spi_sensors_slaves),
@@ -206,7 +210,10 @@ const struct pios_esp32_servo_cfg pios_servo_cfg = {
 #ifdef PIOS_INCLUDE_PPM
 
 const struct pios_esp32_ppm_cfg pios_ppm_cfg = {
-    .pin = GPIO_NUM_4,
+    /* GPIO21. GPIO4 is not broken out on the Thing Plus headers. Avoided
+     * GPIO12/15 deliberately -- both are strapping pins (12 selects the flash
+     * voltage) and an RC receiver holding one at boot can brick a power-up. */
+    .pin = GPIO_NUM_21,
 };
 
 #endif /* PIOS_INCLUDE_PPM */
