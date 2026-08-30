@@ -40,11 +40,86 @@
 #include "esp_system.h"
 
 static struct wdg_state {
-    uint16_t used_flags;        /* bits handed out by RegisterFlag  */
-    uint16_t bootup_flags;      /* flags outstanding at last reset  */
-    volatile uint16_t active_flags; /* bits set since last Clear    */
-    bool     registered;        /* this task subscribed to IDF TWDT */
+    uint16_t used_flags;            /* bits handed out by RegisterFlag   */
+    uint16_t bootup_flags;          /* flags outstanding at last reset   */
+    volatile uint16_t active_flags; /* bits set since the last full set  */
+    bool     armed;                 /* a full set has been seen at least once */
+    /* Set if the watchdog task could not start or could not subscribe. Never
+     * printed -- printf on this target is a genuine hazard (see wdg_task) --
+     * but it is the first thing to look at in a debugger or core dump when
+     * the watchdog appears to be doing nothing. */
+    bool     subscribe_failed;
 } wdg;
+
+/* active_flags is written by every participating task, so the read-modify-write
+ * needs protecting even on a unicore build -- a preemption between the load and
+ * the store would silently drop another task's bit. */
+static portMUX_TYPE wdg_lock = portMUX_INITIALIZER_UNLOCKED;
+
+/*
+ * ONE task owns the IDF watchdog.
+ *
+ * The IDF watchdog is per-task: esp_task_wdt_add() subscribes whichever task
+ * calls it and esp_task_wdt_reset() only ever resets the caller's own entry,
+ * with no way to reset on another task's behalf. PiOS is the other shape
+ * entirely -- participants set a flag bit and whichever one completes the set
+ * does the petting, so the task that reaches the watchdog changes pass to pass.
+ *
+ * Two earlier attempts to bridge that gap are worth recording, because both
+ * failed on hardware:
+ *
+ *   1. A single global "already subscribed" bool. The first task to arrive
+ *      subscribed itself and set the flag; every other task then read the flag
+ *      as proof it was subscribed too and called esp_task_wdt_reset() having
+ *      never been added. That fails with ESP_ERR_NOT_FOUND and logged an error
+ *      at roughly 50 lines a second -- and meant only one of the four
+ *      participating tasks was ever really being watched.
+ *
+ *   2. Subscribing each task lazily on its first check-in. Correct in
+ *      principle, fatal in practice: it puts esp_task_wdt_status() and
+ *      esp_task_wdt_add() on the hot path of flight tasks whose stacks are
+ *      sized to the byte, and the board panicked inside the IDF watchdog on
+ *      the very first check-in with a corrupted list. (See the note on
+ *      xTaskCreate stack units in PIOS_WDG_Init.)
+ *
+ * So: the flight tasks only ever set a bit, which costs a spinlock and no
+ * calls. This task -- with a stack of its own, sized for the job -- is the
+ * only thing that ever touches the IDF watchdog.
+ */
+#define PIOS_WDG_TASK_STACK_BYTES 3072
+#define PIOS_WDG_TASK_PRIORITY    (tskIDLE_PRIORITY + 3)
+#define PIOS_WDG_POLL_MS          100
+
+static void wdg_task(__attribute__((unused)) void *arg)
+{
+    if (esp_task_wdt_add(NULL) != ESP_OK) {
+        wdg.subscribe_failed = true;
+    }
+
+    for (;;) {
+        bool complete;
+
+        vTaskDelay(pdMS_TO_TICKS(PIOS_WDG_POLL_MS));
+
+        portENTER_CRITICAL(&wdg_lock);
+        complete = (wdg.active_flags & wdg.used_flags) == wdg.used_flags;
+        if (complete) {
+            wdg.active_flags = 0;
+            wdg.armed = true;
+        }
+        portEXIT_CRITICAL(&wdg_lock);
+
+        if (complete || !wdg.armed) {
+            /* Keep petting until the first full set arrives, so the gap
+             * between a module registering its flag in Start() and its task
+             * reaching its first check-in cannot trip the watchdog. */
+            esp_task_wdt_reset();
+        }
+        /* Otherwise deliberately do NOT reset: some registered task has
+         * stopped checking in, and letting the IDF watchdog time out and
+         * reset the board is exactly the point of the flag scheme. */
+    }
+}
 
 uint16_t PIOS_WDG_Init(void)
 {
@@ -64,13 +139,16 @@ uint16_t PIOS_WDG_Init(void)
 
     wdg.used_flags   = 0;
     wdg.active_flags = 0;
+    wdg.armed        = false;
 
-    /* NOTE: deliberately NOT subscribing here. PIOS_WDG_Init() runs in the
-     * init task, which returns and is deleted once board bring-up finishes
-     * (see esp32wroom.c) -- subscribing it would leave the IDF task watchdog
-     * pointed at a dead task while the real petting happens elsewhere.
-     * PIOS_WDG_Clear() is called from the System module's task, so it
-     * subscribes itself on first use. */
+    /* NOTE the stack argument. ESP-IDF's xTaskCreate() takes a size in BYTES,
+     * where vanilla FreeRTOS takes a count of words -- which is why the shared
+     * modules, written for vanilla and passing STACK_SIZE_BYTES / 4, all run
+     * on a quarter of the stack they think they asked for. Pass bytes here. */
+    if (xTaskCreate(wdg_task, "PIOS_WDG", PIOS_WDG_TASK_STACK_BYTES, NULL,
+                    PIOS_WDG_TASK_PRIORITY, NULL) != pdPASS) {
+        wdg.subscribe_failed = true;
+    }
 
     return wdg.bootup_flags;
 }
@@ -88,13 +166,16 @@ bool PIOS_WDG_RegisterFlag(uint16_t flag_requested)
 
 bool PIOS_WDG_UpdateFlag(uint16_t flag)
 {
-    wdg.active_flags |= flag;
+    bool complete;
 
-    if ((wdg.active_flags & wdg.used_flags) == wdg.used_flags) {
-        PIOS_WDG_Clear();
-        return true;
-    }
-    return false;
+    /* Hot path, called from flight tasks on very tight stacks: set a bit and
+     * get out. No IDF calls, no printf, no allocation -- see wdg_task(). */
+    portENTER_CRITICAL(&wdg_lock);
+    wdg.active_flags |= flag;
+    complete = (wdg.active_flags & wdg.used_flags) == wdg.used_flags;
+    portEXIT_CRITICAL(&wdg_lock);
+
+    return complete;
 }
 
 uint16_t PIOS_WDG_GetBootupFlags(void)
@@ -109,25 +190,9 @@ uint16_t PIOS_WDG_GetActiveFlags(void)
 
 void PIOS_WDG_Clear(void)
 {
-    /* Subscribe on first call so the IDF watchdog tracks the task that is
-     * actually responsible for petting it -- see the note in
-     * PIOS_WDG_Init(). */
-    if (!wdg.registered) {
-        if (esp_task_wdt_add(NULL) != ESP_OK) {
-            /* Nothing useful to do but keep flying; say it once. */
-            static bool complained;
-            if (!complained) {
-                complained = true;
-                printf("[PIOS] WDG: could not subscribe to the task watchdog\n");
-            }
-            wdg.active_flags = 0;
-            return;
-        }
-        wdg.registered = true;
-    }
-
-    esp_task_wdt_reset();
+    portENTER_CRITICAL(&wdg_lock);
     wdg.active_flags = 0;
+    portEXIT_CRITICAL(&wdg_lock);
 }
 
 #endif /* PIOS_INCLUDE_WDG */
