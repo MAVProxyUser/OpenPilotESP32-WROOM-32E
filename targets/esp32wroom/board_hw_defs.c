@@ -187,11 +187,18 @@ const struct pios_esp32_usart_cfg pios_usart_aux_cfg = {
 /* GPIO32 is now the IMU data-ready input, and 21/22 are the Qwiic I2C pins on
  * a Thing Plus, so the servo set is trimmed to four -- which is all a quad
  * needs. Put them back if you are on a bare devkit and want 6 channels. */
+/* Motor outputs, quad X order (M1..M4).
+ *
+ * Every one of these is directly labelled on the Thing Plus silkscreen, which
+ * matters: GPIO25/26 are only reachable as A1/A0 and are not labelled by
+ * number, so they are avoided. GPIO12 is skipped deliberately -- it is the
+ * flash-voltage strapping pin, and an ESC holding it at power-up stops the
+ * board booting. */
 static const gpio_num_t board_servo_pins[] = {
-    GPIO_NUM_25,
-    GPIO_NUM_27,
-    GPIO_NUM_33,
-    GPIO_NUM_26,
+    GPIO_NUM_15,   /* M1 */
+    GPIO_NUM_33,   /* M2 */
+    GPIO_NUM_27,   /* M3 */
+    GPIO_NUM_17,   /* M4 */
 };
 
 const struct pios_esp32_servo_cfg pios_servo_cfg = {

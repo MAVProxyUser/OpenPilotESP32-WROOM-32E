@@ -179,6 +179,39 @@ void PIOS_Board_Init(void)
     board_com_init(&pios_com_telem_rf_id, &pios_usart_telem_cfg,
                    PIOS_COM_TELEM_RF_RX_BUF_LEN, PIOS_COM_TELEM_RF_TX_BUF_LEN);
 
+    /* --- Is anything actually on the sensor bus? -----------------------
+     *
+     * Before SPI claims MISO, drive the pin's internal pull-down and then its
+     * pull-up and read it back. A connected, powered device holds the line;
+     * an unconnected one follows whichever pull is enabled. This separates
+     * "wired wrong" from "not powered" without a meter, and a WHO_AM_I of
+     * 0xFF alone cannot tell those apart. */
+    {
+        gpio_config_t io = {
+            .intr_type    = GPIO_INTR_DISABLE,
+            .mode         = GPIO_MODE_INPUT,
+            .pin_bit_mask = 1ULL << GPIO_NUM_19,
+            .pull_down_en = GPIO_PULLDOWN_ENABLE,
+            .pull_up_en   = GPIO_PULLUP_DISABLE,
+        };
+        gpio_config(&io);
+        vTaskDelay(pdMS_TO_TICKS(5));
+        int with_pd = gpio_get_level(GPIO_NUM_19);
+
+        io.pull_down_en = GPIO_PULLDOWN_DISABLE;
+        io.pull_up_en   = GPIO_PULLUP_ENABLE;
+        gpio_config(&io);
+        vTaskDelay(pdMS_TO_TICKS(5));
+        int with_pu = gpio_get_level(GPIO_NUM_19);
+
+        const char *verdict =
+            (with_pd == 1) ? "held HIGH by something -- device present and powered" :
+            (with_pu == 0) ? "held LOW by something -- device present, but check CS" :
+                             "FLOATING -- nothing connected or the sensor has no power";
+        printf("[BOARD] MISO(GPIO19) pulldown=%d pullup=%d : %s\n",
+               with_pd, with_pu, verdict);
+    }
+
     /* --- Sensor bus --------------------------------------------------- */
     if (PIOS_ESP32_SPI_Init(&pios_spi_sensors_id, &pios_spi_sensors_cfg) != 0) {
         PIOS_Assert(0);
