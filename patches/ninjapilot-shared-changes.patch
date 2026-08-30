@@ -83,13 +83,14 @@ index 468f7c008..30959c70f 100644
          }
          t++;
 diff --git a/flight/pios/common/pios_mpu6000.c b/flight/pios/common/pios_mpu6000.c
-index d30a8af64..83c5bfd0a 100644
+index d30a8af64..fb28438f0 100644
 --- a/flight/pios/common/pios_mpu6000.c
 +++ b/flight/pios/common/pios_mpu6000.c
-@@ -188,71 +188,79 @@ int32_t PIOS_MPU6000_Init(uint32_t spi_id, uint32_t slave_num, const struct pios
+@@ -188,77 +188,155 @@ int32_t PIOS_MPU6000_Init(uint32_t spi_id, uint32_t slave_num, const struct pios
   * \param[in] PIOS_MPU6000_ConfigTypeDef struct to be used to configure sensor.
   *
   */
+-static void PIOS_MPU6000_Config(struct pios_mpu6000_cfg const *cfg)
 +
 +/*
 + * Bounded register write.
@@ -113,16 +114,71 @@ index d30a8af64..83c5bfd0a 100644
 +    return false;
 +}
 +
- static void PIOS_MPU6000_Config(struct pios_mpu6000_cfg const *cfg)
++/*
++ * Is the accelerometer producing usable numbers?
++ *
++ * A reset reloads the factory offset trim out of the part's OTP. If that
++ * reload is cut short, one axis comes back with a garbage trim and its output
++ * sits at exactly INT16_MIN for as long as the part stays powered -- observed
++ * on an ICM-20602 as YA_OFFS reading 0x8020 instead of 0xFE20, pinning chip Y
++ * at -32768 while X, Z and all three gyro axes stayed correct.
++ *
++ * Nothing in the configuration registers reflects this, so the only way to
++ * catch it is to look at the data. Saturation on a board that is merely
++ * sitting still is not a real reading.
++ */
++static bool PIOS_MPU6000_AccelSane(void)
++{
++    static const uint8_t msb[3] = {
++        PIOS_MPU6000_ACCEL_X_OUT_MSB,
++        PIOS_MPU6000_ACCEL_Y_OUT_MSB,
++        PIOS_MPU6000_ACCEL_Z_OUT_MSB,
++    };
++
++    for (uint8_t a = 0; a < 3; a++) {
++        int32_t h = PIOS_MPU6000_GetReg(msb[a]);
++        int32_t l = PIOS_MPU6000_GetReg(msb[a] + 1);
++
++        if (h < 0 || l < 0) {
++            return false;
++        }
++        if ((int16_t)((h << 8) | l) == INT16_MIN) {
++            return false;
++        }
++    }
++    return true;
++}
++
++/* How many reset/configure passes it took to get sane accel data. Left
++ * visible so a board that only just scraped in can be told from one that
++ * came up first time. */
++uint8_t mpu6000_config_attempts;
++
++#define PIOS_MPU6000_CONFIG_ATTEMPTS 6
++
++static void PIOS_MPU6000_ConfigOnce(struct pios_mpu6000_cfg const *cfg)
  {
      PIOS_MPU6000_Test();
  
      // Reset chip
 -    while (PIOS_MPU6000_SetReg(PIOS_MPU6000_PWR_MGMT_REG, PIOS_MPU6000_PWRMGMT_IMU_RST) != 0) {
 -        ;
--    }
 +    PIOS_MPU6000_SetRegBounded(PIOS_MPU6000_PWR_MGMT_REG, PIOS_MPU6000_PWRMGMT_IMU_RST);
-     PIOS_DELAY_WaitmS(50);
++
++    /* Wait for DEVICE_RESET to actually self-clear rather than assuming a
++     * fixed delay covers it, then give the OTP trim reload time to finish.
++     * The original 50ms flat wait lost this race on roughly half of all
++     * boots -- see PIOS_MPU6000_AccelSane() for what that looks like. */
++    for (uint16_t i = 0; i < 250; i++) {
++        int32_t pm = PIOS_MPU6000_GetReg(PIOS_MPU6000_PWR_MGMT_REG);
++
++        if (pm >= 0 && !(pm & PIOS_MPU6000_PWRMGMT_IMU_RST)) {
++            break;
++        }
++        PIOS_DELAY_WaitmS(1);
+     }
+-    PIOS_DELAY_WaitmS(50);
++    PIOS_DELAY_WaitmS(100);
  
      // Reset chip and fifo
 -    while (PIOS_MPU6000_SetReg(PIOS_MPU6000_USER_CTRL_REG,
@@ -202,7 +258,28 @@ index d30a8af64..83c5bfd0a 100644
      if ((PIOS_MPU6000_GetReg(PIOS_MPU6000_INT_EN_REG)) != cfg->interrupt_en) {
          return;
      }
-@@ -273,29 +281,21 @@ int32_t PIOS_MPU6000_ConfigureRanges(
+ 
+     mpu6000_configured = true;
+ }
++
++static void PIOS_MPU6000_Config(struct pios_mpu6000_cfg const *cfg)
++{
++    for (uint8_t attempt = 1; attempt <= PIOS_MPU6000_CONFIG_ATTEMPTS; attempt++) {
++        mpu6000_config_attempts = attempt;
++        PIOS_MPU6000_ConfigOnce(cfg);
++
++        if (mpu6000_configured && PIOS_MPU6000_AccelSane()) {
++            return;
++        }
++    }
++    /* Out of attempts. Leave mpu6000_configured as the last pass set it and
++     * let the board-level WHO_AM_I/alarm reporting carry the bad news --
++     * refusing to configure at all would hang module init. */
++}
+ /**
+  * @brief Configures Gyro, accel and Filter ranges/setings
+  * @return 0 if successful, -1 if device has not been initialized
+@@ -273,29 +351,21 @@ int32_t PIOS_MPU6000_ConfigureRanges(
      }
  
      // update filter settings
@@ -237,7 +314,23 @@ index d30a8af64..83c5bfd0a 100644
  
      dev->accel_range = accelRange;
      return 0;
-@@ -516,20 +516,42 @@ static float PIOS_MPU6000_GetAccelScale()
+@@ -342,8 +412,14 @@ static int32_t PIOS_MPU6000_ClaimBusISR(bool *woken, bool fast_spi)
+     if (PIOS_SPI_ClaimBusISR(dev->spi_id, woken) != 0) {
+         return -2;
+     }
+-    PIOS_MPU6000_SetSpeed(fast_spi);
++    /* Select the slave BEFORE the speed, the same order PIOS_MPU6000_ClaimBus()
++     * uses. A PIOS_SPI back end that tracks speed per slave cannot honour
++     * SetSpeed until it knows which slave is being addressed; called the other
++     * way round it silently keeps whatever speed the previous transfer left
++     * behind, which on the ESP32 port made the streaming reads run at the
++     * configuration clock instead of the fast one. */
+     PIOS_SPI_RC_PinSet(dev->spi_id, dev->slave_num, 0);
++    PIOS_MPU6000_SetSpeed(fast_spi);
+     return 0;
+ }
+ 
+@@ -516,20 +592,42 @@ static float PIOS_MPU6000_GetAccelScale()
   * \return 0 if test succeeded
   * \return non-zero value if test succeeded
   */

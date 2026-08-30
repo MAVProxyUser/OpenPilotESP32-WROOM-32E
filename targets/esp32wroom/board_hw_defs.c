@@ -79,7 +79,11 @@ static const struct pios_esp32_spi_slave board_spi_sensors_slaves[] = {
          * fast rate conservative for a first bring-up with flying leads --
          * raise it once the wiring is short and known good. */
         .clock_speed_hz = 1000000,
-        .fast_speed_hz  = 8000000,
+        /* 2MHz, not 8. The part is rated for 20MHz reads, but this board is
+         * wired with flying leads to an InvenSense UEVB, so keep a wide
+         * margin. 15 bytes at 2MHz is 60us against a 2ms sample period --
+         * there is nothing to buy by going faster here. */
+        .fast_speed_hz  = 2000000,
     },
 };
 
@@ -134,7 +138,23 @@ const struct pios_mpu6000_cfg pios_mpu6000_cfg = {
     .Pwr_mgmt_clk         = PIOS_MPU6000_PWRMGMT_PLL_X_CLK,
     .accel_range          = PIOS_MPU6000_ACCEL_8G,
     .gyro_range           = PIOS_MPU6000_SCALE_2000_DEG,
-    .filter               = PIOS_MPU6000_LOWPASS_256_HZ,
+    /* 188Hz DLPF, NOT 256Hz.
+     *
+     * This one bites hard. PIOS_MPU6000_ConfigureRanges() picks the sample
+     * rate divider like this:
+     *
+     *   SMPLRT_DIV = (filter == LOWPASS_256_HZ) ? Smpl_rate_div_no_dlp
+     *                                           : Smpl_rate_div_dlp
+     *
+     * LOWPASS_256_HZ actually means "DLPF disabled", which puts the gyro
+     * output at 8kHz AND selects Smpl_rate_div_no_dlp (0 here) -- so the part
+     * interrupted at 8000/s instead of the intended 500. The data-ready task
+     * runs just below the top priority, so it starved everything beneath it:
+     * CPU pegged at 100%, telemetry stalled, app_main never resumed.
+     *
+     * With a real DLPF selected the base rate is 1kHz and Smpl_rate_div_dlp
+     * applies: 1000/(1+1) = 500Hz, matching PIOS_SENSOR_RATE. */
+    .filter               = PIOS_MPU6000_LOWPASS_188_HZ,
     .orientation          = PIOS_MPU6000_TOP_0DEG,
     .fast_prescaler       = PIOS_SPI_PRESCALER_4,
     .std_prescaler        = PIOS_SPI_PRESCALER_64,

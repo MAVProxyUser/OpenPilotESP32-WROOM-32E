@@ -237,9 +237,7 @@ void PIOS_Board_Init(void)
      *    arm is far more useful than one that silently wedges, so register
      *    unconditionally and let the alarm carry the bad news.
      */
-    printf("[BOARD] calling PIOS_MPU6000_Init\n");
     PIOS_MPU6000_Init(pios_spi_sensors_id, 0, &pios_mpu6000_cfg);
-    printf("[BOARD] PIOS_MPU6000_Init returned, WHO_AM_I=0x%02X\n", (unsigned)PIOS_MPU6000_ReadID());
 
     int32_t imu_id = PIOS_MPU6000_ReadID();
 
