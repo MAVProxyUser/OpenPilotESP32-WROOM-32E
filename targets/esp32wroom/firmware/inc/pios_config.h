@@ -65,6 +65,9 @@
 /* --- Sensors ---------------------------------------------------------- */
 /* ICM-20602, which is NOT an MPU6000 -- see pios/esp32/pios_icm20602.c */
 #define PIOS_INCLUDE_ICM20602
+/* WiFi telemetry: active only when credentials exist in NVS (see
+ * tools/wifi_setup.py). Bench feature; erase credentials before flight. */
+#define PIOS_INCLUDE_WIFI
 #define PIOS_MPU6000_ACCEL
 
 /* Deliberately off for a first bring-up: rate mode needs a gyro and nothing

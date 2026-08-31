@@ -183,6 +183,12 @@ extern bool PIOS_ESP32_FLASHFS_IsProvisioned(void);
 extern void PIOS_ESP32_FLASHFS_MarkProvisioned(void);
 
 /* ---------------------------------------------------------------------- *
+ * WiFi telemetry (bench feature -- see pios_wifi.c header)
+ * ---------------------------------------------------------------------- */
+extern int32_t PIOS_ESP32_WIFI_Init(void);
+extern const struct pios_com_driver pios_esp32_wifi_com_driver;
+
+/* ---------------------------------------------------------------------- *
  * Sensor data-ready ("EXTI")
  *
  * NOT an interrupt vector in the STM32 sense. On this target the GPIO ISR

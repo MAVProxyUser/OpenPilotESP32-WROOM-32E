@@ -45,6 +45,7 @@ set(PIOS_ESP32_SRCS
     ${ESP32PORT}/pios/esp32/pios_ppm.c
     ${ESP32PORT}/pios/esp32/pios_dsm.c
     ${ESP32PORT}/pios/esp32/pios_flashfs_nvs.c
+    ${ESP32PORT}/pios/esp32/pios_wifi.c
     ${ESP32PORT}/pios/esp32/pios_task_runtime.c
 )
 
@@ -271,6 +272,10 @@ idf_component_register(
         # the freertos/ prefix IDF normally requires.
         $ENV{IDF_PATH}/components/freertos/FreeRTOS-Kernel/include/freertos
     REQUIRES
+        esp_wifi
+        esp_netif
+        esp_event
+        lwip
         driver
         esp_timer
         esp_adc

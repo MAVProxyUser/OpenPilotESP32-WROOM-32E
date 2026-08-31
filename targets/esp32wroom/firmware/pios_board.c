@@ -779,8 +779,6 @@ void PIOS_Board_Init(void)
      * a board that silently forgets its configuration on every power cycle
      * is a bad surprise to discover mid-tuning. */
     HwSettingsInitialize();
-    printf("[BOARD] settings are NOT persistent on this target yet "
-           "(no NVS backend); configure over the GCS link each boot\n");
 
     PIOS_WDG_Init();
 
@@ -789,6 +787,27 @@ void PIOS_Board_Init(void)
     /* --- Telemetry / console ------------------------------------------ */
     board_com_init(&pios_com_telem_rf_id, &pios_usart_telem_cfg,
                    PIOS_COM_TELEM_RF_RX_BUF_LEN, PIOS_COM_TELEM_RF_TX_BUF_LEN);
+
+#ifdef PIOS_INCLUDE_WIFI
+    /* WiFi telemetry, bench feature: only runs when credentials are stored
+     * (tools/wifi_setup.py). On a successful join, telemetry moves to the
+     * TCP socket and UART0 goes quiet -- one telemetry port at a time. No
+     * credentials costs one NVS lookup and nothing else. Erase credentials
+     * before flying; the WiFi stack's own tasks have not been characterized
+     * against the control loop. */
+    if (PIOS_ESP32_WIFI_Init() == 0) {
+        static uint8_t wifi_rx_buf[PIOS_COM_TELEM_RF_RX_BUF_LEN];
+        static uint8_t wifi_tx_buf[PIOS_COM_TELEM_RF_TX_BUF_LEN];
+        uint32_t wifi_com_id;
+
+        if (PIOS_COM_Init(&wifi_com_id, &pios_esp32_wifi_com_driver, 1,
+                          wifi_rx_buf, sizeof(wifi_rx_buf),
+                          wifi_tx_buf, sizeof(wifi_tx_buf)) == 0) {
+            pios_com_telem_rf_id = wifi_com_id;
+            printf("[BOARD] telemetry on WiFi TCP\n");
+        }
+    }
+#endif
 
     /* --- Is anything actually on the sensor bus? -----------------------
      *
