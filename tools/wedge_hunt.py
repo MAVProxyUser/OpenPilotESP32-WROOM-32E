@@ -76,9 +76,39 @@ def main():
     client = UAVTalkClient(Locked(Esp32SerialTransport(args.serial, args.baud)), db)
     got = {}
     connected = threading.Event()
+    alarm_names_ev = element_names(xml_dir, "systemalarms.xml", "Alarm")
+    t_start = [None]
+    prev_ev = {"Armed": None, "act": None, "alarms": {}}
 
     def on_object(objdef, inst_id, decoded):
         got[objdef.name] = decoded
+        # Timestamped event log. The wedge sequence is: receiver freezes at
+        # first big stick movement, cpu pegs ~4s later -- ordering between
+        # activity detection, Armed changes and alarm latches is exactly what
+        # a 0.3s display loop can blur, so record transitions at arrival.
+        if t_start[0] is None:
+            return
+        t = time.time() - t_start[0]
+        if objdef.name == "FlightStatus":
+            a = decoded.get("Armed")
+            if a != prev_ev["Armed"]:
+                print("  >> %5.1fs Armed: %s -> %s" % (t, prev_ev["Armed"], a),
+                      flush=True)
+                prev_ev["Armed"] = a
+        elif objdef.name == "ReceiverActivity":
+            key = (decoded.get("ActiveGroup"), decoded.get("ActiveChannel"))
+            if key != prev_ev["act"]:
+                print("  >> %5.1fs ReceiverActivity: group=%s ch=%s" %
+                      (t, key[0], key[1]), flush=True)
+                prev_ev["act"] = key
+        elif objdef.name == "SystemAlarms" and alarm_names_ev:
+            for n, v in zip(alarm_names_ev, decoded["Alarm"]):
+                pv = prev_ev["alarms"].get(n)
+                if pv != v and (v in ("Critical", "Error") or
+                                (pv in ("Critical", "Error"))):
+                    print("  >> %5.1fs ALARM %s: %s -> %s" % (t, n, pv, v),
+                          flush=True)
+                prev_ev["alarms"][n] = v
 
     threading.Thread(target=client.run,
                      kwargs=dict(duration=300, on_object=on_object,
@@ -133,22 +163,38 @@ def main():
         # RunningTime is percent per task; the spinner owns the CPU.
         rt = ti.get("RunningTime")
         sr = ti.get("StackRemaining")
+        rn = ti.get("Running")
+        names = task_names if task_names else \
+            ["task%d" % i for i in range(len(rt or sr or []))]
         if rt:
-            pairs = sorted(zip(task_names, rt), key=lambda x: -x[1])
+            pairs = sorted(zip(names, rt), key=lambda x: -x[1])
             tops = ["%s=%s%%" % (n, v) for n, v in pairs[:8] if v]
-            print("    [%s] runtime: %s" % (tag, "  ".join(tops)), flush=True)
+            print("    [%s] runtime: %s" % (tag,
+                  "  ".join(tops) if tops else "ALL ZERO (DIAG_TASKS off?)"),
+                  flush=True)
+        if rn:
+            dead = [n for n, v in zip(names, rn)
+                    if str(v) in ("False", "0") and n not in ("", None)]
+            # Tasks never started on this target also read False; what
+            # matters is one that WAS running at baseline and stops.
+            print("    [%s] not-running: %s" % (tag, ",".join(dead) or "none"),
+                  flush=True)
         if sr:
-            lows = sorted(zip(task_names, sr), key=lambda x: x[1])
-            lows = ["%s=%s" % (n, v) for n, v in lows[:5] if v]
-            print("    [%s] lowest stacks: %s" % (tag, "  ".join(lows)), flush=True)
+            lows = sorted(zip(names, sr), key=lambda x: x[1])
+            lows = ["%s=%s" % (n, v) for n, v in lows[:6] if v]
+            print("    [%s] lowest stacks: %s" % (tag, "  ".join(lows)),
+                  flush=True)
 
     print("\nBaseline TaskInfo (healthy):", flush=True)
     taskinfo_dump("baseline")
+
+    set_period("ReceiverActivity", 300)
 
     print("\n>>> HOLD throttle DOWN + yaw FULL RIGHT now, and KEEP HOLDING <<<\n",
           flush=True)
 
     t0 = time.time()
+    t_start[0] = t0
     wedged_at = None
     dumps = 0
     while time.time() - t0 < 40:

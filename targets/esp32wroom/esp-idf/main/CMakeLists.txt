@@ -288,6 +288,12 @@ target_linker_script(${COMPONENT_LIB} INTERFACE "uavo_handles.ld")
 # build silently falls into the STM32 include path and fails confusingly.
 target_compile_definitions(${COMPONENT_LIB} PRIVATE
     USE_ESP32=1
+    # Per-task diagnostics (TaskInfo/CallbackInfo: stack remaining, running
+    # flag, runtime percent). Without this the objects exist but stay
+    # all-zero -- which cost a full wedge-reproduction run whose TaskInfo
+    # dumps came back empty. The cost is a 1Hz walk of the task list from
+    # systemmod; keep it on, this board is still being brought up.
+    DIAG_TASKS=1
     # BOARD_PWM_SELFTEST sweeps every motor output during board init. Verified
     # working on hardware and then deliberately turned back OFF -- a flight
     # controller that spins its motors on every power-up is not something to
