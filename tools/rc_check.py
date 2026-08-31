@@ -44,10 +44,23 @@ from imu_bringup import Esp32SerialTransport                  # noqa: E402
 
 # element index, name, the movement to ask for, expected sign
 AXES = [
-    (1, "Roll",  "roll RIGHT  (right stick to the right)", +1),
-    (2, "Pitch", "pitch NOSE UP (right stick toward you)", +1),
-    (3, "Yaw",   "yaw RIGHT   (left stick to the right)",  +1),
+    (0, "Throttle", "throttle all the way DOWN",              -1),
+    (1, "Roll",     "roll RIGHT  (right stick to the right)", +1),
+    (2, "Pitch",    "pitch NOSE UP (right stick toward you)", +1),
+    (3, "Yaw",      "yaw RIGHT   (left stick to the right)",  +1),
 ]
+# Throttle is checked too, and deliberately first. rc_calibrate ASSUMES the
+# stick-down end produces the low raw value -- it never verifies it. A
+# transmitter with a servo-reversed throttle channel sails through
+# calibration and comes out reading +1 with the stick DOWN, which is the most
+# dangerous reversal there is: arming at the bottom becomes impossible, and
+# "fixing" that by arming at the top puts full thrust one instinctive
+# pull-to-idle away. Down-expect-negative also leaves the stick in the safe
+# position when the check ends.
+# Fraction of throttle travel reserved below neutral; must match
+# rc_calibrate.THROTTLE_NEUTRAL_MARGIN so a reversal fix here reproduces the
+# same zero-thrust reference calibration would have set.
+THROTTLE_NEUTRAL_MARGIN = 0.05
 # Below this a stick clearly was not moved, and calling a direction on noise
 # would be worse than saying nothing.
 MOVED = 0.40
@@ -136,11 +149,22 @@ def main():
         sys.exit("could not read ManualControlSettings")
     mn = list(mcs["ChannelMin"])
     mx = list(mcs["ChannelMax"])
+    nu = list(mcs["ChannelNeutral"])
     for idx, name, _prompt, _exp in AXES:
         if name in bad:
             mn[idx], mx[idx] = mx[idx], mn[idx]   # reversal IS max < min
-            print("  %-6s min/max swapped -> %d/%d" % (name, mn[idx], mx[idx]))
+            print("  %-8s min/max swapped -> %d/%d" % (name, mn[idx], mx[idx]))
+            if idx == 0:
+                # Throttle's neutral is the zero-thrust reference sitting a
+                # margin above the idle end. Swapping min/max moved the idle
+                # end, so recompute it -- signed arithmetic makes this
+                # correct in both directions. Roll/pitch/yaw neutrals are the
+                # measured stick centre, which a swap does not move.
+                nu[idx] = mn[idx] + int(round(THROTTLE_NEUTRAL_MARGIN *
+                                              (mx[idx] - mn[idx])))
+                print("  %-8s neutral recomputed -> %d" % (name, nu[idx]))
     mcs["ChannelMin"], mcs["ChannelMax"] = mn, mx
+    mcs["ChannelNeutral"] = nu
     client.send_object("ManualControlSettings", mcs)
     time.sleep(1.5)
     client.send_object("ObjectPersistence", {
