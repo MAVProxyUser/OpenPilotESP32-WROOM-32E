@@ -129,6 +129,54 @@ def main():
     if not f or f.get("Armed") != "Disarmed":
         sys.exit("board is %s -- disarm first" % (f.get("Armed") if f else "?"))
 
+    # ================= STEP 0: ORIENTATION ==============================
+    if input("STEP 0 - ORIENTATION CHECK (which way is NOSE?). Run it? "
+             "[y/N] ").strip().lower() == "y":
+        print("""
+  The code assumes a fixed sensor-to-frame orientation (TOP_0DEG, set at
+  compile time). Nothing has ever verified it against the actual airframe --
+  and with the sensor on flying leads it is not even defined. So find it
+  empirically. Convention the flight code lives by:
+
+      NOSE DOWN            -> Pitch reads NEGATIVE
+      RIGHT side down      -> Roll  reads POSITIVE
+      rotate CW from above -> Yaw   INCREASES
+
+  Live attitude for 30s. Tilt each edge of the (mounted!) sensor down in
+  turn: the edge that drives Pitch NEGATIVE is what the code calls FORWARD.
+  Point that at the airframe's nose when you hard-mount -- or if it is 90
+  or 180 deg off, say so and the compile-time orientation gets changed.
+""")
+        input("  Press Enter to start the 30s live readout: ")
+        end = time.time() + 30.0
+        while time.time() < end:
+            at = fresh("AttitudeState", 0.8)
+            if at:
+                r, pch, y = at.get("Roll", 0), at.get("Pitch", 0), at.get("Yaw", 0)
+                tags = []
+                if pch < -8:
+                    tags.append("NOSE-DOWN edge is toward the ground NOW")
+                elif pch > 8:
+                    tags.append("TAIL-down")
+                if r > 8:
+                    tags.append("RIGHT side down")
+                elif r < -8:
+                    tags.append("LEFT side down")
+                print("  roll %+7.1f  pitch %+7.1f  yaw %+7.1f   %s" % (
+                    r, pch, y, ", ".join(tags)), flush=True)
+            time.sleep(0.25)
+        print("""
+  Verdict guide:
+    - Tilting the frame's real nose down made Pitch NEGATIVE and the real
+      right side down made Roll POSITIVE: orientation is correct. Continue.
+    - Directions consistent but rotated (e.g. nose-down shows as Roll):
+      the sensor is mounted 90/180/270 deg off -- remount, or report which,
+      and the TOP_xxDEG orientation constant gets changed in firmware.
+    - An axis INVERTED (nose-down reads Pitch positive): report it; that is
+      a sign fix in the driver mapping, not a mounting problem.
+  Do not run level calibration until this step passes.
+""")
+
     # ================= STEP 1: LEVEL ====================================
     if input("STEP 1 - LEVEL CALIBRATION. Run it? [y/N] ").strip().lower() == "y":
         input("  Put the FRAME (not the sensor) dead level and still, then "
