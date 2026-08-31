@@ -294,6 +294,12 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE
     # dumps came back empty. The cost is a 1Hz walk of the task list from
     # systemmod; keep it on, this board is still being brought up.
     DIAG_TASKS=1
+    # BOARD_ESC_CAL: USB-free ESC endpoint calibration at power-up (max 6s,
+    # then min). Flash it, UNPLUG USB, connect battery, listen for the tones,
+    # reflash normal firmware. PROPS OFF. Never ship enabled. This exists
+    # because battery and USB must NEVER be connected together on this
+    # airframe (BEC 5V feeds VUSB) -- so no serial tool may ever drive ESC
+    # calibration.
     # BOARD_PWM_SELFTEST sweeps every motor output during board init. Verified
     # working on hardware and then deliberately turned back OFF -- a flight
     # controller that spins its motors on every power-up is not something to

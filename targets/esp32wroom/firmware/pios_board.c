@@ -631,6 +631,44 @@ void PIOS_Board_Init(void)
 #ifdef BOARD_PWM_SELFTEST
     board_pwm_selftest();
 #endif
+#ifdef BOARD_ESC_CAL
+    /*
+     * ESC endpoint calibration -- the USB-FREE way, and the only way on
+     * this airframe. The BEC's 5V feeds VUSB, so battery and USB must
+     * never be connected together (hard rule). Serial-driven calibration
+     * tools are therefore impossible; instead the board does the classic
+     * ritual itself at power-up, on battery power alone:
+     *
+     *   flash this build over USB -> UNPLUG USB -> connect battery.
+     *   Board and ESCs power up together; all four outputs are already at
+     *   MAX, so every ESC enters calibration and sings its max tone.
+     *   6 seconds later the outputs drop to MIN; ESCs store the range and
+     *   arm. LED: solid during MAX, fast blink during MIN, then normal.
+     *
+     *   Then reflash the normal build. PROPS OFF THROUGHOUT.
+     *
+     * Every power-up of THIS build recalibrates, which is why it must
+     * never ship enabled -- same rule as BOARD_PWM_SELFTEST.
+     */
+    {
+        PIOS_LED_On(PIOS_LED_HEARTBEAT);
+        for (uint8_t ch = 0; ch < 4; ch++) {
+            PIOS_Servo_Set(ch, 2000);
+        }
+        PIOS_Servo_Update();
+        PIOS_DELAY_WaitmS(6000);
+
+        for (uint8_t ch = 0; ch < 4; ch++) {
+            PIOS_Servo_Set(ch, 1000);
+        }
+        PIOS_Servo_Update();
+        for (uint8_t i = 0; i < 12; i++) {   /* 3s fast blink = MIN phase */
+            PIOS_LED_Toggle(PIOS_LED_HEARTBEAT);
+            PIOS_DELAY_WaitmS(250);
+        }
+        PIOS_LED_Off(PIOS_LED_HEARTBEAT);
+    }
+#endif
 #endif
 
     /* --- RC input ------------------------------------------------------ */

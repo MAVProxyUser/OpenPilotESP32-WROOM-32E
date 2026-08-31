@@ -258,80 +258,53 @@ def main():
     took_over = False
     try:
         # ============= STEP 2: ESC ENDPOINT CALIBRATION =================
-        if input("STEP 2 - ESC RANGE CALIBRATION (needs battery). Run it? "
-                 "[y/N] ").strip().lower() == "y":
+        # ============= STEP 2: ESC ENDPOINT CALIBRATION =================
+        #
+        # HARD RULE on this airframe: battery and USB are NEVER connected at
+        # the same time (the BEC's 5V feeds VUSB -- two sources fry the
+        # board). So no serial tool may ever run while ESCs have power, and
+        # calibration is done by a firmware boot mode instead:
+        if input("STEP 2 - ESC RANGE CALIBRATION info (USB-free procedure). "
+                 "Show it? [y/N] ").strip().lower() == "y":
             print("""
-    PROPS OFF. This is the classic all-at-once calibration:
-      a. DISCONNECT the flight battery now.
-      b. This tool outputs MAX (2000us) on all four channels.
-      c. You connect the battery; every ESC sings its max-throttle tone.
-      d. Tool drops to MIN (1000us); ESCs confirm and arm.
+    ESC calibration runs WITHOUT USB, as a boot mode:
+
+      1. Build & flash with BOARD_ESC_CAL=1 (ask Claude, or add it next to
+         BOARD_PWM_SELFTEST in main/CMakeLists.txt).
+      2. UNPLUG USB COMPLETELY.  PROPS OFF.
+      3. Connect the battery. Board and ESCs power up together with all
+         four outputs at MAX -- every ESC sings its max-cal tone.
+         LED solid during this phase.
+      4. After 6s outputs drop to MIN (LED fast-blinks); ESCs store the
+         range and arm. Done.
+      5. Disconnect battery, replug USB, reflash the normal build.
+
+    Every power-up of the cal build recalibrates, so it must not stay
+    flashed -- same rule as the PWM self-test build.
 """)
-            input("    Battery DISCONNECTED? Press Enter to output MAX: ")
-            if not orig_meta or not ac:
-                raise RuntimeError("no ActuatorCommand access")
-            set_access(True)
-            took_over = True
-            probe = [MIN_US] * 4
-            probe[0] = 1011
-            send_channels(probe)
-            time.sleep(0.4)
-            back = fresh("ActuatorCommand")
-            if not back or int(back["Channel"][0]) != 1011:
-                raise RuntimeError("passthrough not engaged -- aborting")
-            hold([MAX_US] * 4, 1.0)
-            input("    MAX is live on all four. CONNECT the battery, wait "
-                  "for the max-cal tones, then press Enter: ")
-            print("    dropping to MIN...")
-            hold([MIN_US] * 4, 3.0)
-            input("    ESCs should have confirmed and armed. Press Enter: ")
-            print("    endpoint calibration done.\n")
 
-        # ============= STEP 3: PER-MOTOR IDLE POINTS ====================
-        if input("STEP 3 - PER-MOTOR IDLE POINTS (spins motors, battery "
-                 "connected, PROPS OFF). Run it? [y/N] ").strip().lower() == "y":
-            if not took_over:
-                set_access(True)
-                took_over = True
-                probe = [MIN_US] * 4
-                probe[0] = 1011
-                send_channels(probe)
-                time.sleep(0.4)
-                back = fresh("ActuatorCommand")
-                if not back or int(back["Channel"][0]) != 1011:
-                    raise RuntimeError("passthrough not engaged -- aborting")
-            starts = {}
-            for m in range(4):
-                print("  === %s ===" % POS[m])
-                print("      ramping slowly from %d. Press Enter the INSTANT "
-                      "it starts spinning." % MIN_US)
-                state = {"us": MIN_US, "run": True}
-
-                def ramp():
-                    us = [MIN_US] * 4
-                    while state["run"] and state["us"] < 1500:
-                        us[m] = state["us"]
-                        send_channels(us)
-                        time.sleep(0.25)
-                        state["us"] += 5
-                t = threading.Thread(target=ramp, daemon=True)
-                t.start()
-                input()
-                state["run"] = False
-                t.join()
-                starts[m] = state["us"]
-                send_channels([MIN_US] * 4)
-                print("      starts at ~%dus\n" % starts[m])
-                time.sleep(0.8)
-            acts = fresh("ActuatorSettings", 3.0)
-            nu = list(acts["ChannelNeutral"])
-            for m, v in starts.items():
-                nu[m] = min(v + 20, 1200)
-            acts["ChannelNeutral"] = nu
-            client.send_object("ActuatorSettings", acts)
-            time.sleep(1.0)
-            print("  ChannelNeutral set to %s" % [nu[i] for i in range(4)])
-            print("  saved: %s\n" % save("ActuatorSettings"))
+        # ============= STEP 3: MOTOR IDLE POINTS ========================
+        #
+        # The interactive per-motor version needed spinning motors during a
+        # serial session -- forbidden by the same rule. After a proper
+        # endpoint calibration all ESCs share the same start threshold, so a
+        # uniform neutral is the right answer anyway.
+        if input("STEP 3 - MOTOR IDLE POINTS (writes numbers only, nothing "
+                 "spins). Run it? [y/N] ").strip().lower() == "y":
+            txt = input("  ChannelNeutral for all motors, us [default 1050]: ").strip()
+            neutral = int(txt) if txt else 1050
+            if not (1000 <= neutral <= 1200):
+                print("  refusing %d -- sane range is 1000-1200" % neutral)
+            else:
+                acts = fresh("ActuatorSettings", 3.0)
+                nu = list(acts["ChannelNeutral"])
+                for m in range(4):
+                    nu[m] = neutral
+                acts["ChannelNeutral"] = nu
+                client.send_object("ActuatorSettings", acts)
+                time.sleep(1.0)
+                print("  ChannelNeutral = %d on all four; saved: %s\n"
+                      % (neutral, save("ActuatorSettings")))
     finally:
         if took_over:
             for _ in range(3):
