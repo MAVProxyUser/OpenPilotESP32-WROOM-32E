@@ -335,7 +335,7 @@ index 614d96867..c45624709 100644
   * List of event queues and the eventmask associated with the queue.
   */
 diff --git a/flight/uavobjects/uavobjectmanager.c b/flight/uavobjects/uavobjectmanager.c
-index 9feedbbb4..574bd3af9 100644
+index 9feedbbb4..6498a85fe 100644
 --- a/flight/uavobjects/uavobjectmanager.c
 +++ b/flight/uavobjects/uavobjectmanager.c
 @@ -73,6 +73,12 @@ int32_t UAVObjDelete(UAVObjHandle obj_handle, uint16_t instId) __attribute__((we
@@ -371,6 +371,166 @@ index 9feedbbb4..574bd3af9 100644
      /* Fill in the details about this UAVO */
      uavo_data->id = id;
      uavo_data->instance_size = num_bytes;
+@@ -867,6 +886,19 @@ return rc;
+  */
+ int32_t UAVObjSetData(UAVObjHandle obj_handle, const void *dataIn)
+ {
++    /* A NULL handle here is a generated XxxGet/XxxSet on an object whose
++     * Initialize() never ran -- a module compiled in without its object.
++     * Dereferencing it faults INSIDE the object manager, in one observed
++     * case while holding the global object mutex: every other task then
++     * blocks forever, the receiver and LED freeze, and the task watchdog
++     * reboots the board two seconds later. That cost two days to trace to
++     * takeOffLocationHandler calling PositionStateGet() on an object this
++     * target never initialized, triggered only at the moment of ARMING.
++     * Refuse politely instead; the caller sees -1 exactly as it would for
++     * a missing instance. */
++    if (!obj_handle) {
++        return -1;
++    }
+     return UAVObjSetInstanceData(obj_handle, 0, dataIn);
+ }
+ 
+@@ -878,6 +910,19 @@ int32_t UAVObjSetData(UAVObjHandle obj_handle, const void *dataIn)
+  */
+ int32_t UAVObjSetDataField(UAVObjHandle obj_handle, const void *dataIn, uint32_t offset, uint32_t size)
+ {
++    /* A NULL handle here is a generated XxxGet/XxxSet on an object whose
++     * Initialize() never ran -- a module compiled in without its object.
++     * Dereferencing it faults INSIDE the object manager, in one observed
++     * case while holding the global object mutex: every other task then
++     * blocks forever, the receiver and LED freeze, and the task watchdog
++     * reboots the board two seconds later. That cost two days to trace to
++     * takeOffLocationHandler calling PositionStateGet() on an object this
++     * target never initialized, triggered only at the moment of ARMING.
++     * Refuse politely instead; the caller sees -1 exactly as it would for
++     * a missing instance. */
++    if (!obj_handle) {
++        return -1;
++    }
+     return UAVObjSetInstanceDataField(obj_handle, 0, dataIn, offset, size);
+ }
+ 
+@@ -889,6 +934,19 @@ int32_t UAVObjSetDataField(UAVObjHandle obj_handle, const void *dataIn, uint32_t
+  */
+ int32_t UAVObjGetData(UAVObjHandle obj_handle, void *dataOut)
+ {
++    /* A NULL handle here is a generated XxxGet/XxxSet on an object whose
++     * Initialize() never ran -- a module compiled in without its object.
++     * Dereferencing it faults INSIDE the object manager, in one observed
++     * case while holding the global object mutex: every other task then
++     * blocks forever, the receiver and LED freeze, and the task watchdog
++     * reboots the board two seconds later. That cost two days to trace to
++     * takeOffLocationHandler calling PositionStateGet() on an object this
++     * target never initialized, triggered only at the moment of ARMING.
++     * Refuse politely instead; the caller sees -1 exactly as it would for
++     * a missing instance. */
++    if (!obj_handle) {
++        return -1;
++    }
+     return UAVObjGetInstanceData(obj_handle, 0, dataOut);
+ }
+ 
+@@ -900,6 +958,19 @@ int32_t UAVObjGetData(UAVObjHandle obj_handle, void *dataOut)
+  */
+ int32_t UAVObjGetDataField(UAVObjHandle obj_handle, void *dataOut, uint32_t offset, uint32_t size)
+ {
++    /* A NULL handle here is a generated XxxGet/XxxSet on an object whose
++     * Initialize() never ran -- a module compiled in without its object.
++     * Dereferencing it faults INSIDE the object manager, in one observed
++     * case while holding the global object mutex: every other task then
++     * blocks forever, the receiver and LED freeze, and the task watchdog
++     * reboots the board two seconds later. That cost two days to trace to
++     * takeOffLocationHandler calling PositionStateGet() on an object this
++     * target never initialized, triggered only at the moment of ARMING.
++     * Refuse politely instead; the caller sees -1 exactly as it would for
++     * a missing instance. */
++    if (!obj_handle) {
++        return -1;
++    }
+     return UAVObjGetInstanceDataField(obj_handle, 0, dataOut, offset, size);
+ }
+ 
+@@ -913,6 +984,19 @@ int32_t UAVObjGetDataField(UAVObjHandle obj_handle, void *dataOut, uint32_t offs
+ int32_t UAVObjSetInstanceData(UAVObjHandle obj_handle, uint16_t instId,
+                               const void *dataIn)
+ {
++    /* A NULL handle here is a generated XxxGet/XxxSet on an object whose
++     * Initialize() never ran -- a module compiled in without its object.
++     * Dereferencing it faults INSIDE the object manager, in one observed
++     * case while holding the global object mutex: every other task then
++     * blocks forever, the receiver and LED freeze, and the task watchdog
++     * reboots the board two seconds later. That cost two days to trace to
++     * takeOffLocationHandler calling PositionStateGet() on an object this
++     * target never initialized, triggered only at the moment of ARMING.
++     * Refuse politely instead; the caller sees -1 exactly as it would for
++     * a missing instance. */
++    if (!obj_handle) {
++        return -1;
++    }
+     PIOS_Assert(obj_handle);
+ 
+     // Lock
+@@ -963,6 +1047,19 @@ unlock_exit:
+  */
+ int32_t UAVObjSetInstanceDataField(UAVObjHandle obj_handle, uint16_t instId, const void *dataIn, uint32_t offset, uint32_t size)
+ {
++    /* A NULL handle here is a generated XxxGet/XxxSet on an object whose
++     * Initialize() never ran -- a module compiled in without its object.
++     * Dereferencing it faults INSIDE the object manager, in one observed
++     * case while holding the global object mutex: every other task then
++     * blocks forever, the receiver and LED freeze, and the task watchdog
++     * reboots the board two seconds later. That cost two days to trace to
++     * takeOffLocationHandler calling PositionStateGet() on an object this
++     * target never initialized, triggered only at the moment of ARMING.
++     * Refuse politely instead; the caller sees -1 exactly as it would for
++     * a missing instance. */
++    if (!obj_handle) {
++        return -1;
++    }
+     PIOS_Assert(obj_handle);
+ 
+     // Lock
+@@ -1030,6 +1127,19 @@ unlock_exit:
+ int32_t UAVObjGetInstanceData(UAVObjHandle obj_handle, uint16_t instId,
+                               void *dataOut)
+ {
++    /* A NULL handle here is a generated XxxGet/XxxSet on an object whose
++     * Initialize() never ran -- a module compiled in without its object.
++     * Dereferencing it faults INSIDE the object manager, in one observed
++     * case while holding the global object mutex: every other task then
++     * blocks forever, the receiver and LED freeze, and the task watchdog
++     * reboots the board two seconds later. That cost two days to trace to
++     * takeOffLocationHandler calling PositionStateGet() on an object this
++     * target never initialized, triggered only at the moment of ARMING.
++     * Refuse politely instead; the caller sees -1 exactly as it would for
++     * a missing instance. */
++    if (!obj_handle) {
++        return -1;
++    }
+     PIOS_Assert(obj_handle);
+ 
+     // Lock
+@@ -1076,6 +1186,19 @@ unlock_exit:
+  */
+ int32_t UAVObjGetInstanceDataField(UAVObjHandle obj_handle, uint16_t instId, void *dataOut, uint32_t offset, uint32_t size)
+ {
++    /* A NULL handle here is a generated XxxGet/XxxSet on an object whose
++     * Initialize() never ran -- a module compiled in without its object.
++     * Dereferencing it faults INSIDE the object manager, in one observed
++     * case while holding the global object mutex: every other task then
++     * blocks forever, the receiver and LED freeze, and the task watchdog
++     * reboots the board two seconds later. That cost two days to trace to
++     * takeOffLocationHandler calling PositionStateGet() on an object this
++     * target never initialized, triggered only at the moment of ARMING.
++     * Refuse politely instead; the caller sees -1 exactly as it would for
++     * a missing instance. */
++    if (!obj_handle) {
++        return -1;
++    }
+     PIOS_Assert(obj_handle);
+ 
+     // Lock
 diff --git a/flight/uavobjects/uavobjectpersistence.c b/flight/uavobjects/uavobjectpersistence.c
 index 4acbd41e5..b4eea54a6 100644
 --- a/flight/uavobjects/uavobjectpersistence.c

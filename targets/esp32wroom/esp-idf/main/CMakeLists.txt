@@ -361,6 +361,13 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE
     UAVOBJ_INIT_systemsettings=1
     UAVOBJ_INIT_systemstats=1
     UAVOBJ_INIT_takeofflocation=1
+    UAVOBJ_INIT_positionstate=1
+    UAVOBJ_INIT_vtolpathfollowersettings=1
+    UAVOBJ_INIT_vtolselftuningstats=1
+    # ^ compiled all along but never initialized, so PositionStateHandle()
+    # returned NULL -- and takeOffLocationHandler dereferenced it at the
+    # moment of arming, taking down the whole object system. An object that
+    # is in the build MUST be in this list.
     UAVOBJ_INIT_taskinfo=1
     UAVOBJ_INIT_txpidsettings=1
     UAVOBJ_INIT_watchdogstatus=1
@@ -420,6 +427,13 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE
     UAVOBJ_INIT_systemsettings=1
     UAVOBJ_INIT_systemstats=1
     UAVOBJ_INIT_takeofflocation=1
+    UAVOBJ_INIT_positionstate=1
+    UAVOBJ_INIT_vtolpathfollowersettings=1
+    UAVOBJ_INIT_vtolselftuningstats=1
+    # ^ compiled all along but never initialized, so PositionStateHandle()
+    # returned NULL -- and takeOffLocationHandler dereferenced it at the
+    # moment of arming, taking down the whole object system. An object that
+    # is in the build MUST be in this list.
     UAVOBJ_INIT_taskinfo=1
     UAVOBJ_INIT_txpidsettings=1
     UAVOBJ_INIT_watchdogstatus=1
