@@ -63,7 +63,8 @@
 /* #define PIOS_INCLUDE_USB */
 
 /* --- Sensors ---------------------------------------------------------- */
-#define PIOS_INCLUDE_MPU6000
+/* ICM-20602, which is NOT an MPU6000 -- see pios/esp32/pios_icm20602.c */
+#define PIOS_INCLUDE_ICM20602
 #define PIOS_MPU6000_ACCEL
 
 /* Deliberately off for a first bring-up: rate mode needs a gyro and nothing

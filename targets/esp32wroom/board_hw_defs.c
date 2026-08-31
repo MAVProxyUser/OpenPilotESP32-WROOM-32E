@@ -28,9 +28,9 @@
  */
 
 #include "pios.h"
-#ifdef PIOS_INCLUDE_MPU6000
+#ifdef PIOS_INCLUDE_ICM20602
 #include <pios_sensors.h>
-#include <pios_mpu6000.h>
+#include <pios_icm20602.h>
 #endif
 
 /* ---------------------------------------------------------------------- *
@@ -104,43 +104,43 @@ const struct pios_esp32_spi_cfg pios_spi_sensors_cfg = {
 #endif /* PIOS_INCLUDE_SPI */
 
 /* ---------------------------------------------------------------------- *
- * MPU6000 data-ready
+ * ICM-20602 data-ready
  *
  * GPIO34 is input-only on the ESP32, which makes it a good choice for an
  * interrupt input -- it cannot be accidentally driven.
  *
  * This does NOT run in interrupt context. See pios_exti.c.
  * ---------------------------------------------------------------------- */
-#ifdef PIOS_INCLUDE_MPU6000
+#ifdef PIOS_INCLUDE_ICM20602
 
-const struct pios_esp32_exti_cfg pios_exti_mpu6000_cfg = {
+const struct pios_esp32_exti_cfg pios_exti_icm20602_cfg = {
     /* GPIO32. GPIO34 is the nicer choice where it exists (input-only, so it
      * cannot be driven by mistake) but it is not broken out on every board;
      * 32 is present on the Thing Plus headers. */
     .pin           = GPIO_NUM_32,
-    .vector        = PIOS_MPU6000_IRQHandler,
+    .vector        = PIOS_ICM20602_IRQHandler,
     .task_stack    = 3072,
     /* Above everything except the timer/IDF internals: a late gyro sample is
      * the one thing this board cannot recover from. */
     .task_priority = configMAX_PRIORITIES - 2,
-    .task_name     = "PIOS_MPU6000_DRDY",
+    .task_name     = "PIOS_ICM20602_DRDY",
 };
 
-const struct pios_mpu6000_cfg pios_mpu6000_cfg = {
-    .exti_cfg            = NULL,   /* ESP32 uses pios_exti_mpu6000_cfg above */
-    .Fifo_store          = PIOS_MPU6000_FIFO_TEMP_OUT | PIOS_MPU6000_FIFO_GYRO_X_OUT |
-                           PIOS_MPU6000_FIFO_GYRO_Y_OUT | PIOS_MPU6000_FIFO_GYRO_Z_OUT,
+const struct pios_icm20602_cfg pios_icm20602_cfg = {
+    .exti_cfg            = NULL,   /* ESP32 uses pios_exti_icm20602_cfg above */
+    .Fifo_store          = PIOS_ICM20602_FIFO_TEMP_OUT | PIOS_ICM20602_FIFO_GYRO_X_OUT |
+                           PIOS_ICM20602_FIFO_GYRO_Y_OUT | PIOS_ICM20602_FIFO_GYRO_Z_OUT,
     .Smpl_rate_div_no_dlp = 0,
     .Smpl_rate_div_dlp    = 1,     /* 1kHz internal / (1+1) = 500Hz          */
-    .interrupt_cfg        = PIOS_MPU6000_INT_CLR_ANYRD,
-    .interrupt_en         = PIOS_MPU6000_INTEN_DATA_RDY,
-    .User_ctl             = PIOS_MPU6000_USERCTL_DIS_I2C,
-    .Pwr_mgmt_clk         = PIOS_MPU6000_PWRMGMT_PLL_X_CLK,
-    .accel_range          = PIOS_MPU6000_ACCEL_8G,
-    .gyro_range           = PIOS_MPU6000_SCALE_2000_DEG,
+    .interrupt_cfg        = PIOS_ICM20602_INT_CLR_ANYRD,
+    .interrupt_en         = PIOS_ICM20602_INTEN_DATA_RDY,
+    .User_ctl             = PIOS_ICM20602_USERCTL_DIS_I2C,
+    .Pwr_mgmt_clk         = PIOS_ICM20602_PWRMGMT_PLL_X_CLK,
+    .accel_range          = PIOS_ICM20602_ACCEL_8G,
+    .gyro_range           = PIOS_ICM20602_SCALE_2000_DEG,
     /* 188Hz DLPF, NOT 256Hz.
      *
-     * This one bites hard. PIOS_MPU6000_ConfigureRanges() picks the sample
+     * This one bites hard. PIOS_ICM20602_ConfigureRanges() picks the sample
      * rate divider like this:
      *
      *   SMPLRT_DIV = (filter == LOWPASS_256_HZ) ? Smpl_rate_div_no_dlp
@@ -154,14 +154,14 @@ const struct pios_mpu6000_cfg pios_mpu6000_cfg = {
      *
      * With a real DLPF selected the base rate is 1kHz and Smpl_rate_div_dlp
      * applies: 1000/(1+1) = 500Hz, matching PIOS_SENSOR_RATE. */
-    .filter               = PIOS_MPU6000_LOWPASS_188_HZ,
-    .orientation          = PIOS_MPU6000_TOP_0DEG,
+    .filter               = PIOS_ICM20602_DLPF_176HZ,
+    .orientation          = PIOS_ICM20602_TOP_0DEG,
     .fast_prescaler       = PIOS_SPI_PRESCALER_4,
     .std_prescaler        = PIOS_SPI_PRESCALER_64,
     .max_downsample       = 1,
 };
 
-#endif /* PIOS_INCLUDE_MPU6000 */
+#endif /* PIOS_INCLUDE_ICM20602 */
 
 /* ---------------------------------------------------------------------- *
  * UARTs

@@ -1,8 +1,22 @@
 diff --git a/flight/modules/Attitude/attitude.c b/flight/modules/Attitude/attitude.c
-index 57c978da2..cd03acbe5 100644
+index 57c978da2..037893150 100644
 --- a/flight/modules/Attitude/attitude.c
 +++ b/flight/modules/Attitude/attitude.c
-@@ -83,7 +83,16 @@ PERF_DEFINE_COUNTER(counterAtt);
+@@ -64,7 +64,13 @@
+ 
+ #include <pios_sensors.h>
+ #include <pios_adxl345.h>
++#if defined(PIOS_INCLUDE_ICM20602)
++/* This target's IMU is an ICM-20602, which has its own driver -- the parts
++ * differ in temperature scaling, accel DLPF and filter bandwidths. */
++#include <pios_icm20602.h>
++#else
+ #include <pios_mpu6000.h>
++#endif
+ 
+ #include "CoordinateConversions.h"
+ #include <pios_notify.h>
+@@ -83,7 +89,16 @@ PERF_DEFINE_COUNTER(counterAtt);
  // - 0xA7710004 number of accel samples read for each loop (cc only).
  
  // Private constants
@@ -19,7 +33,7 @@ index 57c978da2..cd03acbe5 100644
  #define TASK_PRIORITY       (tskIDLE_PRIORITY + 3)
  
  // Attitude module loop interval (defined by sensor rate in pios_config.h)
-@@ -115,7 +124,9 @@ static void AttitudeTask(void *parameters);
+@@ -115,7 +130,9 @@ static void AttitudeTask(void *parameters);
  static float gyro_correct_int[3] = { 0, 0, 0 };
  static xQueueHandle gyro_queue;
  
@@ -29,7 +43,40 @@ index 57c978da2..cd03acbe5 100644
  static int32_t updateSensorsCC3D(AccelStateData *accelStateData, GyroStateData *gyrosData);
  static void updateAttitude(AccelStateData *, GyroStateData *);
  static void settingsUpdatedCb(UAVObjEvent *objEv);
-@@ -323,7 +334,12 @@ static void AttitudeTask(__attribute__((unused)) void *parameters)
+@@ -142,6 +159,20 @@ static bool apply_gyro_temp  = false;
+ static bool apply_accel_temp = false;
+ static AccelGyroSettingsgyro_temp_coeffData gyro_temp_coeff;;
+ static AccelGyroSettingsaccel_temp_coeffData accel_temp_coeff;
++/*
++ * Which Invensense driver provides the sensor queue.
++ *
++ * The ICM-20602 is NOT an MPU6000. It shares most of the register map, which
++ * is why one driver served both for a while, but its temperature scaling,
++ * accel DLPF register and DLPF bandwidths all differ -- so this target has
++ * its own driver rather than a WHO_AM_I exception in the shared one.
++ */
++#if defined(PIOS_INCLUDE_ICM20602)
++#define ATTITUDE_IMU_DRIVER PIOS_ICM20602_Driver
++#else
++#define ATTITUDE_IMU_DRIVER PIOS_MPU6000_Driver
++#endif
++
+ static AccelGyroSettingstemp_calibrated_extentData temp_calibrated_extent;
+ static float temperature = NAN;
+ static float accel_temp_bias[3] = { 0 };
+@@ -244,9 +275,9 @@ static void AttitudeTask(__attribute__((unused)) void *parameters)
+     bool cc3d = BOARDISCC3D;
+ 
+     if (cc3d) {
+-#if defined(PIOS_INCLUDE_MPU6000)
++#if defined(PIOS_INCLUDE_ICM20602) || defined(PIOS_INCLUDE_MPU6000)
+ 
+-        gyro_test    = PIOS_MPU6000_Driver.test(0);
++        gyro_test    = ATTITUDE_IMU_DRIVER.test(0);
+         mpu6000_data = pios_malloc(sizeof(PIOS_SENSORS_3Axis_SensorsWithTemp) + sizeof(Vector3i16) * 2);
+ #endif
+     } else {
+@@ -323,7 +354,12 @@ static void AttitudeTask(__attribute__((unused)) void *parameters)
          if (cc3d) {
              retval = updateSensorsCC3D(&accelState, &gyros);
          } else {
@@ -42,7 +89,7 @@ index 57c978da2..cd03acbe5 100644
          }
  
          // Only update attitude when sensor data is good
-@@ -348,6 +364,7 @@ static void AttitudeTask(__attribute__((unused)) void *parameters)
+@@ -348,6 +384,7 @@ static void AttitudeTask(__attribute__((unused)) void *parameters)
   * @param[in] attitudeRaw Populate the UAVO instead of saving right here
   * @return 0 if successfull, -1 if not
   */
@@ -50,7 +97,7 @@ index 57c978da2..cd03acbe5 100644
  static int32_t updateSensors(AccelStateData *accelState, GyroStateData *gyros)
  {
      struct pios_adxl345_data accel_data;
-@@ -461,6 +478,7 @@ static int32_t updateSensors(AccelStateData *accelState, GyroStateData *gyros)
+@@ -461,6 +498,7 @@ static int32_t updateSensors(AccelStateData *accelState, GyroStateData *gyros)
  
      return 0;
  }
@@ -58,10 +105,16 @@ index 57c978da2..cd03acbe5 100644
  
  /**
   * Get an update from the sensors
-@@ -477,7 +495,23 @@ static int32_t updateSensorsCC3D(AccelStateData *accelStateData, GyroStateData *
- #if defined(PIOS_INCLUDE_MPU6000)
+@@ -474,10 +512,26 @@ static int32_t updateSensorsCC3D(AccelStateData *accelStateData, GyroStateData *
+     float temp = 0;
+     uint8_t count   = 0;
  
-     xQueueHandle queue = PIOS_MPU6000_Driver.get_queue(0);
+-#if defined(PIOS_INCLUDE_MPU6000)
+-
+-    xQueueHandle queue = PIOS_MPU6000_Driver.get_queue(0);
++#if defined(PIOS_INCLUDE_ICM20602) || defined(PIOS_INCLUDE_MPU6000)
++
++    xQueueHandle queue = ATTITUDE_IMU_DRIVER.get_queue(0);
 +#if defined(USE_ESP32)
 +    /*
 +     * Wait TWO nominal sample periods, not one.
@@ -82,6 +135,24 @@ index 57c978da2..cd03acbe5 100644
      while (ret == pdTRUE) {
          gyros[0]  += mpu6000_data->sample[1].x;
          gyros[1]  += mpu6000_data->sample[1].y;
+@@ -548,7 +602,7 @@ static int32_t updateSensorsCC3D(AccelStateData *accelStateData, GyroStateData *
+     }
+     // gyrosData->temperature  = 35.0f + ((float)mpu6000_data.temperature + 512.0f) / 340.0f;
+     // accelsData->temperature = 35.0f + ((float)mpu6000_data.temperature + 512.0f) / 340.0f;
+-#endif /* if defined(PIOS_INCLUDE_MPU6000) */
++#endif /* if defined(PIOS_INCLUDE_ICM20602) || defined(PIOS_INCLUDE_MPU6000) */
+ 
+     if (rotate) {
+         // TODO: rotate sensors too so stabilization is well behaved
+@@ -772,7 +826,7 @@ static void settingsUpdatedCb(__attribute__((unused)) UAVObjEvent *objEv)
+ 
+     if (BOARDISCC3D) {
+         float scales[2];
+-        PIOS_MPU6000_Driver.get_scale(scales, 2, 0);
++        ATTITUDE_IMU_DRIVER.get_scale(scales, 2, 0);
+         accel_bias.X  = accelGyroSettings.accel_bias.X;
+         accel_bias.Y  = accelGyroSettings.accel_bias.Y;
+         accel_bias.Z  = accelGyroSettings.accel_bias.Z;
 diff --git a/flight/modules/Stabilization/innerloop.c b/flight/modules/Stabilization/innerloop.c
 index c983e8a07..0a5251b46 100644
 --- a/flight/modules/Stabilization/innerloop.c
@@ -139,301 +210,6 @@ index 468f7c008..30959c70f 100644
              break; // found
          }
          t++;
-diff --git a/flight/pios/common/pios_mpu6000.c b/flight/pios/common/pios_mpu6000.c
-index d30a8af64..fb28438f0 100644
---- a/flight/pios/common/pios_mpu6000.c
-+++ b/flight/pios/common/pios_mpu6000.c
-@@ -188,77 +188,155 @@ int32_t PIOS_MPU6000_Init(uint32_t spi_id, uint32_t slave_num, const struct pios
-  * \param[in] PIOS_MPU6000_ConfigTypeDef struct to be used to configure sensor.
-  *
-  */
--static void PIOS_MPU6000_Config(struct pios_mpu6000_cfg const *cfg)
-+
-+/*
-+ * Bounded register write.
-+ *
-+ * PIOS_MPU6000_Config() originally retried each write with an unbounded
-+ * `PIOS_MPU6000_SetRegBounded(...);`. SetReg reports failure when
-+ * the byte clocked back on MISO is non-zero, so a miswired or absent device
-+ * (MISO floating high = 0xFF) makes every write "fail" and board init hangs
-+ * forever, before telemetry ever starts. The board then looks completely
-+ * dead: no console output, no core dump, no reset.
-+ */
-+#define PIOS_MPU6000_SETREG_RETRIES 10
-+
-+static bool PIOS_MPU6000_SetRegBounded(uint8_t reg, uint8_t data)
-+{
-+    for (uint8_t i = 0; i < PIOS_MPU6000_SETREG_RETRIES; i++) {
-+        if (PIOS_MPU6000_SetReg(reg, data) == 0) {
-+            return true;
-+        }
-+    }
-+    return false;
-+}
-+
-+/*
-+ * Is the accelerometer producing usable numbers?
-+ *
-+ * A reset reloads the factory offset trim out of the part's OTP. If that
-+ * reload is cut short, one axis comes back with a garbage trim and its output
-+ * sits at exactly INT16_MIN for as long as the part stays powered -- observed
-+ * on an ICM-20602 as YA_OFFS reading 0x8020 instead of 0xFE20, pinning chip Y
-+ * at -32768 while X, Z and all three gyro axes stayed correct.
-+ *
-+ * Nothing in the configuration registers reflects this, so the only way to
-+ * catch it is to look at the data. Saturation on a board that is merely
-+ * sitting still is not a real reading.
-+ */
-+static bool PIOS_MPU6000_AccelSane(void)
-+{
-+    static const uint8_t msb[3] = {
-+        PIOS_MPU6000_ACCEL_X_OUT_MSB,
-+        PIOS_MPU6000_ACCEL_Y_OUT_MSB,
-+        PIOS_MPU6000_ACCEL_Z_OUT_MSB,
-+    };
-+
-+    for (uint8_t a = 0; a < 3; a++) {
-+        int32_t h = PIOS_MPU6000_GetReg(msb[a]);
-+        int32_t l = PIOS_MPU6000_GetReg(msb[a] + 1);
-+
-+        if (h < 0 || l < 0) {
-+            return false;
-+        }
-+        if ((int16_t)((h << 8) | l) == INT16_MIN) {
-+            return false;
-+        }
-+    }
-+    return true;
-+}
-+
-+/* How many reset/configure passes it took to get sane accel data. Left
-+ * visible so a board that only just scraped in can be told from one that
-+ * came up first time. */
-+uint8_t mpu6000_config_attempts;
-+
-+#define PIOS_MPU6000_CONFIG_ATTEMPTS 6
-+
-+static void PIOS_MPU6000_ConfigOnce(struct pios_mpu6000_cfg const *cfg)
- {
-     PIOS_MPU6000_Test();
- 
-     // Reset chip
--    while (PIOS_MPU6000_SetReg(PIOS_MPU6000_PWR_MGMT_REG, PIOS_MPU6000_PWRMGMT_IMU_RST) != 0) {
--        ;
-+    PIOS_MPU6000_SetRegBounded(PIOS_MPU6000_PWR_MGMT_REG, PIOS_MPU6000_PWRMGMT_IMU_RST);
-+
-+    /* Wait for DEVICE_RESET to actually self-clear rather than assuming a
-+     * fixed delay covers it, then give the OTP trim reload time to finish.
-+     * The original 50ms flat wait lost this race on roughly half of all
-+     * boots -- see PIOS_MPU6000_AccelSane() for what that looks like. */
-+    for (uint16_t i = 0; i < 250; i++) {
-+        int32_t pm = PIOS_MPU6000_GetReg(PIOS_MPU6000_PWR_MGMT_REG);
-+
-+        if (pm >= 0 && !(pm & PIOS_MPU6000_PWRMGMT_IMU_RST)) {
-+            break;
-+        }
-+        PIOS_DELAY_WaitmS(1);
-     }
--    PIOS_DELAY_WaitmS(50);
-+    PIOS_DELAY_WaitmS(100);
- 
-     // Reset chip and fifo
--    while (PIOS_MPU6000_SetReg(PIOS_MPU6000_USER_CTRL_REG,
-+    PIOS_MPU6000_SetRegBounded(PIOS_MPU6000_USER_CTRL_REG,
-                                PIOS_MPU6000_USERCTL_GYRO_RST |
-                                PIOS_MPU6000_USERCTL_SIG_COND |
--                               PIOS_MPU6000_USERCTL_FIFO_RST) != 0) {
--        ;
--    }
-+                               PIOS_MPU6000_USERCTL_FIFO_RST);
- 
-     // Wait for reset to finish
--    while (PIOS_MPU6000_GetReg(PIOS_MPU6000_USER_CTRL_REG) &
--           (PIOS_MPU6000_USERCTL_GYRO_RST |
--            PIOS_MPU6000_USERCTL_SIG_COND |
--            PIOS_MPU6000_USERCTL_FIFO_RST)) {
--        ;
-+    /* Bounded for the same reason as the writes above. */
-+    for (uint8_t i = 0; i < PIOS_MPU6000_SETREG_RETRIES; i++) {
-+        int32_t uc = PIOS_MPU6000_GetReg(PIOS_MPU6000_USER_CTRL_REG);
-+
-+        if (uc < 0 || !(uc & (PIOS_MPU6000_USERCTL_GYRO_RST |
-+                              PIOS_MPU6000_USERCTL_SIG_COND |
-+                              PIOS_MPU6000_USERCTL_FIFO_RST))) {
-+            break;
-+        }
-+        PIOS_DELAY_WaitmS(1);
-     }
-     PIOS_DELAY_WaitmS(10);
-     // Power management configuration
--    while (PIOS_MPU6000_SetReg(PIOS_MPU6000_PWR_MGMT_REG, cfg->Pwr_mgmt_clk) != 0) {
--        ;
--    }
-+    PIOS_MPU6000_SetRegBounded(PIOS_MPU6000_PWR_MGMT_REG, cfg->Pwr_mgmt_clk);
- 
-     // Interrupt configuration
--    while (PIOS_MPU6000_SetReg(PIOS_MPU6000_INT_CFG_REG, cfg->interrupt_cfg) != 0) {
--        ;
--    }
-+    PIOS_MPU6000_SetRegBounded(PIOS_MPU6000_INT_CFG_REG, cfg->interrupt_cfg);
- 
-     // Interrupt configuration
--    while (PIOS_MPU6000_SetReg(PIOS_MPU6000_INT_EN_REG, cfg->interrupt_en) != 0) {
--        ;
--    }
-+    PIOS_MPU6000_SetRegBounded(PIOS_MPU6000_INT_EN_REG, cfg->interrupt_en);
- 
-     // FIFO storage
--    while (PIOS_MPU6000_SetReg(PIOS_MPU6000_FIFO_EN_REG, cfg->Fifo_store) != 0) {
--        ;
--    }
-+    PIOS_MPU6000_SetRegBounded(PIOS_MPU6000_FIFO_EN_REG, cfg->Fifo_store);
-     PIOS_MPU6000_ConfigureRanges(cfg->gyro_range, cfg->accel_range, cfg->filter);
-     // Interrupt configuration
--    while (PIOS_MPU6000_SetReg(PIOS_MPU6000_USER_CTRL_REG, cfg->User_ctl) != 0) {
--        ;
--    }
-+    PIOS_MPU6000_SetRegBounded(PIOS_MPU6000_USER_CTRL_REG, cfg->User_ctl);
- 
-     // Interrupt configuration
--    while (PIOS_MPU6000_SetReg(PIOS_MPU6000_PWR_MGMT_REG, cfg->Pwr_mgmt_clk) != 0) {
--        ;
--    }
-+    PIOS_MPU6000_SetRegBounded(PIOS_MPU6000_PWR_MGMT_REG, cfg->Pwr_mgmt_clk);
- 
-     // Interrupt configuration
--    while (PIOS_MPU6000_SetReg(PIOS_MPU6000_INT_CFG_REG, cfg->interrupt_cfg) != 0) {
--        ;
--    }
-+    PIOS_MPU6000_SetRegBounded(PIOS_MPU6000_INT_CFG_REG, cfg->interrupt_cfg);
- 
-     // Interrupt configuration
--    while (PIOS_MPU6000_SetReg(PIOS_MPU6000_INT_EN_REG, cfg->interrupt_en) != 0) {
--        ;
--    }
-+    PIOS_MPU6000_SetRegBounded(PIOS_MPU6000_INT_EN_REG, cfg->interrupt_en);
-     if ((PIOS_MPU6000_GetReg(PIOS_MPU6000_INT_EN_REG)) != cfg->interrupt_en) {
-         return;
-     }
- 
-     mpu6000_configured = true;
- }
-+
-+static void PIOS_MPU6000_Config(struct pios_mpu6000_cfg const *cfg)
-+{
-+    for (uint8_t attempt = 1; attempt <= PIOS_MPU6000_CONFIG_ATTEMPTS; attempt++) {
-+        mpu6000_config_attempts = attempt;
-+        PIOS_MPU6000_ConfigOnce(cfg);
-+
-+        if (mpu6000_configured && PIOS_MPU6000_AccelSane()) {
-+            return;
-+        }
-+    }
-+    /* Out of attempts. Leave mpu6000_configured as the last pass set it and
-+     * let the board-level WHO_AM_I/alarm reporting carry the bad news --
-+     * refusing to configure at all would hang module init. */
-+}
- /**
-  * @brief Configures Gyro, accel and Filter ranges/setings
-  * @return 0 if successful, -1 if device has not been initialized
-@@ -273,29 +351,21 @@ int32_t PIOS_MPU6000_ConfigureRanges(
-     }
- 
-     // update filter settings
--    while (PIOS_MPU6000_SetReg(PIOS_MPU6000_DLPF_CFG_REG, filterSetting) != 0) {
--        ;
--    }
-+    PIOS_MPU6000_SetRegBounded(PIOS_MPU6000_DLPF_CFG_REG, filterSetting);
- 
-     // Sample rate divider, chosen upon digital filtering settings
--    while (PIOS_MPU6000_SetReg(PIOS_MPU6000_SMPLRT_DIV_REG,
-+    PIOS_MPU6000_SetRegBounded(PIOS_MPU6000_SMPLRT_DIV_REG,
-                                filterSetting == PIOS_MPU6000_LOWPASS_256_HZ ?
--                               dev->cfg->Smpl_rate_div_no_dlp : dev->cfg->Smpl_rate_div_dlp) != 0) {
--        ;
--    }
-+                               dev->cfg->Smpl_rate_div_no_dlp : dev->cfg->Smpl_rate_div_dlp);
- 
-     dev->filter = filterSetting;
- 
-     // Gyro range
--    while (PIOS_MPU6000_SetReg(PIOS_MPU6000_GYRO_CFG_REG, gyroRange) != 0) {
--        ;
--    }
-+    PIOS_MPU6000_SetRegBounded(PIOS_MPU6000_GYRO_CFG_REG, gyroRange);
- 
-     dev->gyro_range = gyroRange;
-     // Set the accel range
--    while (PIOS_MPU6000_SetReg(PIOS_MPU6000_ACCEL_CFG_REG, accelRange) != 0) {
--        ;
--    }
-+    PIOS_MPU6000_SetRegBounded(PIOS_MPU6000_ACCEL_CFG_REG, accelRange);
- 
-     dev->accel_range = accelRange;
-     return 0;
-@@ -342,8 +412,14 @@ static int32_t PIOS_MPU6000_ClaimBusISR(bool *woken, bool fast_spi)
-     if (PIOS_SPI_ClaimBusISR(dev->spi_id, woken) != 0) {
-         return -2;
-     }
--    PIOS_MPU6000_SetSpeed(fast_spi);
-+    /* Select the slave BEFORE the speed, the same order PIOS_MPU6000_ClaimBus()
-+     * uses. A PIOS_SPI back end that tracks speed per slave cannot honour
-+     * SetSpeed until it knows which slave is being addressed; called the other
-+     * way round it silently keeps whatever speed the previous transfer left
-+     * behind, which on the ESP32 port made the streaming reads run at the
-+     * configuration clock instead of the fast one. */
-     PIOS_SPI_RC_PinSet(dev->spi_id, dev->slave_num, 0);
-+    PIOS_MPU6000_SetSpeed(fast_spi);
-     return 0;
- }
- 
-@@ -516,20 +592,42 @@ static float PIOS_MPU6000_GetAccelScale()
-  * \return 0 if test succeeded
-  * \return non-zero value if test succeeded
-  */
-+/*
-+ * Parts this driver can drive.
-+ *
-+ * The MPU-6500 family (which includes the ICM-206xx) keeps the MPU6000's
-+ * register map for everything this driver touches: the 14-byte burst from
-+ * ACCEL_XOUT_H (0x3B) is the same AX/AY/AZ/TEMP/GX/GY/GZ layout,
-+ * GYRO_CONFIG (0x1B) / ACCEL_CONFIG (0x1C) / CONFIG (0x1A) / SMPLRT_DIV
-+ * (0x19) / INT_ENABLE (0x38) / USER_CTRL (0x6A) / PWR_MGMT_1 (0x6B) all
-+ * match, and the full-scale codes give identical LSB-per-unit scaling. Only
-+ * WHO_AM_I differs, so the ID gate is the only thing that has to know.
-+ *
-+ * The ICM-20602 additionally has ACCEL_CONFIG2 (0x1D) for the accel DLPF,
-+ * which the MPU6000 lacks. Its reset default (218Hz BW, 1kHz output) is what
-+ * we want, so it is deliberately left alone.
-+ */
-+static const uint8_t pios_mpu6000_known_ids[] = {
-+    0x68, /* MPU6000 / MPU6050 */
-+    0x70, /* MPU6500            */
-+    0x12, /* ICM-20602          */
-+};
-+
- static int32_t PIOS_MPU6000_Test(void)
- {
--    /* Verify that ID matches (MPU6000 ID is 0x69) */
-     int32_t mpu6000_id = PIOS_MPU6000_ReadID();
- 
-     if (mpu6000_id < 0) {
-         return -1;
-     }
- 
--    if (mpu6000_id != 0x68) {
--        return -2;
-+    for (uint8_t i = 0; i < NELEMENTS(pios_mpu6000_known_ids); i++) {
-+        if (mpu6000_id == pios_mpu6000_known_ids[i]) {
-+            return 0;
-+        }
-     }
- 
--    return 0;
-+    return -2;
- }
- 
- /**
 diff --git a/flight/pios/inc/pios_debug.h b/flight/pios/inc/pios_debug.h
 index 4d481dfbd..5a5fb1527 100644
 --- a/flight/pios/inc/pios_debug.h

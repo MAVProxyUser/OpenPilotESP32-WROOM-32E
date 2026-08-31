@@ -510,17 +510,17 @@ void PIOS_Board_Init(void)
     }
 
 
-#ifdef PIOS_INCLUDE_MPU6000
+#ifdef PIOS_INCLUDE_ICM20602
     /* Slave 0 on the sensor bus.
      *
      * Two things worth knowing here:
      *
-     * 1. PIOS_MPU6000_Init() returns 0 as long as its allocation succeeds.
-     *    PIOS_MPU6000_Config() calls PIOS_MPU6000_Test() but ignores the
+     * 1. PIOS_ICM20602_Init() returns 0 as long as its allocation succeeds.
+     *    PIOS_ICM20602_Config() calls PIOS_ICM20602_Test() but ignores the
      *    result, so a missing or unrecognised part does NOT show up in the
      *    return value. WHO_AM_I is read separately below to report it.
      *
-     * 2. PIOS_MPU6000_Register() and the data-ready task are started
+     * 2. PIOS_ICM20602_Register() and the data-ready task are started
      *    REGARDLESS of whether a sensor answered. That looks wrong, and it
      *    is what an earlier revision "fixed" -- but skipping the registration
      *    hangs module init: the sensor consumers wait on a PIOS_SENSORS
@@ -529,9 +529,9 @@ void PIOS_Board_Init(void)
      *    arm is far more useful than one that silently wedges, so register
      *    unconditionally and let the alarm carry the bad news.
      */
-    PIOS_MPU6000_Init(pios_spi_sensors_id, 0, &pios_mpu6000_cfg);
+    PIOS_ICM20602_Init(pios_spi_sensors_id, 0, &pios_icm20602_cfg);
 
-    int32_t imu_id = PIOS_MPU6000_ReadID();
+    int32_t imu_id = PIOS_ICM20602_ReadID();
 
     if (imu_id != 0x68 && imu_id != 0x70 && imu_id != 0x12) {
         printf("[BOARD] no usable IMU on SPI3 (SCLK=5 MOSI=18 MISO=19 CS=14): WHO_AM_I=0x%02X "
@@ -542,15 +542,15 @@ void PIOS_Board_Init(void)
         printf("[BOARD] IMU found, WHO_AM_I=0x%02X\n", (unsigned)imu_id);
     }
 
-    PIOS_MPU6000_Register();
+    PIOS_ICM20602_Register();
 
     /* The data-ready path runs in a task, not an ISR -- see
      * pios/esp32/pios_exti.c for the two reasons why. */
-    if (PIOS_ESP32_EXTI_Init(&pios_exti_mpu6000_cfg) != 0) {
-        printf("[BOARD] failed to start the MPU6000 data-ready task\n");
+    if (PIOS_ESP32_EXTI_Init(&pios_exti_icm20602_cfg) != 0) {
+        printf("[BOARD] failed to start the ICM-20602 data-ready task\n");
         AlarmsSet(SYSTEMALARMS_ALARM_BOOTFAULT, SYSTEMALARMS_ALARM_CRITICAL);
     }
-#endif /* PIOS_INCLUDE_MPU6000 */
+#endif /* PIOS_INCLUDE_ICM20602 */
 
     /* --- Actuator outputs --------------------------------------------- */
 #ifdef PIOS_INCLUDE_SERVO

@@ -61,7 +61,9 @@ set(PIOS_COMMON_SRCS
     ${FLIGHT}/pios/common/pios_sensors.c
     ${FLIGHT}/pios/common/pios_task_monitor.c
     ${FLIGHT}/pios/common/pios_callbackscheduler.c
-    ${FLIGHT}/pios/common/pios_mpu6000.c
+    # ICM-20602, not MPU6000 -- see the header of this file for why it is
+    # a separate driver rather than an exception in the shared one.
+    ${ESP32PORT}/pios/esp32/pios_icm20602.c
     ${FLIGHT}/pios/common/pios_notify.c
 )
 
