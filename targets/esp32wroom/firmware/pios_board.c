@@ -100,14 +100,6 @@ void PIOS_DEBUGLOG_UAVObject(__attribute__((unused)) uint32_t objid,
 uintptr_t pios_uavo_settings_fs_id;
 uintptr_t pios_user_fs_id;
 
-int32_t PIOS_FLASHFS_GetStats(uintptr_t fs_id, struct PIOS_FLASHFS_Stats *stats);
-int32_t PIOS_FLASHFS_GetStats(__attribute__((unused)) uintptr_t fs_id,
-                              __attribute__((unused)) struct PIOS_FLASHFS_Stats *stats)
-{
-    printf("[BOARD] PIOS_FLASHFS_GetStats called with no filesystem backend\n");
-    return -1;
-}
-
 /**
  * Bring up a COM device on one of the ESP32 UARTs.
  *
@@ -159,6 +151,13 @@ static void board_apply_default_airframe(void)
 {
     MixerSettingsData mixer;
     ActuatorSettingsData act;
+
+    /* Stored settings win. These defaults exist so a freshly flashed board is
+     * usable, not to overwrite what the operator saved -- without this check
+     * every reboot would quietly undo their calibration. */
+    if (PIOS_ESP32_FLASHFS_IsProvisioned()) {
+        return;
+    }
 
     MixerSettingsGet(&mixer);
 
@@ -250,6 +249,7 @@ static void board_apply_default_airframe(void)
         mc.ChannelNumber.Yaw        = 4;
         mc.ChannelNumber.FlightMode = 5;
         ManualControlSettingsSet(&mc);
+        UAVObjSave(ManualControlSettingsHandle(), 0);
     }
 
     /* 50Hz is the rate every analogue ESC understands. The MCPWM driver
@@ -258,6 +258,12 @@ static void board_apply_default_airframe(void)
      * ESCs accept. */
     act.BankUpdateFreq[0] = 50;
     ActuatorSettingsSet(&act);
+
+    UAVObjSave(MixerSettingsHandle(), 0);
+    UAVObjSave(ActuatorSettingsHandle(), 0);
+
+    /* Everything above is now on flash; do not do this again. */
+    PIOS_ESP32_FLASHFS_MarkProvisioned();
 }
 
 void PIOS_Board_Init(void)
@@ -279,6 +285,26 @@ void PIOS_Board_Init(void)
     /* Object plumbing has to exist before anything tries to publish. */
     PIOS_CALLBACKSCHEDULER_Initialize();
     EventDispatcherInitialize();
+    /* Drag the real UAVObjSave/UAVObjLoad into the link -- see the comment on
+     * this symbol in uavobjectpersistence.c. Without it the weak stubs win,
+     * every save returns success, and nothing is ever stored. */
+    {
+        extern const int uavobject_persistence_linked;
+        static const int *const keep_persistence __attribute__((used)) =
+            &uavobject_persistence_linked;
+        (void)keep_persistence;
+    }
+
+    /* Settings storage first: UAVObjRegister() calls UAVObjLoad() for every
+     * object as it registers, so the filesystem has to be open by then or
+     * every setting silently comes up on its compiled-in default. */
+    if (PIOS_ESP32_FLASHFS_Init(&pios_uavo_settings_fs_id) != 0) {
+        /* Not fatal -- the board still flies, it just forgets. Say so once,
+         * because "my tuning keeps reverting" is otherwise a long afternoon. */
+        printf("[BOARD] settings storage unavailable, settings will not persist\n");
+        pios_uavo_settings_fs_id = 0;
+    }
+
     UAVObjInitialize();
     UAVObjectsInitializeAll();
 

@@ -108,7 +108,6 @@ CONFIG_ESP_CONSOLE_UART_CUSTOM_NUM_1=y
 # chip select on this board.
 CONFIG_ESP_CONSOLE_UART_TX_GPIO=22
 CONFIG_ESP_CONSOLE_UART_RX_GPIO=23
-# Match PIOS's telemetry rate, so a console temporarily moved to UART0 for
-# debugging stays readable across the point where PIOS takes that UART over
-# and reconfigures it to 57600. ROM bootloader lines still arrive at 115200.
+# Match PIOS's telemetry rate so a console temporarily moved to UART0 stays
+# readable across the handover. ROM bootloader lines still arrive at 115200.
 CONFIG_ESP_CONSOLE_UART_BAUDRATE=57600

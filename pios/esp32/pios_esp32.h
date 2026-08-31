@@ -122,6 +122,12 @@ static inline BaseType_t pios_esp32_task_create(TaskFunction_t fn, const char *n
 #include <pios_debug.h>
 #include <pios_debuglog.h>
 
+#ifdef PIOS_INCLUDE_FLASH
+/* Settings storage. The STM32 branch of pios.h pulls this in the same way;
+ * uavobjectpersistence.c expects it to arrive via pios.h. */
+#include <pios_flashfs.h>
+#endif
+
 /* PIOS common functions */
 #include <pios_crc.h>
 

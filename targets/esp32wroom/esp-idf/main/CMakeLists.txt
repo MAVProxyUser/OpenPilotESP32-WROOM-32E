@@ -44,6 +44,7 @@ set(PIOS_ESP32_SRCS
     ${ESP32PORT}/pios/esp32/pios_exti.c
     ${ESP32PORT}/pios/esp32/pios_ppm.c
     ${ESP32PORT}/pios/esp32/pios_dsm.c
+    ${ESP32PORT}/pios/esp32/pios_flashfs_nvs.c
     ${ESP32PORT}/pios/esp32/pios_task_runtime.c
 )
 
@@ -67,6 +68,9 @@ set(PIOS_COMMON_SRCS
 # --- UAVObject / UAVTalk machinery -------------------------------------
 set(UAVO_SRCS
     ${FLIGHT}/uavobjects/uavobjectmanager.c
+    # Real UAVObjSave/UAVObjLoad. Without this they are weak stubs and
+    # nothing persists no matter what PIOS_FLASHFS does.
+    ${FLIGHT}/uavobjects/uavobjectpersistence.c
     ${FLIGHT}/uavobjects/eventdispatcher.c
     ${FLIGHT}/uavtalk/uavtalk.c
 )

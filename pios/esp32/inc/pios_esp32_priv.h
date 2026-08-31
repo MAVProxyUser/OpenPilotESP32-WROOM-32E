@@ -172,6 +172,17 @@ extern void PIOS_ESP32_DSM_GetState(uint32_t *frames, bool *bind_attempted);
 extern const struct pios_rcvr_driver pios_esp32_dsm_rcvr_driver;
 
 /* ---------------------------------------------------------------------- *
+ * Settings storage (PIOS_FLASHFS on NVS)
+ * ---------------------------------------------------------------------- */
+
+/* Must run BEFORE UAVObjInitialize(): UAVObjRegister() calls UAVObjLoad() for
+ * every object as it registers, so the filesystem has to exist by then or
+ * every setting silently comes up on defaults. */
+extern int32_t PIOS_ESP32_FLASHFS_Init(uintptr_t *fs_id);
+extern bool PIOS_ESP32_FLASHFS_IsProvisioned(void);
+extern void PIOS_ESP32_FLASHFS_MarkProvisioned(void);
+
+/* ---------------------------------------------------------------------- *
  * Sensor data-ready ("EXTI")
  *
  * NOT an interrupt vector in the STM32 sense. On this target the GPIO ISR

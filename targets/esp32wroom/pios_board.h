@@ -80,6 +80,12 @@
 // -------------------------
 // PIOS_DSM  (Spektrum satellite on the aux UART)
 // -------------------------
+// -------------------------
+// Settings storage
+// -------------------------
+/* PIOS_FLASHFS backed by NVS -- see pios/esp32/pios_flashfs_nvs.c. */
+#define PIOS_INCLUDE_FLASH
+
 #define PIOS_INCLUDE_DSM
 /* A satellite reports 7 channels per frame; 12 covers the two-frame
  * (11ms) modes that interleave channels 8-11. */
