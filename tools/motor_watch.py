@@ -146,8 +146,18 @@ def main():
                         verdict = "HELD BACK: %s  <- stab correcting %s" % (
                             names, ", ".join(tilt))
                     else:
-                        verdict = "HELD BACK: %s  <- level board, so NOT " \
-                                  "attitude: check that ESC/motor" % names
+                        # Level board with a big sustained spread is USUALLY
+                        # integral windup, not hardware: on a bench the craft
+                        # cannot rotate, the correction never succeeds, and
+                        # the PID integrators accumulate until motors
+                        # saturate. Verified on this airframe: chopping
+                        # throttle (integral reset) brought all four back to
+                        # equal. Only suspect the ESC/motor if commands stay
+                        # equal and it still will not spin.
+                        verdict = "HELD BACK: %s  <- level board: likely " \
+                                  "INTEGRAL WINDUP (normal on bench). Chop " \
+                                  "throttle 2s, re-raise: equal=windup, " \
+                                  "still split=hardware" % names
                 else:
                     verdict = "all four equal -- if one is still not " \
                               "spinning, it is the ESC/motor, not the code"
