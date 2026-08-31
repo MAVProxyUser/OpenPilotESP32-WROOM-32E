@@ -33,6 +33,8 @@
 #include <uavobjectsinit.h>
 #include <hwsettings.h>
 #include <manualcontrolsettings.h>
+#include <mixersettings.h>
+#include <actuatorsettings.h>
 #include <taskinfo.h>
 #include <pios_com_priv.h>
 #include <pios_rcvr_priv.h>
@@ -141,6 +143,96 @@ static void board_com_init(uint32_t *com_id,
  * Runs from the init task, with the scheduler already going (ESP-IDF starts
  * it before app_main).
  */
+
+/* ---------------------------------------------------------------------- *
+ * Default airframe: Quad X
+ *
+ * This target has no settings filesystem (see the PIOS_FLASHFS stubs above),
+ * so anything the GCS writes lives in RAM and is gone at the next power-up.
+ * A quad whose mixer evaporates on reboot is worse than no mixer at all, so
+ * the Quad X configuration is compiled in here and reapplied every boot. The
+ * GCS can still change any of it at runtime -- the change just will not
+ * survive a reset until there is a real settings backend behind
+ * pios_uavo_settings_fs_id.
+ * ---------------------------------------------------------------------- */
+static void board_apply_default_airframe(void)
+{
+    MixerSettingsData mixer;
+    ActuatorSettingsData act;
+
+    MixerSettingsGet(&mixer);
+
+    /* The stock ThrottleCurve1 default is all zeros, so even a perfectly
+     * correct mixer commands nothing at any stick position. Linear 0..100%. */
+    mixer.ThrottleCurve1[0] = 0.0f;
+    mixer.ThrottleCurve1[1] = 0.25f;
+    mixer.ThrottleCurve1[2] = 0.5f;
+    mixer.ThrottleCurve1[3] = 0.75f;
+    mixer.ThrottleCurve1[4] = 1.0f;
+
+    /*
+     * Quad X, matching the table the GCS itself writes for this airframe
+     * (xMixer in configmultirotorwidget.cpp), scaled by 127. Yaw is negative
+     * for a CW prop and positive for CCW, so the diagonals pair up:
+     *
+     *   M1  front-left   GPIO15   pitch +1  roll +1  yaw -1   CW
+     *   M2  front-right  GPIO33   pitch +1  roll -1  yaw +1   CCW
+     *   M3  rear-right   GPIO27   pitch -1  roll -1  yaw -1   CW
+     *   M4  rear-left    GPIO12   pitch -1  roll +1  yaw +1   CCW
+     *
+     * "Front" is whichever way the IMU's +X points, NOT the ESP32 board --
+     * the sensor is on flying leads, so fix its orientation to the frame
+     * before trusting any of this.
+     */
+    mixer.Mixer1Type = MIXERSETTINGS_MIXER1TYPE_MOTOR;
+    mixer.Mixer1Vector.ThrottleCurve1 = 127;
+    mixer.Mixer1Vector.ThrottleCurve2 = 0;
+    mixer.Mixer1Vector.Roll  =  127;
+    mixer.Mixer1Vector.Pitch =  127;
+    mixer.Mixer1Vector.Yaw   = -127;
+
+    mixer.Mixer2Type = MIXERSETTINGS_MIXER2TYPE_MOTOR;
+    mixer.Mixer2Vector.ThrottleCurve1 = 127;
+    mixer.Mixer2Vector.ThrottleCurve2 = 0;
+    mixer.Mixer2Vector.Roll  = -127;
+    mixer.Mixer2Vector.Pitch =  127;
+    mixer.Mixer2Vector.Yaw   =  127;
+
+    mixer.Mixer3Type = MIXERSETTINGS_MIXER3TYPE_MOTOR;
+    mixer.Mixer3Vector.ThrottleCurve1 = 127;
+    mixer.Mixer3Vector.ThrottleCurve2 = 0;
+    mixer.Mixer3Vector.Roll  = -127;
+    mixer.Mixer3Vector.Pitch = -127;
+    mixer.Mixer3Vector.Yaw   = -127;
+
+    mixer.Mixer4Type = MIXERSETTINGS_MIXER4TYPE_MOTOR;
+    mixer.Mixer4Vector.ThrottleCurve1 = 127;
+    mixer.Mixer4Vector.ThrottleCurve2 = 0;
+    mixer.Mixer4Vector.Roll  =  127;
+    mixer.Mixer4Vector.Pitch = -127;
+    mixer.Mixer4Vector.Yaw   =  127;
+
+    MixerSettingsSet(&mixer);
+
+    ActuatorSettingsGet(&act);
+    for (uint8_t i = 0; i < 4; i++) {
+        act.ChannelType[i]    = ACTUATORSETTINGS_CHANNELTYPE_PWM;
+        act.ChannelAddr[i]    = i;
+        /* Min == Neutral means the motors sit at their stop when armed.
+         * MotorsSpinWhileArmed stays FALSE. Raise Neutral only after the
+         * ESCs have been calibrated against these endpoints. */
+        act.ChannelMin[i]     = 1000;
+        act.ChannelNeutral[i] = 1000;
+        act.ChannelMax[i]     = 2000;
+    }
+    /* 50Hz is the rate every analogue ESC understands. The MCPWM driver
+     * applies one rate to all channels (see PIOS_Servo_SetHz), so this is
+     * effectively a single global setting -- raise it once you know what the
+     * ESCs accept. */
+    act.BankUpdateFreq[0] = 50;
+    ActuatorSettingsSet(&act);
+}
+
 void PIOS_Board_Init(void)
 {
     PIOS_DELAY_Init();
@@ -162,6 +254,10 @@ void PIOS_Board_Init(void)
     EventDispatcherInitialize();
     UAVObjInitialize();
     UAVObjectsInitializeAll();
+
+    /* Compiled-in Quad X mixer and output endpoints -- see the comment on the
+     * function for why this is not left to the GCS. */
+    board_apply_default_airframe();
 
     /* No settings filesystem on this target yet (see pios_config.h), so
      * HwSettings comes up on defaults every boot. Say so once, plainly --
