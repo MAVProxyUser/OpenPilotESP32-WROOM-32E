@@ -480,6 +480,221 @@ static void board_pwm_selftest(void)
 }
 #endif /* BOARD_PWM_SELFTEST */
 
+
+/* ---------------------------------------------------------------------- *
+ * RF motor idle-point calibration -- no USB anywhere near a battery.
+ *
+ * Battery and USB must never be connected together on this airframe (the
+ * BEC's 5V feeds VUSB), so anything that needs powered ESCs is driven over
+ * the RC link and answered on the LED. User's protocol, near verbatim:
+ *
+ *   ENTER  power up with THROTTLE FULL and the flight-mode switch at either
+ *          extreme, within the first seconds of RC link. (Throttle-full at
+ *          power-on is never true in normal use, and no TX means no entry.)
+ *          LED gives 5 quick blinks, then waits for throttle LOW.
+ *   PHASE  for motor N (1..4) the LED blinks N times, pauses, repeats.
+ *          The throttle stick drives THAT MOTOR ALONE, live:
+ *          1000..1400us across the stick. Raise it until the motor just
+ *          spins.
+ *   MARK   flick the switch to CENTER: the current value is captured,
+ *          the motor stops, LED goes solid a moment -- return the switch
+ *          to the entry extreme and the next phase begins.
+ *   ABORT  switch to the OPPOSITE extreme at any time: nothing is saved.
+ *   DONE   after motor 4: ChannelNeutral[0..3] = captured + 20 (capped
+ *          1200), saved to flash. LED strobes 2s, then double-pulses until
+ *          power-off. Power cycle to fly.
+ *
+ * Runs at the tail of PIOS_Board_Init: modules have not started, so nothing
+ * fights the servo writes -- same trick as BOARD_PWM_SELFTEST, but gated on
+ * a stick position instead of a build flag, because reflashing between
+ * bench sessions is exactly the friction this exists to remove.
+ * ---------------------------------------------------------------------- */
+#define MCAL_LINK_WAIT_MS  2500   /* no RC inside this -> normal boot      */
+#define MCAL_MAX_US        1400   /* stick full = this; plenty to spin up  */
+
+static float mcal_scale(int32_t raw, int16_t min, int16_t neutral, int16_t max)
+{
+    /* Same shape as receiver.c's scaleChannel, reversal included. */
+    if (raw < 0) {
+        return 0.0f;
+    }
+    float v;
+
+    if ((max > min && raw >= neutral) || (min > max && raw <= neutral)) {
+        v = (max != neutral) ? (float)(raw - neutral) / (float)(max - neutral) : 0.0f;
+    } else {
+        v = (min != neutral) ? (float)(raw - neutral) / (float)(neutral - min) : 0.0f;
+    }
+    if (v > 1.0f) {
+        v = 1.0f;
+    }
+    if (v < -1.0f) {
+        v = -1.0f;
+    }
+    return v;
+}
+
+static void mcal_all_min(void)
+{
+    for (uint8_t ch = 0; ch < 4; ch++) {
+        PIOS_Servo_Set(ch, 1000);
+    }
+    PIOS_Servo_Update();
+}
+
+static void board_motor_cal_rf(uint32_t dsm_rcvr_id)
+{
+    ManualControlSettingsData mc;
+
+    ManualControlSettingsGet(&mc);
+    uint8_t thr_ch = mc.ChannelNumber.Throttle;      /* 1-indexed */
+    uint8_t sw_ch  = mc.ChannelNumber.FlightMode;
+
+    if (!thr_ch || !sw_ch) {
+        return;
+    }
+
+    /* Wait briefly for RC. A bench boot with no TX must not stall. */
+    uint32_t t0 = xTaskGetTickCount();
+    int32_t raw;
+
+    do {
+        raw = PIOS_RCVR_Read(dsm_rcvr_id, thr_ch);
+        if (raw > 0 && raw < 3000) {
+            break;
+        }
+        PIOS_DELAY_WaitmS(50);
+    } while ((xTaskGetTickCount() - t0) * portTICK_PERIOD_MS < MCAL_LINK_WAIT_MS);
+    if (!(raw > 0 && raw < 3000)) {
+        return;                                       /* no RC -> normal boot */
+    }
+
+    float thr = mcal_scale(raw, mc.ChannelMin.Throttle,
+                           mc.ChannelNeutral.Throttle, mc.ChannelMax.Throttle);
+    float sw  = mcal_scale(PIOS_RCVR_Read(dsm_rcvr_id, sw_ch),
+                           mc.ChannelMin.FlightMode,
+                           mc.ChannelNeutral.FlightMode, mc.ChannelMax.FlightMode);
+
+    /* Entry: throttle FULL and switch at an extreme. Anything else: fly. */
+    if (thr < 0.8f || (sw < 0.6f && sw > -0.6f)) {
+        return;
+    }
+    float entry_sign = (sw > 0) ? 1.0f : -1.0f;
+
+    /* Welcome: 5 quick blinks, then demand throttle low before any motor
+     * can be driven. */
+    for (uint8_t i = 0; i < 10; i++) {
+        PIOS_LED_Toggle(PIOS_LED_HEARTBEAT);
+        PIOS_DELAY_WaitmS(80);
+    }
+    do {
+        thr = mcal_scale(PIOS_RCVR_Read(dsm_rcvr_id, thr_ch),
+                         mc.ChannelMin.Throttle, mc.ChannelNeutral.Throttle,
+                         mc.ChannelMax.Throttle);
+        PIOS_DELAY_WaitmS(50);
+    } while (thr > -0.8f);
+
+    uint16_t captured[4] = { 1000, 1000, 1000, 1000 };
+    uint32_t blink_t = 0;
+    uint8_t  blink_n = 0;
+    bool     aborted = false;
+
+    for (uint8_t m = 0; m < 4 && !aborted; m++) {
+        bool marked = false;
+
+        while (!marked) {
+            thr = mcal_scale(PIOS_RCVR_Read(dsm_rcvr_id, thr_ch),
+                             mc.ChannelMin.Throttle, mc.ChannelNeutral.Throttle,
+                             mc.ChannelMax.Throttle);
+            sw = mcal_scale(PIOS_RCVR_Read(dsm_rcvr_id, sw_ch),
+                            mc.ChannelMin.FlightMode, mc.ChannelNeutral.FlightMode,
+                            mc.ChannelMax.FlightMode);
+
+            /* Stick 0..1 -> this motor alone, 1000..MCAL_MAX_US. */
+            float frac = (thr + 1.0f) * 0.5f;
+            uint16_t us = 1000 + (uint16_t)(frac * (MCAL_MAX_US - 1000));
+
+            for (uint8_t ch = 0; ch < 4; ch++) {
+                PIOS_Servo_Set(ch, (ch == m) ? us : 1000);
+            }
+            PIOS_Servo_Update();
+
+            /* LED: blink (m+1) times, pause, repeat. */
+            uint32_t now = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+            if (now - blink_t > 250) {
+                blink_t = now;
+                uint8_t cycle = (m + 1) * 2 + 3;      /* on/offs + pause    */
+                if (blink_n < (uint8_t)((m + 1) * 2)) {
+                    PIOS_LED_Toggle(PIOS_LED_HEARTBEAT);
+                } else {
+                    PIOS_LED_Off(PIOS_LED_HEARTBEAT);
+                }
+                blink_n = (uint8_t)((blink_n + 1) % cycle);
+            }
+
+            if (sw * entry_sign < -0.6f) {            /* opposite extreme   */
+                aborted = true;
+                break;
+            }
+            if (sw > -0.3f && sw < 0.3f) {            /* CENTER = mark      */
+                captured[m] = us;
+                marked = true;
+                mcal_all_min();
+                PIOS_LED_On(PIOS_LED_HEARTBEAT);
+                /* wait for the switch to leave center before next phase   */
+                do {
+                    sw = mcal_scale(PIOS_RCVR_Read(dsm_rcvr_id, sw_ch),
+                                    mc.ChannelMin.FlightMode,
+                                    mc.ChannelNeutral.FlightMode,
+                                    mc.ChannelMax.FlightMode);
+                    PIOS_DELAY_WaitmS(50);
+                } while (sw > -0.3f && sw < 0.3f);
+                PIOS_LED_Off(PIOS_LED_HEARTBEAT);
+                blink_n = 0;
+            }
+            PIOS_DELAY_WaitmS(20);
+        }
+    }
+
+    mcal_all_min();
+
+    if (!aborted) {
+        ActuatorSettingsData act;
+
+        ActuatorSettingsGet(&act);
+        for (uint8_t m = 0; m < 4; m++) {
+            uint16_t n = captured[m] + 20;
+            ((int16_t *)&act.ChannelNeutral)[m] = (n > 1200) ? 1200 : (int16_t)n;
+        }
+        ActuatorSettingsSet(&act);
+        UAVObjSave(ActuatorSettingsHandle(), 0);
+
+        for (uint8_t i = 0; i < 20; i++) {            /* 2s strobe = saved  */
+            PIOS_LED_Toggle(PIOS_LED_HEARTBEAT);
+            PIOS_DELAY_WaitmS(100);
+        }
+    }
+
+    /* Done-state either way: outputs at min, double-pulse until power-off.
+     * Deliberately NOT continuing to normal boot -- a craft that was just
+     * in a calibration mode should not become armable without a clean
+     * power cycle. */
+    for (;;) {
+        PIOS_LED_On(PIOS_LED_HEARTBEAT);
+        PIOS_DELAY_WaitmS(100);
+        PIOS_LED_Off(PIOS_LED_HEARTBEAT);
+        PIOS_DELAY_WaitmS(100);
+        PIOS_LED_On(PIOS_LED_HEARTBEAT);
+        PIOS_DELAY_WaitmS(100);
+        PIOS_LED_Off(PIOS_LED_HEARTBEAT);
+        PIOS_DELAY_WaitmS(1200);
+        mcal_all_min();
+#ifdef PIOS_INCLUDE_WDG
+        PIOS_WDG_UpdateFlag(0);                       /* keep the petting alive */
+#endif
+    }
+}
+
 void PIOS_Board_Init(void)
 {
     PIOS_DELAY_Init();
@@ -710,6 +925,10 @@ void PIOS_Board_Init(void)
             }
             pios_rcvr_group_map[MANUALCONTROLSETTINGS_CHANNELGROUPS_DSMMAINPORT] =
                 pios_dsm_rcvr_id;
+
+            /* RF motor calibration: only enters on throttle-full +
+             * switch-extreme at power-up; costs nothing on a normal boot. */
+            board_motor_cal_rf(pios_dsm_rcvr_id);
         }
     }
 #endif /* PIOS_INCLUDE_DSM */
