@@ -35,6 +35,7 @@
 #include <manualcontrolsettings.h>
 #include <mixersettings.h>
 #include <actuatorsettings.h>
+#include <firmwareiapobj.h>
 #include <flightstatus.h>
 #include <systemalarms.h>
 #include "driver/gpio.h"
@@ -773,6 +774,20 @@ void PIOS_Board_Init(void)
     /* Compiled-in Quad X mixer and output endpoints -- see the comment on the
      * function for why this is not left to the GCS. */
     board_apply_default_airframe();
+
+    /* The GCS identifies the board through FirmwareIAPObj (board model =
+     * type<<8 | revision -- the Setup Wizard switches on it). The stock
+     * FirmwareIAP module is bootloader plumbing this target has no use
+     * for, so populate the identity fields directly and leave the module
+     * out. */
+    {
+        FirmwareIAPObjInitialize();
+        FirmwareIAPObjData iap;
+        FirmwareIAPObjGet(&iap);
+        iap.BoardType     = pios_board_info_blob.board_type;
+        iap.BoardRevision = pios_board_info_blob.board_rev;
+        FirmwareIAPObjSet(&iap);
+    }
 
     /* No settings filesystem on this target yet (see pios_config.h), so
      * HwSettings comes up on defaults every boot. Say so once, plainly --

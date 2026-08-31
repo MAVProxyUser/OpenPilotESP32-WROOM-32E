@@ -646,6 +646,401 @@ index f5aee9206..544412934 100644
                      qDebug() << "Serial telemetry running at " << m_config->speed();
                      m_deviceOpened = true;
                  }
+diff --git a/ground/openpilotgcs/src/plugins/setupwizard/connectiondiagram.cpp b/ground/openpilotgcs/src/plugins/setupwizard/connectiondiagram.cpp
+index 1933be3e8..a1d780856 100644
+--- a/ground/openpilotgcs/src/plugins/setupwizard/connectiondiagram.cpp
++++ b/ground/openpilotgcs/src/plugins/setupwizard/connectiondiagram.cpp
+@@ -89,6 +89,9 @@ void ConnectionDiagram::setupGraphicsScene()
+     case VehicleConfigurationSource::CONTROLLER_REALPOSIX:
+             elementsToShow << "controller-revo";
+             break;
++        case VehicleConfigurationSource::CONTROLLER_ESP32:
++            elementsToShow << "controller-esp32";
++            break;
+         case VehicleConfigurationSource::CONTROLLER_NANO:
+             elementsToShow << "controller-nano";
+             break;
+@@ -177,6 +180,9 @@ void ConnectionDiagram::setupGraphicsScene()
+     case VehicleConfigurationSource::CONTROLLER_REALPOSIX:
+             prefix = "revo-";
+             break;
++        case VehicleConfigurationSource::CONTROLLER_ESP32:
++            prefix = "esp32-";
++            break;
+         case VehicleConfigurationSource::CONTROLLER_NANO:
+             prefix = "nano-";
+             break;
+diff --git a/ground/openpilotgcs/src/plugins/setupwizard/pages/controllerpage.cpp b/ground/openpilotgcs/src/plugins/setupwizard/pages/controllerpage.cpp
+index 910306889..67269dd41 100644
+--- a/ground/openpilotgcs/src/plugins/setupwizard/pages/controllerpage.cpp
++++ b/ground/openpilotgcs/src/plugins/setupwizard/pages/controllerpage.cpp
+@@ -118,6 +118,9 @@ SetupWizard::CONTROLLER_TYPE ControllerPage::getControllerType()
+     case 0x1101:
+         return SetupWizard::CONTROLLER_REALPOSIX;
+ 
++    case 0x1202:
++        return SetupWizard::CONTROLLER_ESP32;
++
+     case 0x0904:
+         return SetupWizard::CONTROLLER_DISCOVERYF4;
+ 
+@@ -141,6 +144,7 @@ void ControllerPage::setupBoardTypes()
+     ui->boardTypeCombo->addItem(tr("OpenPilot CopterControl 3D"), SetupWizard::CONTROLLER_CC3D);
+     ui->boardTypeCombo->addItem(tr("OpenPilot Revolution"), SetupWizard::CONTROLLER_REVO);
+     ui->boardTypeCombo->addItem(tr("NinjaPilot RealPosix (OSD32MP1)"), SetupWizard::CONTROLLER_REALPOSIX);
++    ui->boardTypeCombo->addItem(tr("NinjaPilot ESP32 Thing Plus"), SetupWizard::CONTROLLER_ESP32);
+     ui->boardTypeCombo->addItem(tr("OpenPilot OPLink Radio Modem"), SetupWizard::CONTROLLER_OPLINK);
+     ui->boardTypeCombo->addItem(tr("OpenPilot DiscoveryF4"), SetupWizard::CONTROLLER_DISCOVERYF4);
+ }
+diff --git a/ground/openpilotgcs/src/plugins/setupwizard/pages/inputpage.cpp b/ground/openpilotgcs/src/plugins/setupwizard/pages/inputpage.cpp
+index e1b443706..133719c72 100644
+--- a/ground/openpilotgcs/src/plugins/setupwizard/pages/inputpage.cpp
++++ b/ground/openpilotgcs/src/plugins/setupwizard/pages/inputpage.cpp
+@@ -45,6 +45,25 @@ InputPage::~InputPage()
+     delete ui;
+ }
+ 
++void InputPage::initializePage()
++{
++    /* The ESP32 Thing Plus target has exactly one receiver input: a
++     * Spektrum satellite on the pin silkscreened RX1. Offering PWM, PPM or
++     * S.Bus here would write a configuration the firmware cannot serve. */
++    bool dsmOnly = getWizard()->getControllerType() == SetupWizard::CONTROLLER_ESP32;
++
++    ui->pwmButton->setEnabled(!dsmOnly);
++    ui->ppmButton->setEnabled(!dsmOnly);
++    ui->sbusButton->setEnabled(!dsmOnly);
++    if (dsmOnly) {
++        ui->spectrumButton->setChecked(true);
++        QString why = tr("This board takes a Spektrum satellite on RX1 only.");
++        ui->pwmButton->setToolTip(why);
++        ui->ppmButton->setToolTip(why);
++        ui->sbusButton->setToolTip(why);
++    }
++}
++
+ bool InputPage::validatePage()
+ {
+     if (ui->pwmButton->isChecked()) {
+@@ -93,6 +112,12 @@ bool InputPage::restartNeeded(VehicleConfigurationSource::INPUT_TYPE selectedTyp
+         }
+         break;
+     }
++    case SetupWizard::CONTROLLER_ESP32:
++        /* The Spektrum satellite is the only receiver this board has, and
++         * it lives on a fixed UART -- there is no port mode to flip and
++         * nothing a reboot would re-init. */
++        return false;
++
+     case SetupWizard::CONTROLLER_REVO:
+     case SetupWizard::CONTROLLER_REALPOSIX:
+     case SetupWizard::CONTROLLER_DISCOVERYF4:
+diff --git a/ground/openpilotgcs/src/plugins/setupwizard/pages/inputpage.h b/ground/openpilotgcs/src/plugins/setupwizard/pages/inputpage.h
+index 7b0221527..a06bb14f6 100644
+--- a/ground/openpilotgcs/src/plugins/setupwizard/pages/inputpage.h
++++ b/ground/openpilotgcs/src/plugins/setupwizard/pages/inputpage.h
+@@ -41,6 +41,7 @@ public:
+     explicit InputPage(SetupWizard *wizard, QWidget *parent = 0);
+     ~InputPage();
+     bool validatePage();
++    void initializePage();
+ 
+ private:
+     bool restartNeeded(VehicleConfigurationSource::INPUT_TYPE selectedType);
+diff --git a/ground/openpilotgcs/src/plugins/setupwizard/resources/connection-diagrams.svg b/ground/openpilotgcs/src/plugins/setupwizard/resources/connection-diagrams.svg
+index eef9bb92b..d06e92899 100644
+--- a/ground/openpilotgcs/src/plugins/setupwizard/resources/connection-diagrams.svg
++++ b/ground/openpilotgcs/src/plugins/setupwizard/resources/connection-diagrams.svg
+@@ -47520,4 +47520,147 @@
+      inkscape:label="MS4525-speed-sensor"
+      style="display:inline"
+      transform="matrix(0.77129601,0,0,0.77129601,-757.27445,90.740389)" />
++<g
++         transform="matrix(0.4,0,0,0.4,-131.04473,-97.93132)"
++         id="esp32-satellite">
++        <path
++           style="fill:none;stroke:#777777;stroke-width:14.5;stroke-linecap:butt;stroke-linejoin:miter;stroke-miterlimit:4;stroke-dasharray:none"
++           inkscape:connector-curvature="0"
++           stroke-miterlimit="4"
++           d="M 1250,1530 C 1185.1,1524.03 1129,1544.3 1079,1570.7"
++           id="esp32-path11315" />
++        <path
++           style="fill:none;stroke:#777777;stroke-width:14.5;stroke-linecap:butt;stroke-linejoin:miter;stroke-miterlimit:4;stroke-dasharray:none"
++           inkscape:connector-curvature="0"
++           stroke-miterlimit="4"
++           d="M 1490,1530 C 1540.3,1528.91 1605,1535.3 1645,1566.6"
++           id="esp32-path11317" />
++        <path
++           id="esp32-path11319"
++           d="M 1371.2889,1318.8556 L 1371.2889,1194.0962 L 1596.2889,1194.0962 L 1596.2889,1052.7282"
++           inkscape:connector-curvature="0"
++           style="fill:none;stroke:#1f4697;stroke-width:15.29999924;stroke-linecap:butt;stroke-linejoin:round;stroke-miterlimit:4;stroke-dasharray:none"
++           sodipodi:nodetypes="cccc" />
++        <path
++           id="esp32-path11321"
++           d="M 1356.2889,1318.8556 L 1356.2889,1179.0962 L 1581.2889,1179.0962 L 1581.2889,1052.7282"
++           inkscape:connector-curvature="0"
++           style="fill:none;stroke:#d81900;stroke-width:15.29999924;stroke-linecap:butt;stroke-linejoin:round;stroke-miterlimit:4;stroke-dasharray:none"
++           sodipodi:nodetypes="cccc" />
++        <path
++           id="esp32-path11323"
++           d="M 1386.2889,1318.8556 L 1386.2889,1209.0962 L 1611.7889,1209.0963 L 1611.7889,1052.7282"
++           inkscape:connector-curvature="0"
++           style="fill:none;stroke:#ec6004;stroke-width:15.29999924;stroke-linecap:butt;stroke-linejoin:round;stroke-miterlimit:4;stroke-dasharray:none"
++           sodipodi:nodetypes="cccc" />
++        <path
++           id="esp32-path11325"
++           d="M 1342.571,1318.8556 L 1342.571,1164.0962 L 1566.2889,1164.0962 L 1566.2889,1052.7282"
++           inkscape:connector-curvature="0"
++           style="fill:none;stroke:#000000;stroke-width:15.30000019;stroke-linecap:butt;stroke-linejoin:round;stroke-miterlimit:4;stroke-dasharray:none"
++           sodipodi:nodetypes="cccc" />
++        <rect
++           x="1250"
++           y="1320"
++           stroke-miterlimit="4"
++           width="237"
++           height="272"
++           ry="11.5"
++           style="color:#000000;fill:url(#linearGradient10168-9);fill-rule:nonzero;stroke:#000000;stroke-width:5.76999998;stroke-miterlimit:4;stroke-dasharray:none;enable-background:accumulate"
++           id="esp32-rect11327"
++           rx="11.5" />
++        <text
++           sodipodi:linespacing="125%"
++           xml:space="preserve"
++           x="1368.6637"
++           y="1415.5746"
++           font-style="normal"
++           line-height="125%"
++           font-size="40px"
++           font-weight="normal"
++           style="font-size:40px;font-style:normal;font-weight:normal;text-align:center;line-height:125%;letter-spacing:0px;word-spacing:0px;text-anchor:middle;fill:#ffffff;font-family:Sans"
++           id="esp32-text11329"><tspan
++             x="1368.6637"
++             y="1415.5746"
++             id="esp32-tspan11331">Spectrum</tspan></text>
++        <text
++           sodipodi:linespacing="125%"
++           line-height="125%"
++           x="1291.984"
++           y="1500.4048"
++           font-style="normal"
++           font-size="100px"
++           xml:space="preserve"
++           font-weight="normal"
++           style="font-size:100px;font-style:normal;font-weight:normal;line-height:125%;letter-spacing:0px;word-spacing:0px;fill:#000000;font-family:Sans"
++           id="esp32-text11333"><tspan
++             style="font-size:40px;fill:#ffffff"
++             x="1291.984"
++             y="1500.4048"
++             font-size="40px"
++             id="esp32-tspan11335">Satellite</tspan></text>
++      </g>
++<g id="controller-esp32" style="display:inline">
++<rect x="552" y="86" width="130" height="278" rx="10" style="fill:#b01116;stroke:#5a0808;stroke-width:2"/>
++<rect x="597" y="76" width="40" height="20" rx="5" style="fill:#9a9aa2;stroke:#55555c;stroke-width:1.2"/>
++<text x="617" y="71" style="font-size:9px;font-family:Arial;fill:#444444;text-anchor:middle">USB-C</text>
++<rect x="560" y="96" width="24" height="14" rx="2" style="fill:#f2f2ee;stroke:#888880;stroke-width:1"/>
++<rect x="568" y="216" width="98" height="112" rx="3" style="fill:#c9ccd2;stroke:#7d838d;stroke-width:1.5"/>
++<rect x="568" y="308" width="98" height="20" style="fill:#2b2b31"/>
++<path d="M 576,310 v 16" style="stroke:#c9a227;stroke-width:1.6"/>
++<path d="M 596,310 v 16" style="stroke:#c9a227;stroke-width:1.6"/>
++<path d="M 616,310 v 16" style="stroke:#c9a227;stroke-width:1.6"/>
++<path d="M 636,310 v 16" style="stroke:#c9a227;stroke-width:1.6"/>
++<path d="M 656,310 v 16" style="stroke:#c9a227;stroke-width:1.6"/>
++<text x="617" y="246" style="font-size:12px;font-family:Arial;font-weight:bold;fill:#3a3f46;text-anchor:middle">ESP32</text>
++<text x="617" y="260" style="font-size:9px;font-family:Arial;fill:#3a3f46;text-anchor:middle">WROOM-32E</text>
++<rect x="604" y="344" width="26" height="12" rx="3" style="fill:#2f7d32;stroke:#194a1b;stroke-width:1"/>
++<circle cx="560" cy="108" r="3.4" style="fill:#c8a34a;stroke:#4a3a10;stroke-width:0.6"/>
++<circle cx="560" cy="124" r="3.4" style="fill:#ffd24d;stroke:#4a3a10;stroke-width:0.6"/>
++<circle cx="560" cy="140" r="3.4" style="fill:#c8a34a;stroke:#4a3a10;stroke-width:0.6"/>
++<circle cx="560" cy="156" r="3.4" style="fill:#ffd24d;stroke:#4a3a10;stroke-width:0.6"/>
++<circle cx="560" cy="172" r="3.4" style="fill:#c8a34a;stroke:#4a3a10;stroke-width:0.6"/>
++<circle cx="560" cy="188" r="3.4" style="fill:#c8a34a;stroke:#4a3a10;stroke-width:0.6"/>
++<circle cx="560" cy="204" r="3.4" style="fill:#c8a34a;stroke:#4a3a10;stroke-width:0.6"/>
++<circle cx="560" cy="220" r="3.4" style="fill:#c8a34a;stroke:#4a3a10;stroke-width:0.6"/>
++<circle cx="560" cy="236" r="3.4" style="fill:#c8a34a;stroke:#4a3a10;stroke-width:0.6"/>
++<circle cx="560" cy="252" r="3.4" style="fill:#c8a34a;stroke:#4a3a10;stroke-width:0.6"/>
++<circle cx="560" cy="268" r="3.4" style="fill:#c8a34a;stroke:#4a3a10;stroke-width:0.6"/>
++<circle cx="560" cy="284" r="3.4" style="fill:#c8a34a;stroke:#4a3a10;stroke-width:0.6"/>
++<circle cx="560" cy="300" r="3.4" style="fill:#c8a34a;stroke:#4a3a10;stroke-width:0.6"/>
++<circle cx="560" cy="316" r="3.4" style="fill:#c8a34a;stroke:#4a3a10;stroke-width:0.6"/>
++<circle cx="560" cy="332" r="3.4" style="fill:#c8a34a;stroke:#4a3a10;stroke-width:0.6"/>
++<circle cx="560" cy="348" r="3.4" style="fill:#c8a34a;stroke:#4a3a10;stroke-width:0.6"/>
++<circle cx="674" cy="108" r="3.4" style="fill:#c8a34a;stroke:#4a3a10;stroke-width:0.6"/>
++<circle cx="674" cy="124" r="3.4" style="fill:#c8a34a;stroke:#4a3a10;stroke-width:0.6"/>
++<circle cx="674" cy="140" r="3.4" style="fill:#ffd24d;stroke:#4a3a10;stroke-width:0.6"/>
++<circle cx="674" cy="156" r="3.4" style="fill:#c8a34a;stroke:#4a3a10;stroke-width:0.6"/>
++<circle cx="674" cy="172" r="3.4" style="fill:#c8a34a;stroke:#4a3a10;stroke-width:0.6"/>
++<circle cx="674" cy="188" r="3.4" style="fill:#ffd24d;stroke:#4a3a10;stroke-width:0.6"/>
++<circle cx="674" cy="204" r="3.4" style="fill:#ffd24d;stroke:#4a3a10;stroke-width:0.6"/>
++<circle cx="674" cy="220" r="3.4" style="fill:#ffd24d;stroke:#4a3a10;stroke-width:0.6"/>
++<circle cx="674" cy="236" r="3.4" style="fill:#ffd24d;stroke:#4a3a10;stroke-width:0.6"/>
++<circle cx="674" cy="252" r="3.4" style="fill:#c8a34a;stroke:#4a3a10;stroke-width:0.6"/>
++<circle cx="674" cy="268" r="3.4" style="fill:#c8a34a;stroke:#4a3a10;stroke-width:0.6"/>
++<circle cx="674" cy="284" r="3.4" style="fill:#c8a34a;stroke:#4a3a10;stroke-width:0.6"/>
++<circle cx="674" cy="300" r="3.4" style="fill:#c8a34a;stroke:#4a3a10;stroke-width:0.6"/>
++<circle cx="674" cy="316" r="3.4" style="fill:#c8a34a;stroke:#4a3a10;stroke-width:0.6"/>
++<circle cx="674" cy="332" r="3.4" style="fill:#c8a34a;stroke:#4a3a10;stroke-width:0.6"/>
++<circle cx="674" cy="348" r="3.4" style="fill:#c8a34a;stroke:#4a3a10;stroke-width:0.6"/>
++<path d="M 556,124 L 516,128" style="stroke:#0a7fb8;stroke-width:1.2;fill:none"/>
++<text x="512" y="131" style="font-size:10px;font-family:Arial;fill:#0a7fb8;text-anchor:end">3V3 - DSM orange</text>
++<path d="M 556,156 L 516,162" style="stroke:#0a7fb8;stroke-width:1.2;fill:none"/>
++<text x="512" y="165" style="font-size:10px;font-family:Arial;fill:#0a7fb8;text-anchor:end">GND - DSM black</text>
++<path d="M 678,140 L 718,140" style="stroke:#0a7fb8;stroke-width:1.2;fill:none"/>
++<text x="722" y="143" style="font-size:10px;font-family:Arial;fill:#0a7fb8;text-anchor:start">RX1 (16) - DSM gray</text>
++<path d="M 678,188 L 718,176" style="stroke:#0a7fb8;stroke-width:1.2;fill:none"/>
++<text x="722" y="179" style="font-size:10px;font-family:Arial;fill:#b0450a;text-anchor:start">M1 - NW motor (15)</text>
++<path d="M 678,204 L 718,198" style="stroke:#0a7fb8;stroke-width:1.2;fill:none"/>
++<text x="722" y="201" style="font-size:10px;font-family:Arial;fill:#b0450a;text-anchor:start">M2 - NE motor (33)</text>
++<path d="M 678,220 L 718,220" style="stroke:#0a7fb8;stroke-width:1.2;fill:none"/>
++<text x="722" y="223" style="font-size:10px;font-family:Arial;fill:#b0450a;text-anchor:start">M3 - SE motor (27)</text>
++<path d="M 678,236 L 718,242" style="stroke:#0a7fb8;stroke-width:1.2;fill:none"/>
++<text x="722" y="245" style="font-size:10px;font-family:Arial;fill:#b0450a;text-anchor:start">M4 - SW motor (12)</text>
++<text x="617" y="382" style="font-size:12px;font-family:Arial;font-weight:bold;fill:#222222;text-anchor:middle">SparkFun ESP32 Thing Plus</text>
++</g>
+ </svg>
+diff --git a/ground/openpilotgcs/src/plugins/setupwizard/setupwizard.cpp b/ground/openpilotgcs/src/plugins/setupwizard/setupwizard.cpp
+index e9b0a0e4d..39676ca7a 100644
+--- a/ground/openpilotgcs/src/plugins/setupwizard/setupwizard.cpp
++++ b/ground/openpilotgcs/src/plugins/setupwizard/setupwizard.cpp
+@@ -98,6 +98,7 @@ int SetupWizard::nextId() const
+         case CONTROLLER_CC3D:
+         case CONTROLLER_REVO:
+         case CONTROLLER_REALPOSIX:
++        case CONTROLLER_ESP32:
+         case CONTROLLER_NANO:
+         case CONTROLLER_DISCOVERYF4:
+             return PAGE_INPUT;
+@@ -146,7 +147,8 @@ int SetupWizard::nextId() const
+          * user's choice is carried forward in RAM and re-applied+saved
+          * atomically at the final Save page. STM32 targets keep the
+          * original persist+reboot (their receiver hardware needs it). */
+-        if (getControllerType() != CONTROLLER_REALPOSIX && isRestartNeeded()) {
++        if (getControllerType() != CONTROLLER_REALPOSIX &&
++            getControllerType() != CONTROLLER_ESP32 && isRestartNeeded()) {
+             saveHardwareSettings();
+             reboot();
+         }
+@@ -181,6 +183,19 @@ int SetupWizard::nextId() const
+     }
+ 
+     case PAGE_BIAS_CALIBRATION:
++        /* ESP32 Thing Plus: both the ESC calibration page and the output
++         * calibration page are skipped, deliberately. On this board the
++         * ESC/BEC 5V line feeds VUSB, so any procedure that wants the
++         * flight battery connected while USB is attached can destroy the
++         * board -- and the stock ESC calibration flow is exactly that.
++         * Motor endpoints come from the firmware's RF calibration instead
++         * (the transmitter switch-wiggle procedure), which runs on battery
++         * power alone with no ground station attached. Overwriting its
++         * stored values from here would undo a calibration the wizard
++         * cannot safely repeat. */
++        if (getControllerType() == CONTROLLER_ESP32) {
++            return PAGE_AIRFRAME_INITIAL_TUNING;
++        }
+         if (getVehicleType() == VEHICLE_MULTI) {
+             return PAGE_ESC_CALIBRATION;
+         } else {
+@@ -218,6 +233,7 @@ int SetupWizard::nextId() const
+         case CONTROLLER_CC3D:
+         case CONTROLLER_REVO:
+         case CONTROLLER_REALPOSIX:
++        case CONTROLLER_ESP32:
+         case CONTROLLER_NANO:
+         case CONTROLLER_DISCOVERYF4:
+             switch (getVehicleType()) {
+@@ -260,6 +276,9 @@ QString SetupWizard::getSummaryText()
+     case CONTROLLER_REALPOSIX:
+         summary.append(tr("NinjaPilot RealPosix (OSD32MP1)"));
+         break;
++    case CONTROLLER_ESP32:
++        summary.append(tr("NinjaPilot ESP32 Thing Plus"));
++        break;
+     case CONTROLLER_NANO:
+         summary.append(tr("OpenPilot Nano"));
+         break;
+diff --git a/ground/openpilotgcs/src/plugins/setupwizard/vehicleconfigurationhelper.cpp b/ground/openpilotgcs/src/plugins/setupwizard/vehicleconfigurationhelper.cpp
+index f10c62ff2..7254b0cb4 100644
+--- a/ground/openpilotgcs/src/plugins/setupwizard/vehicleconfigurationhelper.cpp
++++ b/ground/openpilotgcs/src/plugins/setupwizard/vehicleconfigurationhelper.cpp
+@@ -178,6 +178,12 @@ void VehicleConfigurationHelper::applyHardwareConfiguration()
+             break;
+         }
+         break;
++    case VehicleConfigurationSource::CONTROLLER_ESP32:
++        /* Fixed-function hardware: the Spektrum satellite is on a dedicated
++         * UART, PWM out is on dedicated MCPWM pins, and telemetry arrives
++         * over WiFi or the USB serial console. There are no CC_/RM_ port
++         * muxes on this board, so there is nothing to write here. */
++        break;
+     case VehicleConfigurationSource::CONTROLLER_REVO:
+     case VehicleConfigurationSource::CONTROLLER_REALPOSIX:
+     case VehicleConfigurationSource::CONTROLLER_NANO:
+@@ -423,13 +429,32 @@ void VehicleConfigurationHelper::applyActuatorConfiguration()
+     {
+         ActuatorSettings::DataFields data = actSettings->getData();
+ 
++        bool esp32 = m_configSource->getControllerType() == VehicleConfigurationSource::CONTROLLER_ESP32;
++
+         QList<actuatorChannelSettings> actuatorSettings = m_configSource->getActuatorSettings();
+         for (quint16 i = 0; i < ActuatorSettings::CHANNELMAX_NUMELEM; i++) {
+             data.ChannelType[i]    = ActuatorSettings::CHANNELTYPE_PWM;
+             data.ChannelAddr[i]    = i;
+-            data.ChannelMin[i]     = actuatorSettings[i].channelMin;
+-            data.ChannelNeutral[i] = actuatorSettings[i].channelNeutral;
+-            data.ChannelMax[i]     = actuatorSettings[i].channelMax;
++            /* On the ESP32 Thing Plus the wizard never ran the output
++             * calibration pages (see the PAGE_BIAS_CALIBRATION comment in
++             * setupwizard.cpp), so the wizard-side endpoint values are
++             * untouched defaults. The real endpoints come from the
++             * firmware's RF calibration and are already on the board --
++             * leave them alone. */
++            if (!esp32) {
++                data.ChannelMin[i]     = actuatorSettings[i].channelMin;
++                data.ChannelNeutral[i] = actuatorSettings[i].channelNeutral;
++                data.ChannelMax[i]     = actuatorSettings[i].channelMax;
++            }
++        }
++
++        if (esp32 && (bankMode == ActuatorSettings::BANKMODE_ONESHOT125 ||
++                      bankMode == ActuatorSettings::BANKMODE_PWMSYNC)) {
++            /* The MCPWM output driver speaks plain PWM only; OneShot and
++             * PWMSync would configure a waveform the hardware never
++             * produces. Fall back to the fast PWM rate. */
++            bankMode     = ActuatorSettings::BANKMODE_PWM;
++            escFrequence = RAPID_ESC_FREQUENCY;
+         }
+ 
+         data.MotorsSpinWhileArmed = ActuatorSettings::MOTORSSPINWHILEARMED_FALSE;
+@@ -841,7 +866,14 @@ void VehicleConfigurationHelper::applyManualControlDefaults()
+ 
+     ManualControlSettings::ChannelGroupsOptions channelType = ManualControlSettings::CHANNELGROUPS_PWM;
+ 
+-    if (m_configSource->getControllerType() == VehicleConfigurationSource::CONTROLLER_REALPOSIX) {
++    if (m_configSource->getControllerType() == VehicleConfigurationSource::CONTROLLER_ESP32) {
++        /* The firmware registers the satellite under the DSM (Main port)
++         * channel group; that is also what the board's own provisioning
++         * writes. Only the group assignment is written here -- channel
++         * numbers, reversals and endpoints belong to the user's RC
++         * calibration and survive the wizard untouched. */
++        channelType = ManualControlSettings::CHANNELGROUPS_DSMMAINPORT;
++    } else if (m_configSource->getControllerType() == VehicleConfigurationSource::CONTROLLER_REALPOSIX) {
+         /* Every receiver on this board arrives through the PPM channel
+          * group - the UDP network receiver registers there by design
+          * (and a future hardware PPM driver would too). Mapping the
+diff --git a/ground/openpilotgcs/src/plugins/setupwizard/vehicleconfigurationsource.h b/ground/openpilotgcs/src/plugins/setupwizard/vehicleconfigurationsource.h
+index a59688229..6a3d76455 100644
+--- a/ground/openpilotgcs/src/plugins/setupwizard/vehicleconfigurationsource.h
++++ b/ground/openpilotgcs/src/plugins/setupwizard/vehicleconfigurationsource.h
+@@ -57,7 +57,7 @@ class VehicleConfigurationSource {
+ public:
+     VehicleConfigurationSource();
+ 
+-    enum CONTROLLER_TYPE { CONTROLLER_UNKNOWN, CONTROLLER_CC, CONTROLLER_CC3D, CONTROLLER_REVO, CONTROLLER_REALPOSIX, CONTROLLER_NANO, CONTROLLER_OPLINK, CONTROLLER_DISCOVERYF4 };
++    enum CONTROLLER_TYPE { CONTROLLER_UNKNOWN, CONTROLLER_CC, CONTROLLER_CC3D, CONTROLLER_REVO, CONTROLLER_REALPOSIX, CONTROLLER_ESP32, CONTROLLER_NANO, CONTROLLER_OPLINK, CONTROLLER_DISCOVERYF4 };
+     enum VEHICLE_TYPE { VEHICLE_UNKNOWN, VEHICLE_MULTI, VEHICLE_FIXEDWING, VEHICLE_HELI, VEHICLE_SURFACE };
+     enum VEHICLE_SUB_TYPE { MULTI_ROTOR_UNKNOWN, MULTI_ROTOR_TRI_Y, MULTI_ROTOR_QUAD_X, MULTI_ROTOR_QUAD_PLUS, MULTI_ROTOR_QUAD_H,
+                             MULTI_ROTOR_HEXA, MULTI_ROTOR_HEXA_H, MULTI_ROTOR_HEXA_X, MULTI_ROTOR_HEXA_COAX_Y, MULTI_ROTOR_OCTO,
 diff --git a/ground/pyuavtalk/uavtalk_client.py b/ground/pyuavtalk/uavtalk_client.py
 index d927b78b6..b5d759329 100644
 --- a/ground/pyuavtalk/uavtalk_client.py
