@@ -105,6 +105,55 @@ def main():
             time.sleep(0.02)
         return None
 
+    # ---- make the board PUSH, instead of polling it -----------------------
+    #
+    # This used to do four request/response round trips per row. That is
+    # fragile: when the board gets busier -- which is exactly what happens
+    # while the arm gesture is held and okToArm() runs configuration_check()
+    # every cycle -- a round trip exceeds the timeout and the display stalls,
+    # which looks alarmingly like the link dropping. It is not; it is polling
+    # losing a race.
+    #
+    # ManualControlCommand is already PERIODIC (2000ms), so only the period
+    # needs lowering. FlightStatus is ONCHANGE and pushes the moment Armed
+    # changes, which is exactly what is wanted. Metadata is 8 packed bytes:
+    # flags, telemetryUpdatePeriod, gcsTelemetryUpdatePeriod,
+    # loggingUpdatePeriod -- little endian. Only bytes [2:4] are touched, so
+    # the update MODE is left exactly as the firmware shipped it.
+    import struct
+
+    original_meta = {}
+
+    def set_period(name, period_ms):
+        objid = db[name].obj_id
+        metaid = objid + 1
+        client.meta_payloads.pop(metaid, None)
+        client.send_raw(uavtalk.TYPE_OBJ_REQ, metaid)
+        end = time.time() + 3.0
+        while time.time() < end:
+            if metaid in client.meta_payloads:
+                break
+            time.sleep(0.02)
+        meta = client.meta_payloads.get(metaid)
+        if not meta or len(meta) < 8:
+            return False
+        original_meta[name] = meta
+        new = bytearray(meta)
+        struct.pack_into("<H", new, 2, period_ms)
+        client.send_raw(uavtalk.TYPE_OBJ, metaid, 0, bytes(new))
+        time.sleep(0.2)
+        return True
+
+    def restore_periods():
+        for name, meta in original_meta.items():
+            client.send_raw(uavtalk.TYPE_OBJ, db[name].obj_id + 1, 0, meta)
+            time.sleep(0.15)
+
+    pushed = set_period("ManualControlCommand", 100) and \
+             set_period("ActuatorCommand", 250)
+    if not pushed:
+        print("  (could not raise the push rate; falling back to polling)")
+
     fms = fresh("ManualControlSettings", 3.0)
     fmset = fresh("FlightModeSettings", 3.0)
     gesture = fmset.get("Arming") if fmset else "?"
@@ -118,9 +167,14 @@ def main():
     misses = 0
     try:
         while True:
-            f = fresh("FlightStatus")
-            m = fresh("ManualControlCommand")
-            ac = fresh("ActuatorCommand")
+            # Read whatever the board last pushed. No request/response in
+            # the hot path, so a busy board slows the display down instead of
+            # stalling it.
+            f = got.get("FlightStatus") if pushed else fresh("FlightStatus")
+            m = got.get("ManualControlCommand") if pushed else fresh("ManualControlCommand")
+            ac = got.get("ActuatorCommand") if pushed else fresh("ActuatorCommand")
+            if pushed and not f:
+                f = fresh("FlightStatus")
             if not (f and m):
                 # Silence here is the worst possible output: an earlier
                 # version just looped on `continue` and printed nothing at
@@ -131,7 +185,7 @@ def main():
                 time.sleep(0.5)
                 continue
             misses = 0
-            al = fresh("SystemAlarms", 0.6)
+            al = got.get("SystemAlarms")
             thr = m.get("Throttle", 0.0)
             val = m.get(field, 0.0) if field else 0.0
             gesture_ok = (val >= ARMED_THRESHOLD) if sign > 0 else (val <= -ARMED_THRESHOLD)
@@ -153,7 +207,11 @@ def main():
                 m.get("Yaw", 0), str(ch), verdict), flush=True)
             time.sleep(0.4)
     except KeyboardInterrupt:
-        print("\nstopped.")
+        print("\nrestoring telemetry rates...", flush=True)
+    finally:
+        # Leave the board as we found it. A forgotten 100ms push rate would
+        # quietly eat the 57600 link for whatever runs next.
+        restore_periods()
     return 0
 
 
