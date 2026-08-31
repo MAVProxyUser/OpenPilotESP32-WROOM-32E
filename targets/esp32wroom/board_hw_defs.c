@@ -207,18 +207,38 @@ const struct pios_esp32_usart_cfg pios_usart_aux_cfg = {
 /* GPIO32 is now the IMU data-ready input, and 21/22 are the Qwiic I2C pins on
  * a Thing Plus, so the servo set is trimmed to four -- which is all a quad
  * needs. Put them back if you are on a bare devkit and want 6 channels. */
-/* Motor outputs, quad X order (M1..M4).
+/* Motor outputs, quad X order (M1..M4), matching the mixer the GCS writes for
+ * a Quad X: 1 front-left, 2 front-right, 3 rear-right, 4 rear-left.
  *
  * Every one of these is directly labelled on the Thing Plus silkscreen, which
  * matters: GPIO25/26 are only reachable as A1/A0 and are not labelled by
- * number, so they are avoided. GPIO12 is skipped deliberately -- it is the
- * flash-voltage strapping pin, and an ESC holding it at power-up stops the
- * board booting. */
+ * number, so they are avoided.
+ *
+ * !! GPIO12 (M4) REQUIRES A BURNED eFUSE !!
+ *
+ * GPIO12 is MTDI, sampled at reset to choose the flash voltage: high selects
+ * 1.8V, and this module runs 3.3V flash, so anything holding that line high as
+ * the chip leaves reset stops it booting entirely. An ESC does not drive the
+ * line, but its input stage usually carries a pull-up, and the ESC's BEC
+ * typically powers before the ESP32 -- which is exactly the reset window that
+ * matters.
+ *
+ * This board is safe because the fuse has been burned on THIS CHIP:
+ *
+ *     espefuse.py set_flash_voltage 3.3V     -> XPD_SDIO_FORCE = True
+ *
+ * after which MTDI is ignored at reset. That is per-chip and irreversible.
+ * Flash this firmware to a different ESP32 without that fuse and a powered ESC
+ * on M4 will leave it apparently dead at power-up. Check with
+ * `espefuse.py summary` before assuming. Move M4 back to GPIO17 if in doubt.
+ *
+ * GPIO12 is also JTAG MTDI, so using it here rules out JTAG on this board.
+ */
 static const gpio_num_t board_servo_pins[] = {
-    GPIO_NUM_15,   /* M1 */
-    GPIO_NUM_33,   /* M2 */
-    GPIO_NUM_27,   /* M3 */
-    GPIO_NUM_17,   /* M4 */
+    GPIO_NUM_15,   /* M1 -- front-left  */
+    GPIO_NUM_33,   /* M2 -- front-right */
+    GPIO_NUM_27,   /* M3 -- rear-right  */
+    GPIO_NUM_12,   /* M4 -- rear-left, see the eFuse note above */
 };
 
 const struct pios_esp32_servo_cfg pios_servo_cfg = {
@@ -237,9 +257,14 @@ const struct pios_esp32_servo_cfg pios_servo_cfg = {
 #ifdef PIOS_INCLUDE_PPM
 
 const struct pios_esp32_ppm_cfg pios_ppm_cfg = {
-    /* GPIO21. GPIO4 is not broken out on the Thing Plus headers. Avoided
-     * GPIO12/15 deliberately -- both are strapping pins (12 selects the flash
-     * voltage) and an RC receiver holding one at boot can brick a power-up. */
+    /* GPIO21. GPIO4 is not broken out on the Thing Plus headers.
+     *
+     * A receiver is a worse thing to hang off a strapping pin than an ESC --
+     * it is powered by the flight controller's own BEC and can be driving the
+     * line the instant rails come up -- so keep RC input off GPIO12 and GPIO15
+     * regardless of the eFuse. (GPIO15 is the milder of the two: it only
+     * selects whether the ROM boot log prints, which is why M1 can live there
+     * safely. GPIO12 chooses the flash voltage and stops the boot outright.) */
     .pin = GPIO_NUM_21,
 };
 
