@@ -299,12 +299,20 @@ static void board_apply_default_airframe(void)
 #define BOARD_UX_TICK_MS    25
 #define BOARD_UX_STACK      1024   /* words; see the unit note in pios_esp32.h */
 /*
- * Above the idle band. At tskIDLE_PRIORITY + 2 this task was being preempted
- * often enough that a 10Hz strobe came out visibly choppy -- the blink was
- * reporting the scheduler, not the armed state. Still well below anything
- * that flies the aircraft; it runs for microseconds every tick.
+ * BELOW everything that flies the aircraft. Deliberately.
+ *
+ * This was briefly raised to tskIDLE_PRIORITY + 5 to smooth out a choppy
+ * strobe, which was a mistake worth recording: the callback priority map in
+ * pios_callbackscheduler.h puts FLIGHTCONTROL at +3 and STABILIZATIONOUTERLOOP
+ * at +4, and the Actuator task is +4 as well. A status LED at +5 could
+ * therefore preempt the outer loop and the code that drives the motors --
+ * trading a flight-control deadline for a prettier blink is not a trade
+ * anyone should make.
+ *
+ * At +1 a busy board can make the blink slightly irregular. That is the
+ * correct thing to accept: the LED reports state, it is not state.
  */
-#define BOARD_UX_PRIORITY   (tskIDLE_PRIORITY + 5)
+#define BOARD_UX_PRIORITY   (tskIDLE_PRIORITY + 1)
 
 static void board_ux_task(__attribute__((unused)) void *arg)
 {
