@@ -20,6 +20,7 @@ Usage:
 
 import argparse
 import os
+import glob
 import socket
 import struct
 import subprocess
@@ -30,12 +31,22 @@ import time
 IDF = os.path.expanduser("~/esp/esp-idf")
 NVS_GEN = os.path.join(IDF, "components/nvs_flash/nvs_partition_generator",
                        "nvs_partition_gen.py")
+
+
+def idf_python():
+    """The generator imports IDF-installed packages, so it must run under
+    the espressif python env, not whatever python3 happens to be first in
+    PATH -- invoked from a bare shell that was Xcode's, which knows nothing
+    of esp_idf_nvs_partition_gen."""
+    cands = sorted(glob.glob(os.path.expanduser(
+        "~/.espressif/python_env/*/bin/python")))
+    return cands[-1] if cands else sys.executable
 NVS_OFFSET = "0x9000"
 NVS_SIZE = "0x6000"
 
 
 def esptool(args, port):
-    cmd = [sys.executable, "-m", "esptool", "--chip", "esp32",
+    cmd = [idf_python(), "-m", "esptool", "--chip", "esp32",
            "--port", port, "-b", "115200"] + args
     return subprocess.call(cmd)
 
@@ -51,7 +62,15 @@ def main():
 
     if args.mode == "set":
         if not args.ssid:
-            sys.exit("set needs --ssid (and usually --password)")
+            sys.exit("set needs --ssid")
+        if not args.password:
+            # Prompted entry sidesteps shell quoting entirely. A password
+            # with ! passed in double quotes arrives with a literal
+            # backslash (bash keeps \ before !), and the board then offers
+            # the wrong password forever -- found the hard way.
+            import getpass
+            args.password = getpass.getpass("  WiFi password (typed, no "
+                                            "shell quoting involved): ")
         with tempfile.TemporaryDirectory() as td:
             csv = os.path.join(td, "wifi.csv")
             bin_ = os.path.join(td, "wifi.bin")
@@ -60,7 +79,7 @@ def main():
                 f.write("wifi,namespace,,\n")
                 f.write("ssid,data,string,%s\n" % args.ssid)
                 f.write("pass,data,string,%s\n" % args.password)
-            if subprocess.call([sys.executable, NVS_GEN, "generate",
+            if subprocess.call([idf_python(), NVS_GEN, "generate",
                                 csv, bin_, NVS_SIZE]) != 0:
                 sys.exit("nvs image generation failed")
             print("writing credentials to nvs @ %s (board will reboot)..."
