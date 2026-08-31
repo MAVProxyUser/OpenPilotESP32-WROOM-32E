@@ -43,6 +43,7 @@ set(PIOS_ESP32_SRCS
     ${ESP32PORT}/pios/esp32/pios_servo.c
     ${ESP32PORT}/pios/esp32/pios_exti.c
     ${ESP32PORT}/pios/esp32/pios_ppm.c
+    ${ESP32PORT}/pios/esp32/pios_dsm.c
     ${ESP32PORT}/pios/esp32/pios_task_runtime.c
 )
 

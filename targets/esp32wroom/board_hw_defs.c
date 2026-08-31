@@ -269,3 +269,20 @@ const struct pios_esp32_ppm_cfg pios_ppm_cfg = {
 };
 
 #endif /* PIOS_INCLUDE_PPM */
+
+/* ---------------------------------------------------------------------- *
+ * RC input -- Spektrum DSM satellite
+ * ---------------------------------------------------------------------- */
+#ifdef PIOS_INCLUDE_DSM
+
+const struct pios_esp32_dsm_cfg pios_dsm_cfg = {
+    /* GPIO16, silkscreened 16/RX1 on the Thing Plus. Three wires from the
+     * satellite: 3.3V (NOT 5V -- a satellite is a 3.3V device), ground, and
+     * signal to this pin. */
+    .port        = UART_NUM_2,
+    .rx_pin      = GPIO_NUM_16,
+    .bind_pulses = 9,    /* DSMX 2048/11ms -- see the enum in pios_esp32_priv.h */
+    .listen_ms   = 250,
+};
+
+#endif /* PIOS_INCLUDE_DSM */

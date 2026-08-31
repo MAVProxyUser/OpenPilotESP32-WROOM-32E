@@ -135,6 +135,43 @@ extern int32_t PIOS_ESP32_PPM_Init(uint32_t *ppm_id,
 extern const struct pios_rcvr_driver pios_esp32_ppm_rcvr_driver;
 
 /* ---------------------------------------------------------------------- *
+ * DSM (Spektrum satellite)
+ * ---------------------------------------------------------------------- */
+
+struct pios_esp32_dsm_cfg {
+    uart_port_t port;
+    gpio_num_t  rx_pin;
+    /*
+     * Bind pulse count. This SELECTS THE PROTOCOL the satellite will ask the
+     * transmitter for, so it is not a tuning knob:
+     *
+     *     3  DSM2  1024  22ms
+     *     5  DSM2  2048  11ms
+     *     7  DSMX  2048  22ms
+     *     9  DSMX  2048  11ms
+     *
+     * 9 for a DSMX satellite (SPM9745 and friends) with a DSMX transmitter.
+     * Drop to 7 if the link binds but frames arrive at half rate, which is
+     * what a transmitter negotiating 22ms looks like from here.
+     *
+     * 0 disables auto-bind entirely.
+     */
+    uint8_t     bind_pulses;
+    /*
+     * How long to wait for frames before deciding nothing is bound. A bound
+     * satellite starts talking within a few frame times, so this only has to
+     * cover a handful of 22ms frames -- and it must stay short, because the
+     * satellite's bind window closes shortly after it powers up.
+     */
+    uint16_t    listen_ms;
+};
+
+extern int32_t PIOS_ESP32_DSM_Init(uint32_t *dsm_id,
+                                   const struct pios_esp32_dsm_cfg *cfg);
+extern void PIOS_ESP32_DSM_GetState(uint32_t *frames, bool *bind_attempted);
+extern const struct pios_rcvr_driver pios_esp32_dsm_rcvr_driver;
+
+/* ---------------------------------------------------------------------- *
  * Sensor data-ready ("EXTI")
  *
  * NOT an interrupt vector in the STM32 sense. On this target the GPIO ISR

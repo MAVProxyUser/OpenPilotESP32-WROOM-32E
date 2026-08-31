@@ -73,7 +73,17 @@
 // ------------------------
 #define PIOS_PPM_MAX_DEVS      1
 #define PIOS_RCVR_MAX_CHANNELS 12
-#define PIOS_RCVR_MAX_DEVS     1
+/* PPM and DSM can both be built in; ManualControl picks between them by
+ * channel group, so both need a receiver slot. */
+#define PIOS_RCVR_MAX_DEVS     2
+
+// -------------------------
+// PIOS_DSM  (Spektrum satellite on the aux UART)
+// -------------------------
+#define PIOS_INCLUDE_DSM
+/* A satellite reports 7 channels per frame; 12 covers the two-frame
+ * (11ms) modes that interleave channels 8-11. */
+#define PIOS_DSM_NUM_INPUTS    12
 
 // ------------------------
 // Servo / actuator outputs

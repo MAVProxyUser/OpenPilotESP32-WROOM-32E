@@ -225,6 +225,33 @@ static void board_apply_default_airframe(void)
         act.ChannelNeutral[i] = 1000;
         act.ChannelMax[i]     = 2000;
     }
+    /*
+     * Point the sticks at the DSM satellite. Standard Spektrum channel order:
+     * 1 throttle, 2 aileron, 3 elevator, 4 rudder, 5 gear. Endpoints are left
+     * at their defaults -- those are per-transmitter and have to be calibrated
+     * from the GCS, which will not survive a reboot on this target either.
+     *
+     * Change these to ..._PPM to fly off the PPM input on GPIO21 instead;
+     * both receivers are built and running, and this is the only thing that
+     * decides which one ManualControl actually reads.
+     */
+    {
+        ManualControlSettingsData mc;
+
+        ManualControlSettingsGet(&mc);
+        mc.ChannelGroups.Throttle   = MANUALCONTROLSETTINGS_CHANNELGROUPS_DSMMAINPORT;
+        mc.ChannelGroups.Roll       = MANUALCONTROLSETTINGS_CHANNELGROUPS_DSMMAINPORT;
+        mc.ChannelGroups.Pitch      = MANUALCONTROLSETTINGS_CHANNELGROUPS_DSMMAINPORT;
+        mc.ChannelGroups.Yaw        = MANUALCONTROLSETTINGS_CHANNELGROUPS_DSMMAINPORT;
+        mc.ChannelGroups.FlightMode = MANUALCONTROLSETTINGS_CHANNELGROUPS_DSMMAINPORT;
+        mc.ChannelNumber.Throttle   = 1;
+        mc.ChannelNumber.Roll       = 2;
+        mc.ChannelNumber.Pitch      = 3;
+        mc.ChannelNumber.Yaw        = 4;
+        mc.ChannelNumber.FlightMode = 5;
+        ManualControlSettingsSet(&mc);
+    }
+
     /* 50Hz is the rate every analogue ESC understands. The MCPWM driver
      * applies one rate to all channels (see PIOS_Servo_SetHz), so this is
      * effectively a single global setting -- raise it once you know what the
@@ -381,6 +408,30 @@ void PIOS_Board_Init(void)
         pios_rcvr_group_map[MANUALCONTROLSETTINGS_CHANNELGROUPS_PPM] = pios_ppm_rcvr_id;
     }
 #endif /* PIOS_INCLUDE_PPM */
+
+#ifdef PIOS_INCLUDE_DSM
+    {
+        uint32_t pios_dsm_id;
+
+        /* Starts a task that listens for frames and, if the satellite turns
+         * out not to be bound to anything, puts it into bind mode. That has
+         * to happen close to power-up, which is why this is here rather than
+         * behind a GCS command. */
+        if (PIOS_ESP32_DSM_Init(&pios_dsm_id, &pios_dsm_cfg) != 0) {
+            printf("[BOARD] DSM receiver failed to start\n");
+            AlarmsSet(SYSTEMALARMS_ALARM_BOOTFAULT, SYSTEMALARMS_ALARM_CRITICAL);
+        } else {
+            uint32_t pios_dsm_rcvr_id;
+
+            if (PIOS_RCVR_Init(&pios_dsm_rcvr_id, &pios_esp32_dsm_rcvr_driver,
+                               pios_dsm_id) != 0) {
+                PIOS_Assert(0);
+            }
+            pios_rcvr_group_map[MANUALCONTROLSETTINGS_CHANNELGROUPS_DSMMAINPORT] =
+                pios_dsm_rcvr_id;
+        }
+    }
+#endif /* PIOS_INCLUDE_DSM */
 
     PIOS_LED_Off(PIOS_LED_HEARTBEAT);
 }
