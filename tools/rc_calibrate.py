@@ -41,6 +41,9 @@ ELEMS = ["Throttle", "Roll", "Pitch", "Yaw", "FlightMode"]
 # Below this much travel a channel clearly was not moved, and writing it would
 # leave a stick that does nothing or a switch stuck on one mode.
 MIN_TRAVEL = 200
+# Fraction of throttle travel reserved below neutral, so the bottom of the
+# stick reads negative. See the note where it is applied.
+THROTTLE_NEUTRAL_MARGIN = 0.05
 
 
 def countdown(msg, secs):
@@ -157,9 +160,23 @@ def main():
     mx = list(mcs["ChannelMax"])
     for i in range(len(ELEMS)):
         mn[i], mx[i] = lo[i], hi[i]
-        # Throttle's "neutral" is its idle end, not the middle of its travel --
-        # ManualControl treats it as the zero-thrust reference.
-        nu[i] = lo[i] if i == 0 else neutral[i]
+        if i == 0:
+            # Throttle neutral is the zero-thrust reference, and it must sit
+            # ABOVE min -- not equal to it.
+            #
+            # scaleChannel() divides by (neutral - min) below neutral, and
+            # returns a flat 0 when neutral == min. Throttle would then only
+            # ever range 0.0..1.0. armhandler.c requires cmd.Throttle < 0
+            # STRICTLY for a multirotor (the fabsf() < 0.01 branch is
+            # ground-frame only), so a throttle that cannot go negative is a
+            # board that can never arm -- with nothing to indicate why.
+            #
+            # Lifting it a few percent gives the bottom of stick travel a
+            # region that reads negative, which is exactly the "throttle is
+            # definitely down" the arming check is asking about.
+            nu[i] = lo[i] + int(round(THROTTLE_NEUTRAL_MARGIN * (hi[i] - lo[i])))
+        else:
+            nu[i] = neutral[i]
     mcs["ChannelMin"], mcs["ChannelNeutral"], mcs["ChannelMax"] = mn, nu, mx
 
     client.send_object("ManualControlSettings", mcs)

@@ -292,7 +292,7 @@ static void board_apply_default_airframe(void)
  * ---------------------------------------------------------------------- */
 #define BOARD_BTN_PIN       GPIO_NUM_0
 #define BOARD_BTN_HOLD_MS   3000
-#define BOARD_UX_TICK_MS    50
+#define BOARD_UX_TICK_MS    25
 #define BOARD_UX_STACK      1024   /* words; see the unit note in pios_esp32.h */
 
 static void board_ux_task(__attribute__((unused)) void *arg)
@@ -374,7 +374,15 @@ static void board_ux_task(__attribute__((unused)) void *arg)
         worst = shown;
 
         if (armed == FLIGHTSTATUS_ARMED_ARMED) {
-            on_ms = 900; off_ms = 100;
+            /* ARMED: fast strobe, 10Hz. Deliberately the fastest thing the
+             * LED ever does, and nothing else comes close -- "armed" is the
+             * one state you must never have to squint at. Armed also wins
+             * over every alarm below, so a strobe is never ambiguous. */
+            on_ms = 50; off_ms = 50;
+        } else if (armed == FLIGHTSTATUS_ARMED_ARMING) {
+            /* Mid-gesture: visibly quicker than idle, slower than armed, so
+             * you can see the sequence being accepted before it completes. */
+            on_ms = 75; off_ms = 175;
         } else if (worst >= SYSTEMALARMS_ALARM_ERROR) {
             on_ms = 100; off_ms = 100;
         } else if (worst == SYSTEMALARMS_ALARM_WARNING) {
@@ -408,6 +416,86 @@ static void board_ux_start(void)
     xTaskCreate(board_ux_task, "BoardUX", BOARD_UX_STACK, NULL,
                 tskIDLE_PRIORITY + 2, NULL);
 }
+
+
+/* ---------------------------------------------------------------------- *
+ * PWM output self-test
+ *
+ * The servo driver had never emitted a pulse on hardware -- everything up to
+ * here proved the flight code decides the right numbers, and nothing proved
+ * those numbers reach the pins. This drives the outputs directly so that gap
+ * is closed on a bench rather than on a first hover.
+ *
+ * It runs inside PIOS_Board_Init, BEFORE any module starts. That matters: the
+ * Actuator module writes the servos every cycle once it is running, so a test
+ * scheduled after startup would simply be overwritten.
+ *
+ * Each motor is swept ALONE first, in order, then all four together. The solo
+ * sweeps are the useful part -- they tell you which physical motor each pin
+ * actually drives, which is the mistake that flips an airframe on takeoff and
+ * is invisible from the bench any other way.
+ *
+ * !! PROPS OFF !!  With a battery connected this spins motors.
+ * Compile-time gated and OFF by default, so it cannot ship enabled.
+ * ---------------------------------------------------------------------- */
+#ifdef BOARD_PWM_SELFTEST
+
+#ifndef BOARD_PWM_SELFTEST_PEAK_US
+#define BOARD_PWM_SELFTEST_PEAK_US 1500   /* mid stick */
+#endif
+#define BOARD_PWM_IDLE_US          1000
+#define BOARD_PWM_STEP_US          10
+#define BOARD_PWM_STEP_MS          8
+
+static void board_pwm_write_all(uint16_t us)
+{
+    for (uint8_t ch = 0; ch < 4; ch++) {
+        PIOS_Servo_Set(ch, us);
+    }
+    PIOS_Servo_Update();
+}
+
+/* Sweep one channel idle -> peak -> idle, holding the rest at idle.
+ * Pass 0xFF to sweep all four together. */
+static void board_pwm_sweep(uint8_t only_ch)
+{
+    for (int dir = 0; dir < 2; dir++) {
+        for (uint16_t us = BOARD_PWM_IDLE_US; us <= BOARD_PWM_SELFTEST_PEAK_US;
+             us += BOARD_PWM_STEP_US) {
+            uint16_t v = (dir == 0) ? us
+                         : (BOARD_PWM_SELFTEST_PEAK_US -
+                            (us - BOARD_PWM_IDLE_US) + BOARD_PWM_IDLE_US);
+
+            for (uint8_t ch = 0; ch < 4; ch++) {
+                PIOS_Servo_Set(ch, (only_ch == 0xFF || ch == only_ch)
+                                   ? v : BOARD_PWM_IDLE_US);
+            }
+            PIOS_Servo_Update();
+            PIOS_DELAY_WaitmS(BOARD_PWM_STEP_MS);
+        }
+    }
+    board_pwm_write_all(BOARD_PWM_IDLE_US);
+}
+
+static void board_pwm_selftest(void)
+{
+    /* Hold idle first. An ESC wants to see a valid minimum for a moment
+     * before anything else, and this is also the arming tone if one is
+     * powered. */
+    board_pwm_write_all(BOARD_PWM_IDLE_US);
+    PIOS_DELAY_WaitmS(3000);
+
+    for (uint8_t ch = 0; ch < 4; ch++) {
+        PIOS_LED_Toggle(PIOS_LED_HEARTBEAT);
+        board_pwm_sweep(ch);
+        PIOS_DELAY_WaitmS(700);      /* gap so the solos are countable */
+    }
+
+    PIOS_LED_On(PIOS_LED_HEARTBEAT);
+    board_pwm_sweep(0xFF);           /* all four together */
+    board_pwm_write_all(BOARD_PWM_IDLE_US);
+}
+#endif /* BOARD_PWM_SELFTEST */
 
 void PIOS_Board_Init(void)
 {
@@ -557,6 +645,9 @@ void PIOS_Board_Init(void)
     if (PIOS_ESP32_Servo_Init(&pios_servo_cfg) != 0) {
         PIOS_Assert(0);
     }
+#ifdef BOARD_PWM_SELFTEST
+    board_pwm_selftest();
+#endif
 #endif
 
     /* --- RC input ------------------------------------------------------ */
