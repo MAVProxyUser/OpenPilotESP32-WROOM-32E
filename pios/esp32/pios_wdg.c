@@ -86,7 +86,7 @@ static portMUX_TYPE wdg_lock = portMUX_INITIALIZER_UNLOCKED;
  * calls. This task -- with a stack of its own, sized for the job -- is the
  * only thing that ever touches the IDF watchdog.
  */
-#define PIOS_WDG_TASK_STACK_BYTES 3072
+#define PIOS_WDG_TASK_STACK_WORDS 768   /* 3KB -- see the unit note in pios_esp32.h */
 #define PIOS_WDG_TASK_PRIORITY    (tskIDLE_PRIORITY + 3)
 #define PIOS_WDG_POLL_MS          100
 
@@ -141,11 +141,9 @@ uint16_t PIOS_WDG_Init(void)
     wdg.active_flags = 0;
     wdg.armed        = false;
 
-    /* NOTE the stack argument. ESP-IDF's xTaskCreate() takes a size in BYTES,
-     * where vanilla FreeRTOS takes a count of words -- which is why the shared
-     * modules, written for vanilla and passing STACK_SIZE_BYTES / 4, all run
-     * on a quarter of the stack they think they asked for. Pass bytes here. */
-    if (xTaskCreate(wdg_task, "PIOS_WDG", PIOS_WDG_TASK_STACK_BYTES, NULL,
+    /* Stack in WORDS, like every other task in the tree -- pios_esp32.h
+     * converts to the bytes ESP-IDF actually wants. */
+    if (xTaskCreate(wdg_task, "PIOS_WDG", PIOS_WDG_TASK_STACK_WORDS, NULL,
                     PIOS_WDG_TASK_PRIORITY, NULL) != pdPASS) {
         wdg.subscribe_failed = true;
     }

@@ -28,6 +28,10 @@
 
 #include "pios.h"
 
+/* Definition for the counter declared in pios_esp32.h -- see the task-stack
+ * unit note there. */
+uint32_t pios_esp32_task_create_failures;
+
 #ifdef PIOS_INCLUDE_SYS
 
 #include "esp_system.h"

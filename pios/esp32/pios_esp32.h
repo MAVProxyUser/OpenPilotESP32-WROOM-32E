@@ -57,6 +57,59 @@
 #include "freertos/task.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
+
+/*
+ * Task stacks: WORDS in, BYTES out.
+ *
+ * ESP-IDF sizes task stacks in BYTES. Vanilla FreeRTOS -- which every shared
+ * module in this tree was written against -- counts WORDS, and they all say
+ *
+ *     xTaskCreate(fooTask, "Foo", STACK_SIZE_BYTES / 4, ...);
+ *
+ * Left alone on IDF, that asks for a QUARTER of the intended stack. The
+ * telemetry RX task ran on 2KB of the 8KB it thought it had; Attitude on 1KB
+ * of 4KB; Receiver on 768 bytes of 3KB.
+ *
+ * The failure mode is not a clean overflow report. The canary is missed and
+ * whatever sits below the stack is corrupted instead, surfacing much later and
+ * somewhere else entirely -- LoadProhibited inside vTaskSwitchContext, or in
+ * PIOS_COM_validate, or in runNextCallback -- with nothing pointing back at
+ * the task that actually overran.
+ *
+ * Rather than edit the xTaskCreate call in every shared module, convert the
+ * unit here, once. Every stack size in this port therefore keeps the vanilla
+ * FreeRTOS meaning it has on the STM32 targets.
+ *
+ * This MUST come after freertos/task.h above: it is a function-like macro on
+ * the same name, and it would otherwise mangle the prototype in that header.
+ */
+extern uint32_t pios_esp32_task_create_failures;
+
+static inline BaseType_t pios_esp32_task_create(TaskFunction_t fn, const char *name,
+                                                uint32_t stack_words, void *param,
+                                                UBaseType_t prio, TaskHandle_t *handle)
+{
+    /* x4, explicitly. NOT sizeof(StackType_t): the Xtensa port defines
+     * portSTACK_TYPE as uint8_t precisely BECAUSE its stacks are counted in
+     * bytes, so sizeof(StackType_t) is 1 and multiplying by it does nothing
+     * at all. The conversion needed here is words-to-bytes on a 32-bit
+     * machine, which is 4. */
+    BaseType_t rc = xTaskCreate(fn, name, stack_words * 4, param, prio, handle);
+
+    /* PiOS ignores this return value at every call site, so a failed creation
+     * is otherwise completely silent and only surfaces much later as a NULL
+     * task or queue handle. Count it here instead of printing: most of these
+     * calls run on systemTask's stack via MODULE_TASKCREATE_ALL, and a printf
+     * there is exactly the kind of stack pressure this shim exists to stop.
+     * Read it in a debugger or a core dump. */
+    if (rc != pdPASS) {
+        pios_esp32_task_create_failures++;
+    }
+    return rc;
+}
+
+#define xTaskCreate(fn, name, depth, param, prio, handle) \
+    pios_esp32_task_create((fn), (name), (uint32_t)(depth), (param), (prio), (handle))
 #endif
 
 #include <pios_mem.h>
