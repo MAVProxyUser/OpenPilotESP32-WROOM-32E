@@ -83,7 +83,14 @@ def main():
                                  on_connected=connected.set),
                      daemon=True).start()
     if not connected.wait(30):
-        sys.exit("no link to the board")
+        sys.exit(
+            "no link to the board after 30s.\n"
+            "  The port exists but nothing answered. Most often that means\n"
+            "  something else already has it open -- only one process can hold\n"
+            "  %s at a time. Close any other tool talking\n"
+            "  to the board and try again. If nothing else is running, check\n"
+            "  the board is powered and try python3 tools/imu_bringup.py."
+            % args.serial)
 
     def fresh(name, timeout=1.0):
         """Always a new reply. Reading a cached object at speed looks exactly
@@ -106,15 +113,25 @@ def main():
     print("   (needs %s %s %+.2f, throttle < 0, held 1s)\n"
           % (field, ">=" if sign > 0 else "<=", sign * ARMED_THRESHOLD)
           if field else "   (not a stick gesture)\n")
-    print("  Armed      thr    roll   pitch    yaw   motors            ARM")
+    print("  Armed      thr    roll   pitch    yaw   motors            ARM",
+          flush=True)
+    misses = 0
     try:
         while True:
             f = fresh("FlightStatus")
             m = fresh("ManualControlCommand")
             ac = fresh("ActuatorCommand")
-            al = fresh("SystemAlarms")
             if not (f and m):
+                # Silence here is the worst possible output: an earlier
+                # version just looped on `continue` and printed nothing at
+                # all, which is indistinguishable from a hung tool.
+                misses += 1
+                print("  ...waiting for telemetry (%d) -- board busy or link "
+                      "flaky" % misses, flush=True)
+                time.sleep(0.5)
                 continue
+            misses = 0
+            al = fresh("SystemAlarms", 0.6)
             thr = m.get("Throttle", 0.0)
             val = m.get(field, 0.0) if field else 0.0
             gesture_ok = (val >= ARMED_THRESHOLD) if sign > 0 else (val <= -ARMED_THRESHOLD)
@@ -133,7 +150,7 @@ def main():
             ch = [int(v) for v in ac["Channel"][:4]] if ac else []
             print("  %-9s %+5.2f  %+5.2f  %+5.2f  %+5.2f  %-17s %s" % (
                 f.get("Armed"), thr, m.get("Roll", 0), m.get("Pitch", 0),
-                m.get("Yaw", 0), str(ch), verdict))
+                m.get("Yaw", 0), str(ch), verdict), flush=True)
             time.sleep(0.4)
     except KeyboardInterrupt:
         print("\nstopped.")
