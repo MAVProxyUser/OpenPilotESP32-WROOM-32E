@@ -82,6 +82,39 @@ index 57c978da2..cd03acbe5 100644
      while (ret == pdTRUE) {
          gyros[0]  += mpu6000_data->sample[1].x;
          gyros[1]  += mpu6000_data->sample[1].y;
+diff --git a/flight/modules/Stabilization/innerloop.c b/flight/modules/Stabilization/innerloop.c
+index c983e8a07..0a5251b46 100644
+--- a/flight/modules/Stabilization/innerloop.c
++++ b/flight/modules/Stabilization/innerloop.c
+@@ -241,6 +241,28 @@ static void stabilizationInnerloopTask()
+             // critical if rate loop skipped more than 4 executions
+             crit = true;
+         }
++#endif
++#if defined(USE_ESP32)
++        /*
++         * Ignore the first pass.
++         *
++         * gyroupdates is incremented by GyroStateUpdatedCb, which starts
++         * firing as soon as the callback is connected -- before this loop has
++         * run even once. Whatever accumulated in that window lands on pass
++         * zero and is not a missed deadline at all. Measured here it is
++         * consistently 4, which trips the > 3 CRITICAL threshold and raises a
++         * Stabilization alarm on every single boot. Every pass after it is
++         * exactly 1.
++         */
++        static bool first_pass = true;
++
++        if (first_pass) {
++            first_pass = false;
++            stabSettings.monitor.gyroupdates = 0;
++            warn  = false;
++            error = false;
++            crit  = false;
++        } else
+ #endif
+         // check if gyro keeps updating
+         if (stabSettings.monitor.gyroupdates < 1) {
 diff --git a/flight/pios/common/pios_callbackscheduler.c b/flight/pios/common/pios_callbackscheduler.c
 index 468f7c008..30959c70f 100644
 --- a/flight/pios/common/pios_callbackscheduler.c
