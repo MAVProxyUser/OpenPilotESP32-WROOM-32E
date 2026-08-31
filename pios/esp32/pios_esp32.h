@@ -94,7 +94,20 @@ static inline BaseType_t pios_esp32_task_create(TaskFunction_t fn, const char *n
      * bytes, so sizeof(StackType_t) is 1 and multiplying by it does nothing
      * at all. The conversion needed here is words-to-bytes on a 32-bit
      * machine, which is 4. */
-    BaseType_t rc = xTaskCreate(fn, name, stack_words * 4, param, prio, handle);
+    /*
+     * Words -> bytes (x4, see above) AND pinned to CORE 1.
+     *
+     * With SMP enabled, everything created through this shim -- every
+     * shared flight module, the callback schedulers, this port's own tasks
+     * -- lands on the application core. WiFi, lwIP and IDF housekeeping
+     * stay on core 0 (their Kconfig defaults plus explicit affinity in
+     * sdkconfig.defaults). The network stack can then never preempt a
+     * flight task at all: separation by silicon, not by priority
+     * negotiation. Anything that genuinely belongs on core 0 bypasses the
+     * shim by parenthesizing the call -- see pios_wifi.c.
+     */
+    BaseType_t rc = (xTaskCreatePinnedToCore)(fn, name, stack_words * 4,
+                                              param, prio, handle, 1);
 
     /* PiOS ignores this return value at every call site, so a failed creation
      * is otherwise completely silent and only surfaces much later as a NULL

@@ -143,8 +143,13 @@ static void wifi_server_task(__attribute__((unused)) void *arg)
                 if (wifi.client >= 0) {
                     close(wifi.client);   /* newest wins */
                 }
-                int nd = 1;
-                setsockopt(c, IPPROTO_TCP, TCP_NODELAY, &nd, sizeof(nd));
+                /* NO TCP_NODELAY, deliberately. Nodelay meant one TCP
+                 * segment per little telemetry write -- and every segment
+                 * wakes the lwIP tcpip task, which was preempting the
+                 * flight stack per packet. Nagle coalescing costs tens of
+                 * milliseconds of display latency and removes most of that
+                 * preemption traffic. Measured cost of nodelay: part of a
+                 * 5x jump in stabilization deadline warnings. */
                 wifi.client = c;
             }
         }
@@ -188,19 +193,28 @@ static void PIOS_WIFI_TxStart(__attribute__((unused)) uint32_t id,
         }
         return;
     }
-    uint8_t buf[128];
+    /* Coalesce everything the COM layer has pending into ONE send() per
+     * TxStart, instead of one per 128-byte chunk. Fewer socket calls means
+     * fewer tcpip-task wakeups preempting flight code. Non-blocking on
+     * purpose; a stalled socket drops bytes rather than stalling the
+     * telemetry task. */
+    static uint8_t buf[1024];
+    uint16_t fill = 0;
+
     for (;;) {
         bool woken = false;
-        uint16_t len = (wifi.tx_out_cb)(wifi.tx_out_context, buf,
-                                        sizeof(buf), NULL, &woken);
-        if (len == 0) {
-            break;
-        }
-        /* Non-blocking on purpose; a stalled socket drops bytes rather
-         * than stalling the telemetry task. */
-        send(wifi.client, buf, len, MSG_DONTWAIT);
-        if (len < sizeof(buf)) {
-            break;
+        uint16_t len = (wifi.tx_out_cb)(wifi.tx_out_context, buf + fill,
+                                        (uint16_t)(sizeof(buf) - fill),
+                                        NULL, &woken);
+        fill += len;
+        if (len == 0 || fill == sizeof(buf)) {
+            if (fill) {
+                send(wifi.client, buf, fill, MSG_DONTWAIT);
+                fill = 0;
+            }
+            if (len == 0) {
+                break;
+            }
         }
     }
 }
@@ -288,6 +302,10 @@ int32_t PIOS_ESP32_WIFI_Init(void)
     esp_wifi_set_mode(WIFI_MODE_STA);
     esp_wifi_set_config(WIFI_IF_STA, &cfg);
     esp_wifi_start();
+    /* Modem power-save trades multi-ms PHY sleep/wake bursts for battery.
+     * A flight controller wants deterministic interrupt latency, not
+     * standby current. */
+    esp_wifi_set_ps(WIFI_PS_NONE);
     esp_wifi_connect();
 
     if (!(xEventGroupWaitBits(wifi.events, EV_GOT_IP, pdFALSE, pdFALSE,
@@ -301,8 +319,12 @@ int32_t PIOS_ESP32_WIFI_Init(void)
     printf("[WIFI] up: " IPSTR " tcp:%d (beacon udp:%d)\n",
            IP2STR(&wifi.ip), WIFI_TCP_PORT, WIFI_BEACON_PORT);
 
-    if (xTaskCreate(wifi_server_task, "PIOS_WIFI", WIFI_TASK_STACK, NULL,
-                    WIFI_TASK_PRIO, NULL) != pdPASS) {
+    /* Parenthesized to bypass the words->bytes xTaskCreate shim, which
+     * also pins to the flight core. This task belongs on CORE 0 with the
+     * rest of the network stack, and takes its stack in BYTES. */
+    if ((xTaskCreatePinnedToCore)(wifi_server_task, "PIOS_WIFI",
+                                  WIFI_TASK_STACK * 4, NULL,
+                                  WIFI_TASK_PRIO, NULL, 0) != pdPASS) {
         return 4;
     }
     wifi.up = true;

@@ -122,7 +122,11 @@ const struct pios_esp32_exti_cfg pios_exti_icm20602_cfg = {
     .task_stack    = 3072,
     /* Above everything except the timer/IDF internals: a late gyro sample is
      * the one thing this board cannot recover from. */
-    .task_priority = configMAX_PRIORITIES - 2,
+    /* MAX-1 = 24: ABOVE the ESP WiFi task (23). At MAX-2 they tied, and
+     * gyro capture time-sliced against RF housekeeping -- one term in the
+     * 5x jump in stabilization deadline warnings when WiFi was up. Dual-core
+     * pinning separates them too; the ordering stays right regardless. */
+    .task_priority = configMAX_PRIORITIES - 1,
     .task_name     = "PIOS_ICM20602_DRDY",
 };
 

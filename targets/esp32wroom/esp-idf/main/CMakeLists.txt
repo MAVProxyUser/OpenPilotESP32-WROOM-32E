@@ -298,7 +298,11 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE
     # all-zero -- which cost a full wedge-reproduction run whose TaskInfo
     # dumps came back empty. The cost is a 1Hz walk of the task list from
     # systemmod; keep it on, this board is still being brought up.
-    DIAG_TASKS=1
+    # DIAG_TASKS: per-task stack/runtime in TaskInfo. OFF for normal builds:
+    # its 1Hz task-table walk runs with the scheduler SUSPENDED, and the walk
+    # got longer when WiFi added five tasks -- a periodic global stall. Turn
+    # it back on when hunting a task-level problem.
+    # DIAG_TASKS=1
     # BOARD_ESC_CAL: USB-free ESC endpoint calibration at power-up (max 6s,
     # then min). Flash it, UNPLUG USB, connect battery, listen for the tones,
     # reflash normal firmware. PROPS OFF. Never ship enabled. This exists
@@ -462,3 +466,4 @@ target_compile_options(${COMPONENT_LIB} PRIVATE
     -Wno-error=stringop-overflow
     -Wno-error=array-bounds
 )
+

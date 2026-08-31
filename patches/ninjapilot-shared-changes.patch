@@ -1,5 +1,5 @@
 diff --git a/flight/modules/Attitude/attitude.c b/flight/modules/Attitude/attitude.c
-index 57c978da2..037893150 100644
+index 57c978da2..6c2d6bdb7 100644
 --- a/flight/modules/Attitude/attitude.c
 +++ b/flight/modules/Attitude/attitude.c
 @@ -64,7 +64,13 @@
@@ -105,7 +105,7 @@ index 57c978da2..037893150 100644
  
  /**
   * Get an update from the sensors
-@@ -474,10 +512,26 @@ static int32_t updateSensorsCC3D(AccelStateData *accelStateData, GyroStateData *
+@@ -474,10 +512,32 @@ static int32_t updateSensorsCC3D(AccelStateData *accelStateData, GyroStateData *
      float temp = 0;
      uint8_t count   = 0;
  
@@ -128,14 +128,20 @@ index 57c978da2..037893150 100644
 +     * jitter than an STM32 it flapped between OK and Error roughly half the
 +     * time, dragging Stabilization and Actuator alarms with it.
 +     */
-+    BaseType_t ret     = xQueueReceive(queue, (void *)mpu6000_data, 2 * sensor_period_ms);
++    /* 5 sample periods, not 2: with WiFi telemetry active this platform has
++     * characterized whole-scheduler stall windows of up to ~4ms (lwIP timer
++     * work on core 0 colliding with flight tasks through the SMP kernel
++     * lock, plus PHY housekeeping). Samples are not lost -- the queue
++     * buffers them -- but delivery can slip past 2 periods, and the alarm
++     * that fires on one late wakeup is scarier than the hiccup itself. */
++    BaseType_t ret     = xQueueReceive(queue, (void *)mpu6000_data, 5 * sensor_period_ms);
 +#else
      BaseType_t ret     = xQueueReceive(queue, (void *)mpu6000_data, sensor_period_ms);
 +#endif
      while (ret == pdTRUE) {
          gyros[0]  += mpu6000_data->sample[1].x;
          gyros[1]  += mpu6000_data->sample[1].y;
-@@ -548,7 +602,7 @@ static int32_t updateSensorsCC3D(AccelStateData *accelStateData, GyroStateData *
+@@ -548,7 +608,7 @@ static int32_t updateSensorsCC3D(AccelStateData *accelStateData, GyroStateData *
      }
      // gyrosData->temperature  = 35.0f + ((float)mpu6000_data.temperature + 512.0f) / 340.0f;
      // accelsData->temperature = 35.0f + ((float)mpu6000_data.temperature + 512.0f) / 340.0f;
@@ -144,7 +150,7 @@ index 57c978da2..037893150 100644
  
      if (rotate) {
          // TODO: rotate sensors too so stabilization is well behaved
-@@ -772,7 +826,7 @@ static void settingsUpdatedCb(__attribute__((unused)) UAVObjEvent *objEv)
+@@ -772,7 +832,7 @@ static void settingsUpdatedCb(__attribute__((unused)) UAVObjEvent *objEv)
  
      if (BOARDISCC3D) {
          float scales[2];

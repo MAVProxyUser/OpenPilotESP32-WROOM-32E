@@ -14,14 +14,19 @@ CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 # an oversight rather than a decision.)
 CONFIG_PM_ENABLE=n
 
-# SINGLE CORE for this first bring-up. This is the cheap way to get what we
-# actually want -- the whole flight path on one core with no SMP semantics --
-# without auditing every xTaskCreate in the tree for pinning. It also sidesteps
-# the Xtensa FPU/core-affinity interaction entirely.
-#
-# Turning this off later is how you get core 1 for WiFi and telemetry. Do that
-# only after going through task creation deliberately; do not just flip it.
-CONFIG_FREERTOS_UNICORE=y
+# DUAL CORE. Unicore was a bring-up simplification; with WiFi telemetry in
+# the build it became a measured cost: WiFi+lwIP preempting the flight stack
+# produced a 5x jump in stabilization deadline warnings. Core 0 carries the
+# network stack and IDF housekeeping; core 1 carries every flight task (the
+# xTaskCreate shim in pios_esp32.h pins them). Timing was characterized
+# single-core -- re-run the loop measurements after any SMP-related change.
+CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU0=y
+# The dual-core bootloader outgrew the 0x8000 partition-table offset by 304
+# bytes at INFO log level. Warnings-only trims several KB and keeps every
+# partition -- and every stored setting and WiFi credential -- exactly where
+# it already is, which moving the table would not.
+CONFIG_BOOTLOADER_LOG_LEVEL_WARN=y
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n
 
 # --- Flash -------------------------------------------------------------
 CONFIG_ESPTOOLPY_FLASHMODE_QIO=y

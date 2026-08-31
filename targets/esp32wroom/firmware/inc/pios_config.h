@@ -56,7 +56,12 @@
 #define PIOS_INCLUDE_USART
 #define PIOS_INCLUDE_SERVO
 #define PIOS_INCLUDE_RCVR
-#define PIOS_INCLUDE_PPM
+/* PPM disabled: the RMT receiver on an unconnected pin collects coupled
+ * noise edges (one per 500Hz SPI burst), fills its 64-item RX memory every
+ * ~254ms, and its ISR then blocks level-1 interrupts on core 0 for ~3.6ms
+ * -- starving the gyro DR interrupt. Re-enable only with a real PPM source
+ * wired. DSM is this board's receiver. */
+// #define PIOS_INCLUDE_PPM
 
 /* No native USB on the WROOM-32 -- the console is UART0 through the devkit's
  * USB-serial bridge. (The S3 would allow PIOS_INCLUDE_USB_CDC here.) */

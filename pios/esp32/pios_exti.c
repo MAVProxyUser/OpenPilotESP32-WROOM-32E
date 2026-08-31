@@ -77,6 +77,7 @@ static void IRAM_ATTR exti_gpio_isr(void *arg)
     }
 }
 
+
 static void exti_task(void *arg)
 {
     struct exti_line *line = (struct exti_line *)arg;
@@ -87,6 +88,7 @@ static void exti_task(void *arg)
          * notification would only cost a wasted SPI transaction. Count
          * what we collapsed so the overrun is measurable. */
         uint32_t pending = ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
 
         if (pending > 1) {
             line->missed += (pending - 1);
@@ -124,7 +126,7 @@ int32_t PIOS_ESP32_EXTI_Init(const struct pios_esp32_exti_cfg *cfg)
                     cfg->task_stack ? cfg->task_stack : 3072,
                     line,
                     cfg->task_priority ? cfg->task_priority
-                                       : (configMAX_PRIORITIES - 2),
+                                       : (configMAX_PRIORITIES - 1),
                     &line->task) != pdPASS) {
         return -1;
     }
