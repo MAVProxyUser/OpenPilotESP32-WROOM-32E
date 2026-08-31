@@ -280,12 +280,16 @@ static void board_apply_default_airframe(void)
  * one blue LED on GPIO13. This gives the same information in the form the
  * hardware actually has: blink rate says what the aircraft is doing.
  *
- *     solid            booting (set during PIOS_Board_Init)
- *     mostly on        ARMED
- *     slow heartbeat   disarmed, no alarms
- *     double-time      disarmed, a warning is up
- *     fast             disarmed, an error or critical alarm is up
+ *     slow heartbeat   disarmed
+ *     10Hz strobe      ARMED
  *     flutter          BOOT button held, settings erase pending
+ *
+ * Deliberately only two flight states. It used to blink alarm severity as
+ * well, which made it unreadable -- the alarm state changed faster than a
+ * pattern can be recognised and it just looked like random clusters of
+ * pulses. Armed vs not armed is the one thing that has to be legible across
+ * a field at a glance, so it gets the indicator to itself; alarms belong in
+ * the GCS where there is room to name them.
  *
  * The BOOT button lives here too because it is the same kind of thing --
  * board-level UX -- and one task doing both costs less than two.
@@ -297,20 +301,8 @@ static void board_apply_default_airframe(void)
 
 static void board_ux_task(__attribute__((unused)) void *arg)
 {
-    uint32_t held_ms  = 0;
-    uint32_t phase    = 0;
-    /*
-     * Latched severity.
-     *
-     * Alarms can flick up for a single update -- a control loop that was
-     * momentarily late, say -- and blinking the truth that literally makes
-     * the LED unreadable: the pattern changes faster than a pattern can be
-     * recognised, and it just looks like random clusters of pulses. Hold the
-     * worst thing seen for a couple of seconds so each state is visible long
-     * enough to be identified, then decay.
-     */
-    uint8_t  shown    = SYSTEMALARMS_ALARM_OK;
-    uint32_t hold_ms  = 0;
+    uint32_t held_ms = 0;
+    uint32_t phase   = 0;
 
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(BOARD_UX_TICK_MS));
@@ -343,52 +335,23 @@ static void board_ux_task(__attribute__((unused)) void *arg)
 
         uint16_t on_ms, off_ms;
         FlightStatusArmedOptions armed = FLIGHTSTATUS_ARMED_DISARMED;
-        SystemAlarmsData alarms;
-        uint8_t worst = SYSTEMALARMS_ALARM_OK;
 
         FlightStatusArmedGet(&armed);
-        SystemAlarmsGet(&alarms);
 
-        for (uint8_t i = 0; i < SYSTEMALARMS_ALARM_NUMELEM; i++) {
-            /* Alarm is a named struct, not a bare array. The generated
-             * ToArray macro yields the array itself, so index it directly. */
-            uint8_t a = SystemAlarmsAlarmToArray(alarms.Alarm)[i];
-
-            /* Uninitialised outranks OK numerically but means "nothing to
-             * report yet", so it must not read as an error. */
-            if (a != SYSTEMALARMS_ALARM_UNINITIALISED && a > worst) {
-                worst = a;
-            }
-        }
-
-        /* Escalate at once, calm down slowly. */
-        if (worst >= shown) {
-            shown   = worst;
-            hold_ms = 2000;
-        } else if (hold_ms > BOARD_UX_TICK_MS) {
-            hold_ms -= BOARD_UX_TICK_MS;
-        } else {
-            hold_ms = 0;
-            shown   = worst;
-        }
-        worst = shown;
-
+        /*
+         * Two states, and only two.
+         *
+         * This used to also blink alarm severity, which made it useless: the
+         * alarm state changed faster than a pattern could be recognised and
+         * the LED just looked like random clusters of pulses. Armed vs not
+         * armed is the one thing that must be readable across a field at a
+         * glance, so it gets the indicator to itself. Alarms are visible in
+         * the GCS, where there is room to say which one.
+         */
         if (armed == FLIGHTSTATUS_ARMED_ARMED) {
-            /* ARMED: fast strobe, 10Hz. Deliberately the fastest thing the
-             * LED ever does, and nothing else comes close -- "armed" is the
-             * one state you must never have to squint at. Armed also wins
-             * over every alarm below, so a strobe is never ambiguous. */
-            on_ms = 50; off_ms = 50;
-        } else if (armed == FLIGHTSTATUS_ARMED_ARMING) {
-            /* Mid-gesture: visibly quicker than idle, slower than armed, so
-             * you can see the sequence being accepted before it completes. */
-            on_ms = 75; off_ms = 175;
-        } else if (worst >= SYSTEMALARMS_ALARM_ERROR) {
-            on_ms = 100; off_ms = 100;
-        } else if (worst == SYSTEMALARMS_ALARM_WARNING) {
-            on_ms = 100; off_ms = 300;
+            on_ms = 50;  off_ms = 50;    /* 10Hz strobe -- ARMED */
         } else {
-            on_ms = 100; off_ms = 900;
+            on_ms = 100; off_ms = 900;   /* slow heartbeat -- disarmed */
         }
 
         if (phase >= (uint32_t)(on_ms + off_ms)) {
