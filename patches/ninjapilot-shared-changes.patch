@@ -1,5 +1,5 @@
 diff --git a/flight/modules/Attitude/attitude.c b/flight/modules/Attitude/attitude.c
-index 57c978da2..7951fa0d7 100644
+index 57c978da2..cd03acbe5 100644
 --- a/flight/modules/Attitude/attitude.c
 +++ b/flight/modules/Attitude/attitude.c
 @@ -83,7 +83,16 @@ PERF_DEFINE_COUNTER(counterAtt);
@@ -58,6 +58,30 @@ index 57c978da2..7951fa0d7 100644
  
  /**
   * Get an update from the sensors
+@@ -477,7 +495,23 @@ static int32_t updateSensorsCC3D(AccelStateData *accelStateData, GyroStateData *
+ #if defined(PIOS_INCLUDE_MPU6000)
+ 
+     xQueueHandle queue = PIOS_MPU6000_Driver.get_queue(0);
++#if defined(USE_ESP32)
++    /*
++     * Wait TWO nominal sample periods, not one.
++     *
++     * sensor_period_ms is exactly the interval samples arrive at (2ms at
++     * PIOS_SENSOR_RATE 500), so waiting that long leaves no margin at all:
++     * a sample that is even slightly late times out and raises
++     * SYSTEMALARMS_ALARM_ATTITUDE, even though the sensor is fine. The
++     * non-CC3D path above already waits two periods and says so in its
++     * comment; this one does not, and on a target with more scheduling
++     * jitter than an STM32 it flapped between OK and Error roughly half the
++     * time, dragging Stabilization and Actuator alarms with it.
++     */
++    BaseType_t ret     = xQueueReceive(queue, (void *)mpu6000_data, 2 * sensor_period_ms);
++#else
+     BaseType_t ret     = xQueueReceive(queue, (void *)mpu6000_data, sensor_period_ms);
++#endif
+     while (ret == pdTRUE) {
+         gyros[0]  += mpu6000_data->sample[1].x;
+         gyros[1]  += mpu6000_data->sample[1].y;
 diff --git a/flight/pios/common/pios_callbackscheduler.c b/flight/pios/common/pios_callbackscheduler.c
 index 468f7c008..30959c70f 100644
 --- a/flight/pios/common/pios_callbackscheduler.c

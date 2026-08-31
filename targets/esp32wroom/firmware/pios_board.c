@@ -297,8 +297,20 @@ static void board_apply_default_airframe(void)
 
 static void board_ux_task(__attribute__((unused)) void *arg)
 {
-    uint32_t held_ms = 0;
-    uint32_t phase   = 0;
+    uint32_t held_ms  = 0;
+    uint32_t phase    = 0;
+    /*
+     * Latched severity.
+     *
+     * Alarms can flick up for a single update -- a control loop that was
+     * momentarily late, say -- and blinking the truth that literally makes
+     * the LED unreadable: the pattern changes faster than a pattern can be
+     * recognised, and it just looks like random clusters of pulses. Hold the
+     * worst thing seen for a couple of seconds so each state is visible long
+     * enough to be identified, then decay.
+     */
+    uint8_t  shown    = SYSTEMALARMS_ALARM_OK;
+    uint32_t hold_ms  = 0;
 
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(BOARD_UX_TICK_MS));
@@ -348,6 +360,18 @@ static void board_ux_task(__attribute__((unused)) void *arg)
                 worst = a;
             }
         }
+
+        /* Escalate at once, calm down slowly. */
+        if (worst >= shown) {
+            shown   = worst;
+            hold_ms = 2000;
+        } else if (hold_ms > BOARD_UX_TICK_MS) {
+            hold_ms -= BOARD_UX_TICK_MS;
+        } else {
+            hold_ms = 0;
+            shown   = worst;
+        }
+        worst = shown;
 
         if (armed == FLIGHTSTATUS_ARMED_ARMED) {
             on_ms = 900; off_ms = 100;
