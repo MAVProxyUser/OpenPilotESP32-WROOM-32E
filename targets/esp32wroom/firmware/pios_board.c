@@ -298,14 +298,26 @@ static void board_apply_default_airframe(void)
 #define BOARD_BTN_HOLD_MS   3000
 #define BOARD_UX_TICK_MS    25
 #define BOARD_UX_STACK      1024   /* words; see the unit note in pios_esp32.h */
+/*
+ * Above the idle band. At tskIDLE_PRIORITY + 2 this task was being preempted
+ * often enough that a 10Hz strobe came out visibly choppy -- the blink was
+ * reporting the scheduler, not the armed state. Still well below anything
+ * that flies the aircraft; it runs for microseconds every tick.
+ */
+#define BOARD_UX_PRIORITY   (tskIDLE_PRIORITY + 5)
 
 static void board_ux_task(__attribute__((unused)) void *arg)
 {
     uint32_t held_ms = 0;
     uint32_t phase   = 0;
 
+    TickType_t wake = xTaskGetTickCount();
+
     for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(BOARD_UX_TICK_MS));
+        /* delayUntil, not delay: plain vTaskDelay waits AT LEAST the period,
+         * so every preemption permanently shifted the blink and the strobe
+         * wandered. This keeps a fixed cadence. */
+        vTaskDelayUntil(&wake, pdMS_TO_TICKS(BOARD_UX_TICK_MS));
         phase += BOARD_UX_TICK_MS;
 
         /*
@@ -377,7 +389,7 @@ static void board_ux_start(void)
 
     gpio_config(&io);
     xTaskCreate(board_ux_task, "BoardUX", BOARD_UX_STACK, NULL,
-                tskIDLE_PRIORITY + 2, NULL);
+                BOARD_UX_PRIORITY, NULL);
 }
 
 
