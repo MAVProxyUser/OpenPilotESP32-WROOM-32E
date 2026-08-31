@@ -281,7 +281,23 @@ const struct pios_esp32_dsm_cfg pios_dsm_cfg = {
      * signal to this pin. */
     .port        = UART_NUM_2,
     .rx_pin      = GPIO_NUM_16,
-    .bind_pulses = 9,    /* DSMX 2048/11ms -- see the enum in pios_esp32_priv.h */
+    /*
+     * Auto-bind is OFF. The receiver on this airframe is already bound, and
+     * leaving it armed is a bad trade: a bound satellite is silent when the
+     * transmitter is switched off, which is indistinguishable from never
+     * having been bound, so powering up with the TX off would drop a working
+     * receiver into bind mode and leave it there.
+     *
+     * The bind code is still compiled and works -- set this to 9 (DSMX
+     * 2048/11ms, right for a DSMX satellite like the SPM9745) to arm it for
+     * one flash cycle, power-cycle to bind, then set it back to 0. The full
+     * pulse-count table is in the config struct in pios_esp32_priv.h.
+     *
+     * Note it has to be a POWER CYCLE, not a reset: the satellite only opens
+     * its bind window shortly after its own supply comes up, and a software
+     * reset of the ESP32 never drops the 3.3V feeding it.
+     */
+    .bind_pulses = 0,
     .listen_ms   = 250,
 };
 
