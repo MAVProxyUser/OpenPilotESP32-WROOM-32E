@@ -35,6 +35,10 @@
 #include <manualcontrolsettings.h>
 #include <mixersettings.h>
 #include <actuatorsettings.h>
+#include <flightstatus.h>
+#include <systemalarms.h>
+#include "driver/gpio.h"
+#include "esp_system.h"
 #include <taskinfo.h>
 #include <pios_com_priv.h>
 #include <pios_rcvr_priv.h>
@@ -266,6 +270,121 @@ static void board_apply_default_airframe(void)
     PIOS_ESP32_FLASHFS_MarkProvisioned();
 }
 
+
+/* ---------------------------------------------------------------------- *
+ * Status LED and the BOOT button
+ *
+ * The stock Notify module is built for WS2811 RGB strips -- it wants
+ * lednotification, flightbatterystate, optypes and HwSettings' WS2811 output
+ * config -- which is a lot of machinery for a board whose only indicator is
+ * one blue LED on GPIO13. This gives the same information in the form the
+ * hardware actually has: blink rate says what the aircraft is doing.
+ *
+ *     solid            booting (set during PIOS_Board_Init)
+ *     mostly on        ARMED
+ *     slow heartbeat   disarmed, no alarms
+ *     double-time      disarmed, a warning is up
+ *     fast             disarmed, an error or critical alarm is up
+ *     flutter          BOOT button held, settings erase pending
+ *
+ * The BOOT button lives here too because it is the same kind of thing --
+ * board-level UX -- and one task doing both costs less than two.
+ * ---------------------------------------------------------------------- */
+#define BOARD_BTN_PIN       GPIO_NUM_0
+#define BOARD_BTN_HOLD_MS   3000
+#define BOARD_UX_TICK_MS    50
+#define BOARD_UX_STACK      1024   /* words; see the unit note in pios_esp32.h */
+
+static void board_ux_task(__attribute__((unused)) void *arg)
+{
+    uint32_t held_ms = 0;
+    uint32_t phase   = 0;
+
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(BOARD_UX_TICK_MS));
+        phase += BOARD_UX_TICK_MS;
+
+        /*
+         * BOOT is GPIO0, active low. Note this deliberately does NOT try to
+         * detect the button being held at power-up: GPIO0 low at the reset
+         * instant IS the serial-download strap, so a board held that way
+         * never reaches this code at all. Holding it after boot is the only
+         * thing firmware can see.
+         */
+        if (gpio_get_level(BOARD_BTN_PIN) == 0) {
+            held_ms += BOARD_UX_TICK_MS;
+            if (held_ms >= BOARD_BTN_HOLD_MS) {
+                /* Wipe settings and come back on compiled-in defaults. The
+                 * marker lives in the same namespace, so Format() clears it
+                 * too and the next boot re-provisions. */
+                PIOS_LED_On(PIOS_LED_HEARTBEAT);
+                (void)PIOS_FLASHFS_Format(pios_uavo_settings_fs_id);
+                vTaskDelay(pdMS_TO_TICKS(300));
+                esp_restart();
+            }
+            /* Flutter while held, so it is obvious something is happening
+             * before it happens. */
+            PIOS_LED_Toggle(PIOS_LED_HEARTBEAT);
+            continue;
+        }
+        held_ms = 0;
+
+        uint16_t on_ms, off_ms;
+        FlightStatusArmedOptions armed = FLIGHTSTATUS_ARMED_DISARMED;
+        SystemAlarmsData alarms;
+        uint8_t worst = SYSTEMALARMS_ALARM_OK;
+
+        FlightStatusArmedGet(&armed);
+        SystemAlarmsGet(&alarms);
+
+        for (uint8_t i = 0; i < SYSTEMALARMS_ALARM_NUMELEM; i++) {
+            /* Alarm is a named struct, not a bare array. The generated
+             * ToArray macro yields the array itself, so index it directly. */
+            uint8_t a = SystemAlarmsAlarmToArray(alarms.Alarm)[i];
+
+            /* Uninitialised outranks OK numerically but means "nothing to
+             * report yet", so it must not read as an error. */
+            if (a != SYSTEMALARMS_ALARM_UNINITIALISED && a > worst) {
+                worst = a;
+            }
+        }
+
+        if (armed == FLIGHTSTATUS_ARMED_ARMED) {
+            on_ms = 900; off_ms = 100;
+        } else if (worst >= SYSTEMALARMS_ALARM_ERROR) {
+            on_ms = 100; off_ms = 100;
+        } else if (worst == SYSTEMALARMS_ALARM_WARNING) {
+            on_ms = 100; off_ms = 300;
+        } else {
+            on_ms = 100; off_ms = 900;
+        }
+
+        if (phase >= (uint32_t)(on_ms + off_ms)) {
+            phase = 0;
+        }
+        if (phase < on_ms) {
+            PIOS_LED_On(PIOS_LED_HEARTBEAT);
+        } else {
+            PIOS_LED_Off(PIOS_LED_HEARTBEAT);
+        }
+    }
+}
+
+static void board_ux_start(void)
+{
+    gpio_config_t io = {
+        .intr_type    = GPIO_INTR_DISABLE,
+        .mode         = GPIO_MODE_INPUT,
+        .pin_bit_mask = 1ULL << BOARD_BTN_PIN,
+        .pull_up_en   = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+    };
+
+    gpio_config(&io);
+    xTaskCreate(board_ux_task, "BoardUX", BOARD_UX_STACK, NULL,
+                tskIDLE_PRIORITY + 2, NULL);
+}
+
 void PIOS_Board_Init(void)
 {
     PIOS_DELAY_Init();
@@ -459,5 +578,6 @@ void PIOS_Board_Init(void)
     }
 #endif /* PIOS_INCLUDE_DSM */
 
-    PIOS_LED_Off(PIOS_LED_HEARTBEAT);
+    /* From here the LED belongs to the status task, not to init. */
+    board_ux_start();
 }
