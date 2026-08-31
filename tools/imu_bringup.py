@@ -66,13 +66,27 @@ class Esp32SerialTransport(SerialTransport):
         # uninterrupted (first bytes 0.11s after open, no boot gap). Tools
         # now attach to a running -- even armed -- board without touching it.
         import serial as _serial
-        ser = _serial.Serial()
-        ser.port = port
-        ser.baudrate = baud
-        ser.timeout = 0
-        ser.dtr = False
-        ser.rts = False
-        ser.open()
+        try:
+            ser = _serial.Serial()
+            ser.port = port
+            ser.baudrate = baud
+            ser.timeout = 0
+            ser.dtr = False
+            ser.rts = False
+            ser.open()
+        except Exception:
+            # Some adapter/driver states reject the pre-configured open with
+            # termios EINVAL. Fall back to the classic open -- this DOES
+            # reset the board (DTR pulse), which is worse but works; the
+            # deassert after keeps it out of the bootloader.
+            ser = _serial.Serial(port, baud, timeout=0)
+            try:
+                ser.dtr = False
+                ser.rts = False
+            except (OSError, IOError):
+                pass
+            print("  (note: no-reset open failed; board was reset by this "
+                  "attach)", flush=True)
         self.ser = ser
 
 

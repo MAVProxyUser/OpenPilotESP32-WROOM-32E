@@ -488,10 +488,12 @@ static void board_pwm_selftest(void)
  * BEC's 5V feeds VUSB), so anything that needs powered ESCs is driven over
  * the RC link and answered on the LED. User's protocol, near verbatim:
  *
- *   ENTER  power up with THROTTLE FULL and the flight-mode switch at either
- *          extreme, within the first seconds of RC link. (Throttle-full at
- *          power-on is never true in normal use, and no TX means no entry.)
- *          LED gives 5 quick blinks, then waits for throttle LOW.
+ *   ENTER  within ~2.5s of the RC link at power-up, wiggle the flight-mode
+ *          switch extreme-to-extreme four times, throttle at rest (LOW).
+ *          No throttle gesture is part of entry, by user veto: training a
+ *          hand to power up with the throttle pinned is a habit that
+ *          eventually meets a live aircraft. No TX means no entry.
+ *          LED gives 5 quick blinks on entry.
  *   PHASE  for motor N (1..4) the LED blinks N times, pauses, repeats.
  *          The throttle stick drives THAT MOTOR ALONE, live:
  *          1000..1400us across the stick. Raise it until the motor just
@@ -569,17 +571,54 @@ static void board_motor_cal_rf(uint32_t dsm_rcvr_id)
         return;                                       /* no RC -> normal boot */
     }
 
-    float thr = mcal_scale(raw, mc.ChannelMin.Throttle,
-                           mc.ChannelNeutral.Throttle, mc.ChannelMax.Throttle);
-    float sw  = mcal_scale(PIOS_RCVR_Read(dsm_rcvr_id, sw_ch),
-                           mc.ChannelMin.FlightMode,
-                           mc.ChannelNeutral.FlightMode, mc.ChannelMax.FlightMode);
+    /*
+     * Entry: WIGGLE THE SWITCH, throttle untouched.
+     *
+     * The first version used throttle-full at power-up as the gesture. The
+     * user vetoed it, correctly: training a hand to power a quad up with
+     * the throttle pinned is a habit that eventually meets a live aircraft.
+     * The switch dance involves no stick that can ever make thrust.
+     *
+     * For ~2.5s after the RC link comes up, watch the flight-mode switch.
+     * Four extreme-to-extreme transitions inside the window (a deliberate
+     * back-and-forth wiggle, impossible by accident) enters calibration;
+     * anything else falls through to a normal boot, costing that boot only
+     * the sniff window. Throttle must sit LOW throughout -- its natural
+     * resting state, demanded, not performed.
+     */
+    float sw;
+    float last_extreme = 0.0f;
+    uint8_t flips = 0;
 
-    /* Entry: throttle FULL and switch at an extreme. Anything else: fly. */
-    if (thr < 0.8f || (sw < 0.6f && sw > -0.6f)) {
+    t0 = xTaskGetTickCount();
+    while ((xTaskGetTickCount() - t0) * portTICK_PERIOD_MS < 2500) {
+        sw = mcal_scale(PIOS_RCVR_Read(dsm_rcvr_id, sw_ch),
+                        mc.ChannelMin.FlightMode,
+                        mc.ChannelNeutral.FlightMode, mc.ChannelMax.FlightMode);
+        float thr = mcal_scale(PIOS_RCVR_Read(dsm_rcvr_id, thr_ch),
+                               mc.ChannelMin.Throttle, mc.ChannelNeutral.Throttle,
+                               mc.ChannelMax.Throttle);
+        if (thr > -0.5f) {
+            return;              /* throttle not at rest: never enter */
+        }
+        if (sw > 0.6f || sw < -0.6f) {
+            float e = (sw > 0) ? 1.0f : -1.0f;
+            if (last_extreme != 0.0f && e != last_extreme) {
+                flips++;
+                /* reward progress with a little more window */
+                t0 = xTaskGetTickCount() - pdMS_TO_TICKS(1000);
+            }
+            last_extreme = e;
+        }
+        if (flips >= 4) {
+            break;
+        }
+        PIOS_DELAY_WaitmS(30);
+    }
+    if (flips < 4) {
         return;
     }
-    float entry_sign = (sw > 0) ? 1.0f : -1.0f;
+    float entry_sign = last_extreme;
 
     /* Welcome: 5 quick blinks, then demand throttle low before any motor
      * can be driven. */
@@ -587,12 +626,6 @@ static void board_motor_cal_rf(uint32_t dsm_rcvr_id)
         PIOS_LED_Toggle(PIOS_LED_HEARTBEAT);
         PIOS_DELAY_WaitmS(80);
     }
-    do {
-        thr = mcal_scale(PIOS_RCVR_Read(dsm_rcvr_id, thr_ch),
-                         mc.ChannelMin.Throttle, mc.ChannelNeutral.Throttle,
-                         mc.ChannelMax.Throttle);
-        PIOS_DELAY_WaitmS(50);
-    } while (thr > -0.8f);
 
     uint16_t captured[4] = { 1000, 1000, 1000, 1000 };
     uint32_t blink_t = 0;
@@ -603,7 +636,7 @@ static void board_motor_cal_rf(uint32_t dsm_rcvr_id)
         bool marked = false;
 
         while (!marked) {
-            thr = mcal_scale(PIOS_RCVR_Read(dsm_rcvr_id, thr_ch),
+            float thr = mcal_scale(PIOS_RCVR_Read(dsm_rcvr_id, thr_ch),
                              mc.ChannelMin.Throttle, mc.ChannelNeutral.Throttle,
                              mc.ChannelMax.Throttle);
             sw = mcal_scale(PIOS_RCVR_Read(dsm_rcvr_id, sw_ch),
