@@ -75,8 +75,50 @@ def main():
     got = {}
     connected = threading.Event()
 
+    # SystemAlarms element names, from the same XML the ids come from.
+    import xml.etree.ElementTree as ET
+    alarm_names = []
+    for fel in ET.parse(os.path.join(default_xml_dir(),
+                                     "systemalarms.xml")).getroot().iter("field"):
+        if fel.get("name") == "Alarm":
+            en = fel.get("elementnames")
+            alarm_names = [n.strip() for n in
+                           (en.split(",") if en else
+                            [e.text for e in fel.find("elementnames")])]
+            break
+
+    # Severity order is Uninitialised, OK, Warning, Critical, Error -- ERROR
+    # OUTRANKS CRITICAL in this scheme, and okToArm() refuses on anything
+    # >= Critical. So both block. GPS and Telemetry are exempted, exactly as
+    # okToArm() exempts them.
+    BLOCKING = ("Critical", "Error")
+    EXEMPT = ("GPS", "Telemetry")
+
+    start_t = time.time()
+    prev_state = {"Armed": None, "alarms": {}}
+
     def on_object(objdef, inst_id, decoded):
         got[objdef.name] = decoded
+        # Event prints, timestamped at arrival. A brief Arming state or a
+        # one-second alarm latch can fall between display rows; these cannot.
+        t = time.time() - start_t
+        if objdef.name == "FlightStatus":
+            a = decoded.get("Armed")
+            if a != prev_state["Armed"]:
+                print("  >> %6.1fs  Armed: %s -> %s" % (t, prev_state["Armed"], a),
+                      flush=True)
+                prev_state["Armed"] = a
+        elif objdef.name == "SystemAlarms" and alarm_names:
+            for n, v in zip(alarm_names, decoded["Alarm"]):
+                pv = prev_state["alarms"].get(n)
+                was = pv in BLOCKING
+                now = v in BLOCKING
+                if was != now and n not in EXEMPT:
+                    print("  >> %6.1fs  ALARM %s: %s -> %s%s" % (
+                        t, n, pv, v,
+                        "   << BLOCKS ARMING" if now else "   (cleared)"),
+                        flush=True)
+                prev_state["alarms"][n] = v
 
     threading.Thread(target=client.run,
                      kwargs=dict(duration=100000, on_object=on_object,
@@ -151,6 +193,8 @@ def main():
 
     pushed = set_period("ManualControlCommand", 100) and \
              set_period("ActuatorCommand", 250)
+    set_period("SystemAlarms", 200)
+    set_period("SystemStats", 500)
     if not pushed:
         print("  (could not raise the push rate; falling back to polling)")
 
@@ -197,14 +241,38 @@ def main():
                 why.append("yaw" if field == "Yaw" else field.lower())
             if not m.get("Connected"):
                 why.append("nolink")
-            verdict = "OK - hold 1s" if not why else "need: " + ",".join(why)
+
+            # Alarms outrank stick problems: okToArm() refuses on any alarm
+            # at Critical or Error (except GPS/Telemetry), and an earlier
+            # version of this tool fetched SystemAlarms and then never looked
+            # at it -- it printed "OK - hold 1s" while the flight code was
+            # refusing. The one lie a diagnostic tool must not tell.
+            blockers = []
+            if al and alarm_names:
+                blockers = [n for n, v in zip(alarm_names, al["Alarm"])
+                            if v in BLOCKING and n not in EXEMPT]
+
+            if blockers:
+                verdict = "BLOCKED alarm: " + ",".join(blockers)
+            elif why:
+                verdict = "need: " + ",".join(why)
+            else:
+                verdict = "OK - hold 1s"
+                if field and abs(val) < 0.70:
+                    # 0.50 is the threshold; a hair above it resets the 1s
+                    # hold on every jitter. Full stick used to read 0.98.
+                    verdict += "  (MARGINAL %.2f - FULL stick!)" % val
             if f.get("Armed") == "Armed":
                 verdict = "*** ARMED ***"
 
+            st = got.get("SystemStats")
+            cpuload = st.get("CPULoad") if st else None
+
             ch = [int(v) for v in ac["Channel"][:4]] if ac else []
-            print("  %-9s %+5.2f  %+5.2f  %+5.2f  %+5.2f  %-17s %s" % (
+            print("  %-9s %+5.2f  %+5.2f  %+5.2f  %+5.2f  cpu=%-3s %-17s %s" % (
                 f.get("Armed"), thr, m.get("Roll", 0), m.get("Pitch", 0),
-                m.get("Yaw", 0), str(ch), verdict), flush=True)
+                m.get("Yaw", 0), str(cpuload) if cpuload is not None else "?",
+                str(ch), verdict), flush=True)
             time.sleep(0.4)
     except KeyboardInterrupt:
         print("\nrestoring telemetry rates...", flush=True)
