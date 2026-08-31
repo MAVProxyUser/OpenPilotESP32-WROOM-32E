@@ -89,8 +89,8 @@ def main():
         def poll_recv(self, timeout):
             return self.inner.poll_recv(timeout)
 
-    print("opening %s (this RESETS the board; linking can take up to 30s"
-          " -- silence here is normal)..." % args.serial, flush=True)
+    print("opening %s (board keeps running -- attach does not reset it; "
+          "link typically up in ~2s)..." % args.serial, flush=True)
     client = UAVTalkClient(Locked(Esp32SerialTransport(args.serial, args.baud)), db)
     got = {}
     connected = threading.Event()
