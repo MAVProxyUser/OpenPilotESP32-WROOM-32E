@@ -108,10 +108,7 @@ CONFIG_ESP_CONSOLE_UART_CUSTOM_NUM_1=y
 # chip select on this board.
 CONFIG_ESP_CONSOLE_UART_TX_GPIO=22
 CONFIG_ESP_CONSOLE_UART_RX_GPIO=23
-# Match PIOS's telemetry rate. When the console is temporarily moved to UART0
-# for debugging, PIOS reconfigures that UART to 57600 the moment it takes the
-# port over, so a console left at 115200 turns to garbage exactly at the
-# handover, mid-boot. Matching the two makes the whole log readable at one
-# baud. The first lines still arrive at 115200 regardless -- those come from
-# the chip's mask ROM, before any of this configuration exists.
+# Match PIOS's telemetry rate, so a console temporarily moved to UART0 for
+# debugging stays readable across the point where PIOS takes that UART over
+# and reconfigures it to 57600. ROM bootloader lines still arrive at 115200.
 CONFIG_ESP_CONSOLE_UART_BAUDRATE=57600
