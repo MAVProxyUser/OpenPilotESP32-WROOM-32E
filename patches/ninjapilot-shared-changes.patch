@@ -890,7 +890,7 @@ index e67e684e4..16b62103e 100644
      uint8_t rxbyte = rxbuffer[(*position)++];
  
 diff --git a/ground/gazebo_bridge/gazebo_bridge.py b/ground/gazebo_bridge/gazebo_bridge.py
-index e965b652a..7f16dba70 100644
+index e965b652a..118bac3ed 100644
 --- a/ground/gazebo_bridge/gazebo_bridge.py
 +++ b/ground/gazebo_bridge/gazebo_bridge.py
 @@ -66,6 +66,33 @@ def print(*args, **kwargs):  # noqa: A001 - deliberate module-wide shadow
@@ -1149,6 +1149,20 @@ index e965b652a..7f16dba70 100644
      have_mag, mag_body = state.mag_snapshot()
      if have_mag:
          client.send_object("MagSensor", {"x": mag_body[0], "y": mag_body[1], "z": mag_body[2], "temperature": 25.0})
+@@ -4737,6 +4837,13 @@ gz_motor_pub = None
+ # lands on the wrong physical motor and fights itself. Matching each mixer
+ # motor to the rotor that's actually in its assumed slot gives a complete,
+ # unambiguous remap: M1->rotor_2, M2->rotor_0, M3->rotor_3, M4->rotor_1.
++# ch1..4 -> X3 rotor index: ch1=front-left(rotor_2), ch2=front-right
++# (rotor_0), ch3=rear-right(rotor_3), ch4=rear-left(rotor_1). VERIFIED
++# correct by a deliberate falsification test (2026-09-01): remapping
++# ch1/ch2 to the rear rotors flipped the sim on takeoff - the mixer's
++# +pitch on motors 1&2 lifts the DROPPED nose by thrusting under it,
++# so motors 1&2 being the FRONT pair is the consistent geometry, on the
++# sim and on the real board alike.
+ CHANNEL_TO_ROTOR = [2, 0, 3, 1]
+ 
+ 
 diff --git a/ground/gazebo_bridge/run_wroom.sh b/ground/gazebo_bridge/run_wroom.sh
 index b7a3a6295..dada6a668 100755
 --- a/ground/gazebo_bridge/run_wroom.sh

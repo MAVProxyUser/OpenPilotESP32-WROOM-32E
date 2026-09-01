@@ -88,7 +88,7 @@ def main():
         "gcs": GCS_HANDSHAKEREQ, "connected_at": None,
         "last_handshake": 0.0, "last_poll": 0.0, "poll_i": 0,
         "last_status": 0.0, "n_rx": 0, "n_rx_win": 0,
-        "last_att": None, "att": (0.0, 0.0, 0.0), "thr": None,
+        "last_att": None, "att": (0.0, 0.0, 0.0), "thr": None, "pwm": None,
         "armed": None, "mode": None, "alarms": None,
         "stall_open": None,
     }
@@ -176,6 +176,8 @@ def main():
                         att_max[i] = max(att_max[i], v)
                 elif o.name == "ManualControlCommand":
                     state["thr"] = d.get("Throttle")
+                elif o.name == "ActuatorCommand":
+                    state["pwm"] = d.get("Channel", [])[:4]
                 elif o.name == "FlightStatus":
                     if d["Armed"] != state["armed"]:
                         event(now, "ARM", "%s (mode %s)" % (d["Armed"], d["FlightMode"]))
@@ -206,12 +208,14 @@ def main():
                            for i, v in enumerate(al) if ALARM_RANK.get(v, 0) >= 1]
                     worst = " ".join(bad[:4]) if bad else "all-OK"
                 r_, p_, y_ = state["att"]
-                print("[%7.1fs] %s rp(%6.1f,%6.1f) yaw %6.1f thr %s pkts/s %3d  %s"
+                pwm = state["pwm"]
+                pwm_s = ("[" + " ".join("%4d" % c for c in pwm) + "]") if pwm else "[---- ---- ---- ----]"
+                print("[%7.1fs] %s rp(%6.1f,%6.1f) yaw %6.1f thr %s pwm %s pkts/s %3d  %s"
                       % (now - t0,
                          "LINK" if state["gcs"] == GCS_CONNECTED else "....",
                          r_, p_, y_,
                          ("%.2f" % state["thr"]) if state["thr"] is not None else "  - ",
-                         state["n_rx_win"], worst), flush=True)
+                         pwm_s, state["n_rx_win"], worst), flush=True)
                 state["n_rx_win"] = 0
                 # stall detection also from the quiet side
                 if state["last_att"] and now - state["last_att"] > 1.0 and state["stall_open"] is None:
