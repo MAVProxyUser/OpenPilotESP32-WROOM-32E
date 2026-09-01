@@ -774,6 +774,26 @@ index faf9c19ad..8819526e1 100644
              channelNames << QString("Channel%1 (unmapped)").arg(i + 1);
          } else {
              channelNames << QString("Channel%1").arg(i + 1);
+diff --git a/ground/openpilotgcs/src/plugins/config/configgadgetwidget.cpp b/ground/openpilotgcs/src/plugins/config/configgadgetwidget.cpp
+index 35ec8468a..34c8b8dfd 100644
+--- a/ground/openpilotgcs/src/plugins/config/configgadgetwidget.cpp
++++ b/ground/openpilotgcs/src/plugins/config/configgadgetwidget.cpp
+@@ -192,6 +192,15 @@ void ConfigGadgetWidget::onAutopilotConnect()
+ 
+             qwd = new ConfigRevoHWWidget(this);
+             stackWidget->replaceTab(ConfigGadgetWidget::hardware, qwd);
++        } else if ((board & 0xff00) == 0x1200) {
++            /* NinjaPilot ESP32 Thing Plus: runs the CC-style Attitude
++             * module (complementary filter, AttitudeSettings board
++             * rotation, AccelGyroSettings bias), so the CopterControl
++             * attitude widget is the right calibration screen. The CC
++             * hardware widget is NOT installed -- it edits port muxes
++             * this board does not have. */
++            QWidget *qwd = new ConfigCCAttitudeWidget(this);
++            stackWidget->replaceTab(ConfigGadgetWidget::sensors, qwd);
+         } else {
+             // Unknown board
+             qDebug() << "Unknown board " << board;
 diff --git a/ground/openpilotgcs/src/plugins/config/images/multirotor-shapes.svg b/ground/openpilotgcs/src/plugins/config/images/multirotor-shapes.svg
 index 23df6e045..5ac0d0201 100644
 --- a/ground/openpilotgcs/src/plugins/config/images/multirotor-shapes.svg
