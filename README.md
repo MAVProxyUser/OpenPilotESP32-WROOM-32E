@@ -142,11 +142,11 @@ Everything that needs motors powered (RF motor calibration, the wizard's
 ESC/output calibration over WiFi) is designed to run on battery power with
 no USB attached; everything on USB runs with motors unpowered.
 
-The firmware also enforces this: the CP2102 USB bridge is powered from
-VUSB and idles our RX0 line high, so the board detects USB power with no
-extra wiring (pulldown on GPIO3, debounced). USB present raises the
-Battery alarm to Critical -- the PWR/BATT tile lights in System Health and
-arming is refused until the cable is out.
+There is no firmware interlock for this, deliberately: the only signal a
+detector could read (the CP2102 waking up on the VUSB rail) is also
+energized by the BEC in the flight configuration, so it cannot tell a USB
+cable from battery power and would block arming in flight. The rule is
+procedural.
 
 ### IMU
 
