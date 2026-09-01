@@ -221,8 +221,17 @@ static void wifi_server_task(__attribute__((unused)) void *arg)
                 close(wifi.client);
                 wifi.client = -1;
             } else if (n > 0 && wifi.rx_in_cb) {
+                /* Brief backpressure only: the fifo is sized for a whole
+                 * GCS connect burst, so a full fifo here means the
+                 * telemetry RX task is genuinely behind. Blocking this
+                 * task for long reads as a dead link to the client (it
+                 * also serves accept and the beacon), which is worse than
+                 * losing data: for TCP the kernel's own flow control
+                 * already buffers unread stream upstream of us, and for
+                 * UDP dropping the remainder loses at most this datagram
+                 * -- UAVTalk's per-object retries own recovery. */
                 uint16_t off = 0;
-                for (int spins = 0; off < (uint16_t)n && spins < 200; spins++) {
+                for (int spins = 0; off < (uint16_t)n && spins < 10; spins++) {
                     bool woken = false;
                     uint16_t took = (wifi.rx_in_cb)(wifi.rx_in_context,
                                                     buf + off,

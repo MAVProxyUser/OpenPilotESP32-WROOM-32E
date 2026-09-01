@@ -102,7 +102,12 @@
 // ------------------------
 #define PIOS_COM_MAX_DEVS      3
 
-#define PIOS_COM_TELEM_RF_RX_BUF_LEN 192
+/* Must hold a whole GCS burst: on connect it requests every object and
+ * its metaobject back to back (~150 requests of ~13 bytes in a few
+ * chunks). At 192 the fifo overflowed on that burst and the WiFi RX
+ * path's backpressure turned into multi-second stalls the GCS read as a
+ * dead link -- connect/disconnect looping forever. */
+#define PIOS_COM_TELEM_RF_RX_BUF_LEN 2048
 #define PIOS_COM_TELEM_RF_TX_BUF_LEN 192
 
 // Telemetry's view of the COM device, and its task sizing. The handle is
