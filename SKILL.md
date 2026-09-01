@@ -100,6 +100,27 @@ the ritual itself at boot. PROPS OFF THROUGHOUT.
 
 Every power-up of the cal build recalibrates — never leave it flashed.
 
+## Voice-guided bench test (props OFF)
+
+```bash
+python3 tools/bench_test.py            # board on battery, GCS closed
+```
+
+The tool drives, you hold the quad and follow the spoken prompts (macOS
+`say`): it applies the recommended settings (persisted), temporarily
+takes control (GCS receiver mapping + Always Armed, RAM ONLY - a power
+cycle restores DSM unconditionally), announces arming, ramps throttle
+0->90% over ~100s while directing labeled motions (nose down / nose up /
+roll left / roll right / hold still with a countdown), then announces
+disarm and restores the radio. Grades printed at the end: per-stimulus
+estimate signs, mixer response direction (does the dropped side's motor
+pair rise), gyro-vs-estimate and accel-vs-estimate correlations (the
+flip signature, live), and vibration per throttle band from the
+hold-still windows. Motors spin from the moment of arming - PROPS OFF,
+and expect them to scream at the high end of the ramp. Ctrl+C at any
+time = safe shutdown + restore. Full record lands in
+~/NinjaPilot-logs/bench_*.jsonl.
+
 ## Monitor a real flight
 
 ```bash
