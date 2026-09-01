@@ -142,6 +142,12 @@ Everything that needs motors powered (RF motor calibration, the wizard's
 ESC/output calibration over WiFi) is designed to run on battery power with
 no USB attached; everything on USB runs with motors unpowered.
 
+The firmware also enforces this: the CP2102 USB bridge is powered from
+VUSB and idles our RX0 line high, so the board detects USB power with no
+extra wiring (pulldown on GPIO3, debounced). USB present raises the
+Battery alarm to Critical -- the PWR/BATT tile lights in System Health and
+arming is refused until the cable is out.
+
 ### IMU
 
 Use an **ICM-20602**. It is MPU-6500 family, so it shares the MPU6000 register

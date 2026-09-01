@@ -320,6 +320,28 @@ static void board_ux_task(__attribute__((unused)) void *arg)
 {
     uint32_t held_ms = 0;
     uint32_t phase   = 0;
+    uint32_t usb_ms  = 0;
+    uint8_t usb_hist = 0xFF;   /* start "USB present": safe until proven otherwise */
+
+    /*
+     * USB power detection, no extra wiring: the CP2102 USB bridge is
+     * powered from VUSB and its TX drives our RX0 (GPIO3) high whenever
+     * the bridge has power -- UART idle is high, traffic is mostly high.
+     * Unpowered, its TX is high-impedance, and the internal pulldown
+     * (enabled here; the UART driver's default pullup must go, or it
+     * would fake a powered bridge) reads a clean low.
+     *
+     * The point is not cosmetics. On this board the ESC/BEC 5V feeds
+     * VUSB, so flight battery and USB together can destroy it -- see the
+     * Power section of the README. USB present therefore raises the
+     * Battery alarm to Critical, which okToArm() refuses: motors cannot
+     * be armed while a USB cable is in. On battery alone the alarm
+     * clears. Sampled every UX tick, debounced over 8 samples, and the
+     * failure mode is the safe one -- a floating line reads low only
+     * because of the pulldown, and a powered bridge cannot read low.
+     */
+    gpio_pullup_dis(GPIO_NUM_3);
+    gpio_pulldown_en(GPIO_NUM_3);
 
     TickType_t wake = xTaskGetTickCount();
 
@@ -329,6 +351,18 @@ static void board_ux_task(__attribute__((unused)) void *arg)
          * wandered. This keeps a fixed cadence. */
         vTaskDelayUntil(&wake, pdMS_TO_TICKS(BOARD_UX_TICK_MS));
         phase += BOARD_UX_TICK_MS;
+
+        usb_ms += BOARD_UX_TICK_MS;
+        if (usb_ms >= 250) {
+            usb_ms   = 0;
+            usb_hist = (uint8_t)((usb_hist << 1) | (gpio_get_level(GPIO_NUM_3) ? 1 : 0));
+            if (usb_hist == 0x00) {
+                AlarmsClear(SYSTEMALARMS_ALARM_BATTERY);
+            } else if (usb_hist == 0xFF) {
+                AlarmsSet(SYSTEMALARMS_ALARM_BATTERY, SYSTEMALARMS_ALARM_CRITICAL);
+            }
+            /* mixed history: power state mid-change, keep the last verdict */
+        }
 
         /*
          * BOOT is GPIO0, active low. Note this deliberately does NOT try to
