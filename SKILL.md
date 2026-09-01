@@ -139,6 +139,27 @@ max-for-6s-then-min inside the ESCs' calibration window. (The old RF
 switch-wiggle calibration was retired once the wizard path existed; it
 lives in git history if ever needed.)
 
+## Run the simulation twin (fw_simwroom)
+
+The posix twin of this board (same control stack, board id 0x1202 — see
+README "Simulation twin"). Build in the NinjaPilot tree through the
+space-free symlink, run from a scratch directory (the settings filesystem
+writes slot files into the CWD):
+
+```bash
+ln -sfn "/path/to/NinjaPilot-15.02.ninja" /tmp/njp
+cd /tmp/njp && make ROOT_DIR=$PWD fw_simwroom
+mkdir -p /tmp/simwroom_cwd && cd /tmp/simwroom_cwd
+/tmp/njp/build/fw_simwroom/fw_simwroom.elf     # UAVTalk on UDP :9000
+```
+
+The GCS connects to it over UDP 127.0.0.1:9000 exactly like the hardware
+over WiFi — same screens, same pin labels, same version check. Sensor
+input is GyroSensor/AccelSensor UAVObjects (what gazebo_bridge publishes);
+without a feeder the attitude sits level and the Attitude alarm complains,
+which is correct. Stdout is block-buffered when redirected — an empty log
+from a killed process is buffering, not silence.
+
 ## Run the GCS against the board
 
 The GCS prefers UDP by default (that is the OSD32MP1 workflow). Override it:

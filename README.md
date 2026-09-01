@@ -122,6 +122,50 @@ overridable instead of hardcoded to UDP — default behaviour is unchanged.
 adds an I2C transport to the MPU6000 driver, for breakouts that do not bring
 SDO/AD0 out to a pin and so cannot do 4-wire SPI.
 
+## Simulation twin: fw_simwroom
+
+The flight tree gains a posix target that is this board, minus the silicon:
+`flight/targets/boards/simwroom/` builds `fw_simwroom.elf`, a native process
+that runs the SAME control stack as the hardware — the CC-style Attitude
+complementary filter, the same module set (Receiver, ManualControl,
+Stabilization, Attitude, Actuator, Telemetry), no Revo estimator, no nav
+stack. It exists so a change can be flown in Gazebo before it is flown in the
+back yard.
+
+What makes it a twin rather than another simposix:
+
+- **Same board identity.** It reports board id 0x1202 (type 0x12 rev 0x02)
+  through FirmwareIAPObj, with a real "OpFw" description blob (git hash,
+  build time, UAVO-set sha1), so the GCS gives it the same config screens,
+  the same silkscreen pin labels and the same version check as the hardware.
+- **Same IMU contract.** attitude.c compiles down the same
+  `PIOS_INCLUDE_ICM20602` branch the ESP32 build takes. The posix driver
+  (`flight/pios/posix/pios_icm20602_sim.c`) registers as
+  `PIOS_ICM20602_Driver` and advertises the REAL board's scale factors
+  (±2000 dps → 1/16.4, ±8 g → g/4096, from board_hw_defs.c), so calibration
+  settings behave identically. Sensor data arrives as GyroSensor/AccelSensor
+  UAVObjects — exactly what the Gazebo bridge publishes — and is packed into
+  the same int16 queue records the hardware driver produces.
+- **Same reboot protocol.** The GCS IAP sequence (1122/2233/3344) ends the
+  process cleanly instead of restarting a chip.
+
+Build and try it (in the NinjaPilot tree, via the space-free symlink):
+
+```bash
+cd /tmp/njp && make ROOT_DIR=$PWD fw_simwroom
+build/fw_simwroom/fw_simwroom.elf   # binds UAVTalk on UDP :9000
+```
+
+Verified: boots, hands the GCS/pyuavtalk board id 0x1202 and the version
+blob, streams AttitudeState at 25 Hz, and integrates streamed GyroSensor
+data through the complementary filter (a 20 deg/s roll feed rolls the
+attitude, accel pulls it level again — the filter behaving as on hardware).
+
+Not wired up yet: the Gazebo bridge itself is Revo-flavored (RevoSettings,
+PathFollower missions); flying the twin in Gazebo needs a stabilized-flight
+harness mode that speaks only what this board has. That is the next step,
+not a limitation of the target.
+
 ## Hardware
 
 3.3 V only. The WROOM-32 has **no USB peripheral** — the USB socket is a

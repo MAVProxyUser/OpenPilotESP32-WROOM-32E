@@ -1,3 +1,56 @@
+diff --git a/Makefile b/Makefile
+index b0e3ca3b4..aa688a65b 100644
+--- a/Makefile
++++ b/Makefile
+@@ -210,12 +210,13 @@ export OPGCSSYNTHDIR := $(BUILD_DIR)/openpilotgcs-synthetics
+ DIRS += $(OPGCSSYNTHDIR)
+ 
+ # Define supported board lists
+-ALL_BOARDS    := coptercontrol oplinkmini simposix realposix
++ALL_BOARDS    := coptercontrol oplinkmini simposix realposix simwroom
+ 
+ # Short names of each board (used to display board name in parallel builds)
+ coptercontrol_short    := 'cc  '
+ oplinkmini_short       := 'oplm'
+ simposix_short          := 'posx'
++simwroom_short          := 'wrom'
+ realposix_short         := 'real'
+ 
+ # Start out assuming that we'll build fw, bl and bu for all boards
+@@ -226,9 +227,9 @@ EF_BOARDS  := $(ALL_BOARDS)
+ 
+ # SimPosix doesn't have a BL, BU or EF target so we need to
+ # filter them out to prevent errors on the all_flight target.
+-BL_BOARDS  := $(filter-out simposix realposix, $(BL_BOARDS))
+-BU_BOARDS  := $(filter-out simposix realposix gpsplatinum, $(BU_BOARDS))
+-EF_BOARDS  := $(filter-out simposix realposix, $(EF_BOARDS))
++BL_BOARDS  := $(filter-out simposix realposix simwroom, $(BL_BOARDS))
++BU_BOARDS  := $(filter-out simposix realposix simwroom gpsplatinum, $(BU_BOARDS))
++EF_BOARDS  := $(filter-out simposix realposix simwroom, $(EF_BOARDS))
+ 
+ # Generate the targets for whatever boards are left in each list
+ FW_TARGETS := $(addprefix fw_, $(FW_BOARDS))
+@@ -260,7 +261,7 @@ $(1): fw_$(1)_opfw
+ fw_$(1): fw_$(1)_opfw
+ 
+ fw_$(1)_%: uavobjects_flight
+-ifeq ($(filter $(1),simposix realposix),)
++ifeq ($(filter $(1),simposix realposix simwroom),)
+ 	$(V1) $$(ARM_GCC_VERSION_CHECK_TEMPLATE)
+ endif
+ 	$(V1) $(MKDIR) -p $(BUILD_DIR)/fw_$(1)/dep
+@@ -682,9 +683,9 @@ endif
+ ##############################
+ 
+ # Firmware files to package
+-PACKAGE_FW_EXCLUDE  := fw_simposix fw_realposix $(if $(PACKAGE_FW_INCLUDE_DISCOVERYF4BARE),,fw_discoveryf4bare)
++PACKAGE_FW_EXCLUDE  := fw_simposix fw_realposix fw_simwroom $(if $(PACKAGE_FW_INCLUDE_DISCOVERYF4BARE),,fw_discoveryf4bare)
+ PACKAGE_FW_TARGETS  := $(filter-out $(PACKAGE_FW_EXCLUDE), $(FW_TARGETS))
+-PACKAGE_ELF_TARGETS := $(filter     fw_simposix fw_realposix, $(FW_TARGETS))
++PACKAGE_ELF_TARGETS := $(filter     fw_simposix fw_realposix fw_simwroom, $(FW_TARGETS))
+ 
+ # Rules to generate GCS resources used to embed firmware binaries into the GCS.
+ # They are used later by the vehicle setup wizard to update board firmware.
 diff --git a/flight/modules/Attitude/attitude.c b/flight/modules/Attitude/attitude.c
 index 57c978da2..6c2d6bdb7 100644
 --- a/flight/modules/Attitude/attitude.c
@@ -2011,6 +2064,2157 @@ index 139a0dc0a..e6ec7e68b 100644
          <logging updatemode="manual" period="0"/>
      </object>
  </xml>
+diff --git a/flight/pios/posix/inc/pios_icm20602.h b/flight/pios/posix/inc/pios_icm20602.h
+new file mode 100644
+index 000000000..c40a69dee
+--- /dev/null
++++ b/flight/pios/posix/inc/pios_icm20602.h
+@@ -0,0 +1,25 @@
++/**
++ ******************************************************************************
++ * @file       pios_icm20602.h
++ * @author     NinjaPilot, 2026
++ * @brief      Posix twin of the ESP32 target's ICM-20602 driver interface.
++ *
++ * The SIM_WROOM target compiles the Attitude module down the exact same
++ * PIOS_INCLUDE_ICM20602 branch the ESP32 Thing Plus hardware build takes;
++ * this header stands in for the hardware repo's pios/esp32/inc/pios_icm20602.h
++ * and exposes only what attitude.c consumes -- the driver struct -- plus the
++ * simulation feeder's init hook.
++ * @see        The GNU Public License (GPL) Version 3
++ *****************************************************************************/
++#ifndef PIOS_ICM20602_H
++#define PIOS_ICM20602_H
++
++#include <pios_sensors.h>
++
++extern const PIOS_SENSORS_Driver PIOS_ICM20602_Driver;
++
++/* Simulation only: create the sample queue, subscribe to the bridge's
++ * GyroSensor/AccelSensor UAVObjects, register with the sensor subsystem. */
++extern int32_t PIOS_ICM20602_SIM_Init(void);
++
++#endif /* PIOS_ICM20602_H */
+diff --git a/flight/pios/posix/pios_icm20602_sim.c b/flight/pios/posix/pios_icm20602_sim.c
+new file mode 100644
+index 000000000..b5585178a
+--- /dev/null
++++ b/flight/pios/posix/pios_icm20602_sim.c
+@@ -0,0 +1,148 @@
++/**
++ ******************************************************************************
++ * @file       pios_icm20602_sim.c
++ * @author     NinjaPilot, 2026
++ * @brief      Simulated ICM-20602 for the SIM_WROOM target.
++ *
++ * The ESP32 Thing Plus runs the CC-style Attitude module, which drinks raw
++ * int16 samples straight from the IMU driver's queue -- no UAVObject sits in
++ * that path on hardware. In simulation the sensor data arrives the other way
++ * around: the Gazebo bridge writes GyroSensor (deg/s) and AccelSensor (m/s^2)
++ * UAVObjects over telemetry. This shim closes the gap: it subscribes to those
++ * objects, packs each gyro update into the PIOS_SENSORS_3Axis_SensorsWithTemp
++ * record the Attitude module expects (accel latched from the most recent
++ * accel update -- the bridge sends accel on alternate ticks), and exposes the
++ * standard driver interface under the PIOS_ICM20602_Driver name that
++ * attitude.c's ATTITUDE_IMU_DRIVER macro resolves to on this branch.
++ *
++ * Scaling is the REAL board's, verbatim: board_hw_defs.c configures the
++ * ICM-20602 for +/-2000 dps and +/-8g, so the hardware driver advertises
++ * gyro 1/16.4 deg/s per LSB and accel g/4096 m/s^2 per LSB. The shim packs
++ * with the inverse of those same factors, so attitude.c's scale math (and any
++ * AccelGyroSettings calibration the user carries over) behaves identically to
++ * hardware, exact to int16 quantization.
++ * @see        The GNU Public License (GPL) Version 3
++ *****************************************************************************/
++
++#include "pios.h"
++
++#ifdef PIOS_INCLUDE_ICM20602
++
++#include <pios_icm20602.h>
++#include <uavobjectmanager.h>
++#include <pios_constants.h>
++#include "gyrosensor.h"
++#include "accelsensor.h"
++
++/* Same record layout trick as the hardware driver: the flexible-array
++ * header plus two Vector3i16 samples, sample[0]=accel, sample[1]=gyro. */
++#define ICM_SIM_SENSOR_COUNT 2
++#define ICM_SIM_DATA_SIZE    (sizeof(PIOS_SENSORS_3Axis_SensorsWithTemp) + sizeof(Vector3i16) * ICM_SIM_SENSOR_COUNT)
++#define ICM_SIM_QUEUE_LEN    4
++
++/* +/-2000 dps and +/-8g, matching board_hw_defs.c on the real board */
++#define ICM_SIM_GYRO_SCALE   (1.0f / 16.4f)
++#define ICM_SIM_ACCEL_SCALE  (PIOS_CONST_MKS_GRAV_ACCEL_F / 4096.0f)
++
++static QueueHandle_t icm_sim_queue;
++static PIOS_SENSORS_3Axis_SensorsWithTemp *icm_sim_data;
++static volatile int16_t icm_sim_accel[3];
++
++static int16_t icm_sim_clamp(float v)
++{
++    if (v > 32767.0f) {
++        return 32767;
++    }
++    if (v < -32768.0f) {
++        return -32768;
++    }
++    return (int16_t)v;
++}
++
++static void icm_sim_accel_cb(__attribute__((unused)) UAVObjEvent *ev)
++{
++    AccelSensorData d;
++
++    AccelSensorGet(&d);
++    icm_sim_accel[0] = icm_sim_clamp(d.x / ICM_SIM_ACCEL_SCALE);
++    icm_sim_accel[1] = icm_sim_clamp(d.y / ICM_SIM_ACCEL_SCALE);
++    icm_sim_accel[2] = icm_sim_clamp(d.z / ICM_SIM_ACCEL_SCALE);
++}
++
++static void icm_sim_gyro_cb(__attribute__((unused)) UAVObjEvent *ev)
++{
++    GyroSensorData d;
++
++    if (!icm_sim_queue || !icm_sim_data) {
++        return;
++    }
++    GyroSensorGet(&d);
++
++    icm_sim_data->count       = ICM_SIM_SENSOR_COUNT;
++    icm_sim_data->temperature = (int16_t)(d.temperature * 100.0f);
++    icm_sim_data->sample[0].x = icm_sim_accel[0];
++    icm_sim_data->sample[0].y = icm_sim_accel[1];
++    icm_sim_data->sample[0].z = icm_sim_accel[2];
++    icm_sim_data->sample[1].x = icm_sim_clamp(d.x / ICM_SIM_GYRO_SCALE);
++    icm_sim_data->sample[1].y = icm_sim_clamp(d.y / ICM_SIM_GYRO_SCALE);
++    icm_sim_data->sample[1].z = icm_sim_clamp(d.z / ICM_SIM_GYRO_SCALE);
++
++    /* Drop-oldest: a fresh sample always beats blocking the event
++     * dispatcher, and the attitude task averages whatever it drains. */
++    if (xQueueSend(icm_sim_queue, icm_sim_data, 0) != pdTRUE) {
++        static uint8_t scratch[ICM_SIM_DATA_SIZE];
++        (void)xQueueReceive(icm_sim_queue, scratch, 0);
++        (void)xQueueSend(icm_sim_queue, icm_sim_data, 0);
++    }
++}
++
++static bool icm_sim_test(__attribute__((unused)) uintptr_t context)
++{
++    return true;
++}
++
++static QueueHandle_t icm_sim_get_queue(__attribute__((unused)) uintptr_t context)
++{
++    return icm_sim_queue;
++}
++
++static void icm_sim_get_scale(float *scales, uint8_t size,
++                              __attribute__((unused)) uintptr_t context)
++{
++    PIOS_Assert(size >= 2);
++    scales[0] = ICM_SIM_ACCEL_SCALE;
++    scales[1] = ICM_SIM_GYRO_SCALE;
++}
++
++const PIOS_SENSORS_Driver PIOS_ICM20602_Driver = {
++    .test      = icm_sim_test,
++    .poll      = NULL,
++    .fetch     = NULL,
++    .reset     = NULL,
++    .get_queue = icm_sim_get_queue,
++    .get_scale = icm_sim_get_scale,
++    .is_polled = false,
++};
++
++int32_t PIOS_ICM20602_SIM_Init(void)
++{
++    icm_sim_queue = xQueueCreate(ICM_SIM_QUEUE_LEN, ICM_SIM_DATA_SIZE);
++    if (!icm_sim_queue) {
++        return -1;
++    }
++    icm_sim_data = (PIOS_SENSORS_3Axis_SensorsWithTemp *)pios_malloc(ICM_SIM_DATA_SIZE);
++    if (!icm_sim_data) {
++        return -2;
++    }
++
++    GyroSensorInitialize();
++    AccelSensorInitialize();
++    GyroSensorConnectCallback(icm_sim_gyro_cb);
++    AccelSensorConnectCallback(icm_sim_accel_cb);
++
++    PIOS_SENSORS_Register(&PIOS_ICM20602_Driver,
++                          PIOS_SENSORS_TYPE_3AXIS_GYRO_ACCEL, 0);
++    return 0;
++}
++
++#endif /* PIOS_INCLUDE_ICM20602 */
+diff --git a/flight/targets/boards/simwroom/board-info.mk b/flight/targets/boards/simwroom/board-info.mk
+new file mode 100644
+index 000000000..3ba96875e
+--- /dev/null
++++ b/flight/targets/boards/simwroom/board-info.mk
+@@ -0,0 +1,30 @@
++BOARD_TYPE          := 0x12
++BOARD_REVISION      := 0x02
++BOOTLOADER_VERSION  := 0x01
++HW_TYPE             := 0x00
++
++MCU                 :=
++CHIP                := 
++# NOTE: this stays SIM_POSIX on purpose. The build defines USE_$(BOARD), and
++# pios.h keys the whole POSIX-vs-STM32 architecture selection off USE_SIM_POSIX -
++# renaming it here silently drops this target into the STM32 include path
++# (realposix documents the same trap). BOARD names the ARCHITECTURE;
++# PIOS_SIMWROOM (set in inc/pios_config.h) names the VARIANT: the posix
++# simulation twin of the ESP32 Thing Plus (board id 0x1202).
++BOARD               := SIM_POSIX
++MODEL               := 
++MODEL_SUFFIX        := 
++
++OPENOCD_JTAG_CONFIG := 
++OPENOCD_CONFIG      := 
++
++# Note: These must match the values in link_$(BOARD)_memory.ld
++BL_BANK_BASE        := 0x08000000  # Start of bootloader flash
++BL_BANK_SIZE        := 0x00008000  # Should include BD_INFO region
++FW_BANK_BASE        := 0x08008000  # Start of firmware flash
++FW_BANK_SIZE        := 0x00038000  # Should include FW_DESC_SIZE
++
++FW_DESC_SIZE        := 0x00000064
++
++OSCILLATOR_FREQ     :=   8000000
++SYSCLK_FREQ         := 168000000
+diff --git a/flight/targets/boards/simwroom/board_hw_defs.c b/flight/targets/boards/simwroom/board_hw_defs.c
+new file mode 100644
+index 000000000..d26b0a6aa
+--- /dev/null
++++ b/flight/targets/boards/simwroom/board_hw_defs.c
+@@ -0,0 +1,83 @@
++/**
++ ******************************************************************************
++ * @addtogroup OpenPilotSystem OpenPilot System
++ * @{
++ * @addtogroup OpenPilotCore OpenPilot Core
++ * @{
++ *
++ * @file       board_hw_defs.c
++ * @author     The OpenPilot Team, http://www.openpilot.org Copyright (C) 2012.
++ * @brief      Defines board specific static initializers for hardware for the OpenPilot board.
++ * @see        The GNU Public License (GPL) Version 3
++ *
++ *****************************************************************************/
++/*
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
++ * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
++ * for more details.
++ *
++ * You should have received a copy of the GNU General Public License along
++ * with this program; if not, write to the Free Software Foundation, Inc.,
++ * 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
++ */
++
++#ifdef PIOS_INCLUDE_UDP
++
++#include <pios_udp_priv.h>
++
++#ifdef PIOS_INCLUDE_COM_TELEM
++/*
++ * Telemetry on main USART
++ */
++const struct pios_udp_cfg pios_udp_telem_cfg = {
++    .ip   = "0.0.0.0",
++    .port = 9000,
++};
++#endif /* PIOS_COM_TELEM */
++
++#ifdef PIOS_INCLUDE_GPS
++/*
++ * GPS USART
++ */
++const struct pios_udp_cfg pios_udp_gps_cfg = {
++    .ip   = "0.0.0.0",
++    .port = 9001,
++};
++
++#endif /* PIOS_INCLUDE_GPS */
++
++#ifdef PIOS_INCLUDE_COM_AUX
++/*
++ * AUX USART (UART label on rev2)
++ */
++const struct pios_udp_cfg pios_udp_aux_cfg = {
++    .ip   = "0.0.0.0",
++    .port = 9002,
++};
++#endif /* PIOS_COM_AUX */
++
++#endif /* PIOS_UDP */
++
++#if defined(PIOS_INCLUDE_COM)
++
++#include <pios_com_priv.h>
++
++#endif /* PIOS_INCLUDE_COM */
++
++#if defined(PIOS_INCLUDE_FLASH)
++#include "pios_flashfs_logfs_priv.h"
++#endif
++
++#if defined(PIOS_INCLUDE_GCSRCVR)
++#include "pios_gcsrcvr_priv.h"
++#endif /* PIOS_INCLUDE_GCSRCVR */
++
++#if defined(PIOS_INCLUDE_RCVR)
++#include "pios_rcvr_priv.h"
++#endif /* PIOS_INCLUDE_RCVR */
+diff --git a/flight/targets/boards/simwroom/firmware/Makefile b/flight/targets/boards/simwroom/firmware/Makefile
+new file mode 100644
+index 000000000..de36b5fd6
+--- /dev/null
++++ b/flight/targets/boards/simwroom/firmware/Makefile
+@@ -0,0 +1,464 @@
++#####
++#
++# TODO: This file should be reworked. It will be done as a part of sim target refactoring.
++#
++# The OpenPilot Team, http://www.openpilot.org, Copyright (C) 2009.
++#
++#
++# This program is free software; you can redistribute it and/or modify
++# it under the terms of the GNU General Public License as published by
++# the Free Software Foundation; either version 3 of the License, or
++# (at your option) any later version.
++#
++# This program is distributed in the hope that it will be useful, but
++# WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
++# or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
++# for more details.
++#
++# You should have received a copy of the GNU General Public License along
++# with this program; if not, write to the Free Software Foundation, Inc.,
++# 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
++#####
++
++# REVO C++ support 
++USE_CXX = YES
++
++override ARM_SDK_PREFIX :=
++override THUMB :=
++
++# UNAME isn't exported by the top-level Makefile, so compute it locally
++# to detect the host platform for the link step below.
++UNAME := $(shell uname)
++
++include ../board-info.mk
++include $(ROOT_DIR)/make/firmware-defs.mk
++
++ifeq ($(UNAME), Darwin)
++# macOS has no objcopy of its own; use Homebrew's binutils if present,
++# otherwise fall back to hoping it's in PATH.
++DARWIN_BINUTILS_OBJCOPY := $(firstword $(wildcard /opt/homebrew/opt/binutils/bin/objcopy /usr/local/opt/binutils/bin/objcopy))
++ifneq ($(DARWIN_BINUTILS_OBJCOPY),)
++OBJCOPY := $(DARWIN_BINUTILS_OBJCOPY)
++endif
++endif
++
++# Set developer code and compile options
++# Set to YES for debugging
++DEBUG ?= YES
++
++# List of modules to include
++# The ESP32 Thing Plus module set, exactly: the point of this target is a
++# posix twin of that board, so the simulation runs the SAME control path
++# (CC-style Attitude complementary filter, no Revo estimator, no nav
++# stack) against Gazebo. Sensor data arrives as GyroSensor/AccelSensor
++# UAVObjects from the bridge and is fed to the Attitude module through a
++# simulated MPU6000 queue driver.
++MODULES = ManualControl Stabilization Attitude
++MODULES += Telemetry
++MODULES += Actuator
++MODULES += Receiver
++
++SRC += $(FLIGHTLIB)/notification.c
++
++# Paths
++OPSYSTEM = .
++BOARDINC = ..
++OPSYSTEMINC = $(OPSYSTEM)/inc
++OPUAVTALK = ../../../../uavtalk
++OPUAVTALKINC = $(OPUAVTALK)/inc
++OPUAVOBJ = ../../../../uavobjects
++OPUAVOBJINC = $(OPUAVOBJ)/inc
++PIOSINC = $(PIOS)/inc
++OPMODULEDIR = ../../../../modules
++FLIGHTLIB = ../../../../libraries
++FLIGHTLIBINC = $(FLIGHTLIB)/inc
++MATHLIB = $(FLIGHTLIB)/math
++MATHLIBINC = $(FLIGHTLIB)/math
++PIOSPOSIX = $(PIOS)/posix
++PIOSCOMMON = $(PIOS)/posix
++PIOSCORECOMMON = $(PIOS)/common
++PIOSCOMMONLIB = $(PIOS)/common/libraries
++BOOT = 
++BOOTINC = 
++UAVOBJSYNTHDIR = $(OUTDIR)/../uavobject-synthetics/flight
++
++# optional component libraries
++include $(PIOS)/common/libraries/FreeRTOS/library.mk
++ifeq ($(USE_YAFFS),YES)
++SRC += $(PIOSCORECOMMON)/pios_logfs.c # Used for yaffs testing
++include $(PIOS)/common/libraries/yaffs2/library.mk  # Only required for yaffs testing
++include $(PIOS)/posix/libraries/yaffs2/yaffs_impl.mk  # Only required for yaffs testing
++endif
++
++#include $(FLIGHTLIB)/PyMite/pymite.mk
++
++# List C source files here. (C dependencies are automatically generated.)
++# use file-extension c for "c-only"-files
++
++## MODULES
++SRC += ${foreach MOD, ${MODULES}, ${wildcard ${OPMODULEDIR}/${MOD}/*.c}}
++CPPSRC += ${foreach MOD, ${MODULES}, ${wildcard ${OPMODULEDIR}/${MOD}/*.cpp}}
++SRC += ${OUTDIR}/InitMods.c
++## OPENPILOT CORE:
++SRC += ${OPMODULEDIR}/System/systemmod.c
++CPPSRC += $(OPSYSTEM)/simwroom.cpp
++SRC += $(OPSYSTEM)/pios_board.c
++SRC += $(FLIGHTLIB)/alarms.c
++SRC += $(FLIGHTLIB)/auxmagsupport.c
++SRC += $(OPUAVTALK)/uavtalk.c
++SRC += $(OPUAVOBJ)/uavobjectmanager.c
++SRC += $(OPUAVOBJ)/uavobjectpersistence.c
++SRC += $(OPUAVOBJ)/eventdispatcher.c
++SRC += $(UAVOBJSYNTHDIR)/uavobjectsinit.c
++
++SRC += $(FLIGHTLIB)/CoordinateConversions.c
++SRC += $(FLIGHTLIB)/fifo_buffer.c
++SRC += $(FLIGHTLIB)/WorldMagModel.c
++SRC += $(FLIGHTLIB)/insgps13state.c
++SRC += $(FLIGHTLIB)/paths.c
++SRC += $(FLIGHTLIB)/plans.c
++SRC += $(FLIGHTLIB)/sanitycheck.c
++
++SRC += $(MATHLIB)/sin_lookup.c
++SRC += $(MATHLIB)/pid.c
++SRC += $(MATHLIB)/mathmisc.c
++SRC += $(MATHLIB)/butterworth.c
++
++SRC += $(PIOSCORECOMMON)/pios_task_monitor.c
++ifeq ($(USE_YAFFS),YES)
++SRC += $(PIOSCORECOMMON)/pios_logfs.c # Used for yaffs testing
++else
++SRC += $(PIOSCORECOMMON)/pios_dosfs_logfs.c
++endif
++SRC += $(PIOSCORECOMMON)/pios_trace.c
++SRC += $(PIOSCORECOMMON)/pios_debuglog.c
++SRC += $(PIOSCORECOMMON)/pios_callbackscheduler.c
++SRC += $(PIOSCORECOMMON)/pios_deltatime.c
++SRC += $(PIOSCORECOMMON)/pios_notify.c
++SRC += $(PIOSCORECOMMON)/pios_mem.c
++SRC += $(PIOSCORECOMMON)/pios_gcsrcvr.c
++# The sensor-driver registry (PIOS_SENSORS_Register & co) that the simulated
++# ICM-20602 registers with -- same file the ESP32 hardware build compiles.
++SRC += $(PIOS)/common/pios_sensors.c
++
++## PIOS Hardware
++include $(PIOS)/posix/library.mk
++
++
++include ./UAVObjects.inc
++SRC += $(UAVOBJSRC)
++
++# List any extra directories to look for include files here.
++#    Each directory must be seperated by a space.
++EXTRAINCDIRS  += $(PIOS)
++EXTRAINCDIRS  += $(PIOSINC)
++EXTRAINCDIRS  += $(BOARDINC)
++EXTRAINCDIRS  += $(OPSYSTEMINC)
++EXTRAINCDIRS  += $(OPUAVTALK)
++EXTRAINCDIRS  += $(OPUAVTALKINC)
++EXTRAINCDIRS  += $(OPUAVOBJ)
++EXTRAINCDIRS  += $(OPUAVOBJINC)
++EXTRAINCDIRS  += $(UAVOBJSYNTHDIR)
++EXTRAINCDIRS  += $(FLIGHTLIBINC)
++EXTRAINCDIRS  += $(MATHLIBINC)
++EXTRAINCDIRS  += $(PIOSCOMMON)
++EXTRAINCDIRS  += $(CMSISDIR)
++EXTRAINCDIRS  += $(OPUAVSYNTHDIR)
++EXTRAINCDIRS  += $(BOOTINC)
++
++EXTRAINCDIRS += ${foreach MOD, ${MODULES}, $(OPMODULEDIR)/${MOD}/inc} ${OPMODULEDIR}/System/inc
++
++BLONLY_CDEFS += -DBOARD_TYPE=$(BOARD_TYPE)
++BLONLY_CDEFS += -DBOARD_REVISION=$(BOARD_REVISION)
++BLONLY_CDEFS += -DHW_TYPE=$(HW_TYPE)
++BLONLY_CDEFS += -DBOOTLOADER_VERSION=$(BOOTLOADER_VERSION)
++BLONLY_CDEFS += -DFW_BANK_BASE=$(FW_BANK_BASE)
++BLONLY_CDEFS += -DFW_BANK_SIZE=$(FW_BANK_SIZE)
++BLONLY_CDEFS += -DFW_DESC_SIZE=$(FW_DESC_SIZE)
++
++# Since we are simulating all this firmware the code needs to know what the BL would
++# normally contain
++CFLAGS += $(BLONLY_CDEFS)
++
++# Declare all non-optional modules as built-in (same semantics as
++# make/apps-defs.mk for the ARM targets) - modules like Autotune check
++# MODULE_<NAME>_BUILTIN to skip the HwSettings.OptionalModules gate.
++MODNAMES := $(notdir $(MODULES))
++MODULES_BUILTIN := $(foreach mod, $(MODNAMES), -DMODULE_$(shell echo $(mod) | tr '[:lower:]' '[:upper:]')_BUILTIN)
++CFLAGS += $(MODULES_BUILTIN)
++
++ifeq ($(DEBUG),YES)
++CFLAGS += -O0
++else
++CFLAGS += -Os
++endif
++  
++# tracing
++# CFLAGS += -DPIOS_TRACE
++ 
++# common architecture-specific flags from the device-specific library makefile
++CFLAGS += $(ARCHFLAGS)
++
++CFLAGS += $(UAVOBJDEFINE)
++
++CFLAGS += -DDIAG_STACK
++CFLAGS += -DDIA_MIXERSTATUS
++CFLAGS += -DDIAG_RATEDESIRED
++CFLAGS += -DDIAG_I2C_WDG_STATS
++CFLAGS += -DDIAG_TASKS
++# Or all of above:
++#CFLAGS += -DDIAG_ALL
++
++# This is not the best place for these.  Really should abstract out
++# to the board file or something
++#CFLAGS += -DSTM32F4XX
++CFLAGS += -DMEM_SIZE=1024000000
++
++# Output format. (can be ihex or binary or both)
++#  binary to create a load-image in raw-binary format i.e. for SAM-BA,
++#  ihex to create a load-image in Intel hex format
++#LOADFORMAT = ihex
++#LOADFORMAT = binary
++LOADFORMAT = both
++
++# Debugging format.
++DEBUGF = dwarf-2
++
++# Place project-specific -D (define) and/or
++# -U options for C here.
++CDEFS += -DHSE_VALUE=$(OSCILLATOR_FREQ)
++CDEFS += -DSYSCLK_FREQ=$(SYSCLK_FREQ)
++CDEFS += -DUSE_STDPERIPH_DRIVER
++CDEFS += -DUSE_$(BOARD)
++
++# Place project-specific -D and/or -U options for
++# Assembler with preprocessor here.
++#ADEFS = -DUSE_IRQ_ASM_WRAPPER
++ADEFS = -D__ASSEMBLY__
++
++# Compiler flag to set the C Standard level.
++# c89   - "ANSI" C
++# gnu89 - c89 plus GCC extensions
++# c99   - ISO C99 standard (not yet fully implemented)
++# gnu99 - c99 plus GCC extensions
++CSTANDARD = -std=gnu99
++
++#-----
++
++# Compiler flags.
++
++#  -g*:          generate debugging information
++#  -O*:          optimization level
++#  -f...:        tuning, see GCC manual and avr-libc documentation
++#  -Wall...:     warning level
++#  -Wa,...:      tell GCC to pass this to the assembler.
++#    -adhlns...: create assembler listing
++#
++# Flags for C and C++ (arm-elf-gcc/arm-elf-g++)
++
++CFLAGS += -g$(DEBUGF)
++
++CFLAGS += -ffast-math
++
++#CFLAGS += -mcpu=$(MCU)
++CFLAGS += $(CDEFS)
++CFLAGS += $(patsubst %,-I%,$(EXTRAINCDIRS)) -I.
++
++#CFLAGS += -mapcs-frame
++CFLAGS += -fomit-frame-pointer
++ifeq ($(CODE_SOURCERY), YES)
++CFLAGS += -fpromote-loop-indices
++endif
++
++CFLAGS += -Wall
++#CFLAGS += -Werror
++# Compiler flags to generate dependency files:
++CFLAGS += -MD -MP -MF $(OUTDIR)/dep/$(@F).d
++
++# flags only for C
++#CONLYFLAGS += -Wnested-externs
++CONLYFLAGS += $(CSTANDARD)
++
++# Assembler flags.
++#  -Wa,...:    tell GCC to pass this to the assembler.
++#  -ahlns:     create listing
++ASFLAGS  = $(ARCHFLAGS) -I. -x assembler-with-cpp
++ASFLAGS += $(ADEFS)
++ASFLAGS += -Wa,-adhlns=$(addprefix $(OUTDIR)/, $(notdir $(addsuffix .lst, $(basename $<))))
++ASFLAGS += $(patsubst %,-I%,$(EXTRAINCDIRS))
++
++MATH_LIB = -lm
++
++# Linker flags.
++#  -Wl,...:     tell GCC to pass this to linker.
++#    -Map:      create map file
++#    --cref:    add cross reference to  map file
++#LDFLAGS = -nostartfiles -Wl,-Map=$(OUTDIR)/$(TARGET).map,--cref,--gc-sections
++ifeq ($(UNAME), Darwin)
++# Apple's linker uses different flag syntax and has no separate libgcc/librt
++LDFLAGS = -Wl,-map,$(OUTDIR)/$(TARGET).map
++LDFLAGS += $(patsubst %,-L%,$(EXTRA_LIBDIRS))
++LDFLAGS += $(patsubst %,-l%,$(EXTRA_LIBS))
++LDFLAGS += $(MATH_LIB)
++LDFLAGS += -lpthread
++else
++LDFLAGS = -Wl,-Map=$(OUTDIR)/$(TARGET).map,--cref,--gc-sections
++LDFLAGS += $(patsubst %,-L%,$(EXTRA_LIBDIRS))
++LDFLAGS += -lc
++LDFLAGS += $(patsubst %,-l%,$(EXTRA_LIBS))
++LDFLAGS += $(MATH_LIB)
++LDFLAGS += -lc -lgcc -lpthread -lrt
++endif
++
++#Linker scripts
++LDFLAGS += $(addprefix -T,$(LINKER_SCRIPTS_APP))
++
++
++# Define programs and commands.
++REMOVE  = $(RM) -f
++
++# List of all source files.
++ALLSRC     = $(ASRCARM) $(ASRC) $(SRCARM) $(SRC) $(CPPSRCARM) $(CPPSRC)
++# List of all source files without directory and file-extension.
++ALLSRCBASE = $(notdir $(basename $(ALLSRC)))
++
++# Define all object files.
++ALLOBJ     = $(addprefix $(OUTDIR)/, $(addsuffix .o, $(ALLSRCBASE) uavobjectsinit.o.firmware_info ))
++
++# Define all listing files (used for make clean).
++LSTFILES   = $(addprefix $(OUTDIR)/, $(addsuffix .lst, $(ALLSRCBASE)))
++# Define all depedency-files (used for make clean).
++DEPFILES   = $(addprefix $(OUTDIR)/dep/, $(addsuffix .o.d, $(ALLSRCBASE)))
++
++# Default target.
++all: gccversion build
++
++ifeq ($(LOADFORMAT),ihex)
++build: elf hex lss sym
++else
++ifeq ($(LOADFORMAT),binary)
++build: elf bin lss sym
++else
++ifeq ($(LOADFORMAT),both)
++build: elf hex bin lss sym
++else
++$(error "$(MSG_FORMATERROR) $(FORMAT)")
++endif
++endif
++endif
++
++
++# Link: create ELF output file from object files.
++$(eval $(call LINK_CXX_TEMPLATE, $(OUTDIR)/$(TARGET).elf, $(ALLOBJ)))
++
++# Assemble: create object files from assembler source files.
++$(foreach src, $(ASRC), $(eval $(call ASSEMBLE_TEMPLATE, $(src))))
++
++# Assemble: create object files from assembler source files. ARM-only
++$(foreach src, $(ASRCARM), $(eval $(call ASSEMBLE_ARM_TEMPLATE, $(src))))
++
++# Compile: create object files from C source files.
++$(foreach src, $(SRC), $(eval $(call COMPILE_C_TEMPLATE, $(src))))
++
++# Compile: create object files from C source files. ARM-only
++$(foreach src, $(SRCARM), $(eval $(call COMPILE_C_ARM_TEMPLATE, $(src))))
++
++# Compile: create object files from C++ source files.
++$(foreach src, $(CPPSRC), $(eval $(call COMPILE_CXX_TEMPLATE, $(src))))
++
++# Compile: create object files from C++ source files. ARM-only
++$(foreach src, $(CPPSRCARM), $(eval $(call COMPILE_CPP_ARM_TEMPLATE, $(src))))
++
++# Compile: create assembler files from C source files. ARM/Thumb
++$(eval $(call PARTIAL_COMPILE_TEMPLATE, SRC))
++
++# Compile: create assembler files from C source files. ARM only
++$(eval $(call PARTIAL_COMPILE_ARM_TEMPLATE, SRCARM))
++
++$(OUTDIR)/$(TARGET).bin.o: $(OUTDIR)/$(TARGET).bin
++
++$(eval $(call OPFW_TEMPLATE,$(OUTDIR)/$(TARGET).bin,$(BOARD_TYPE),$(BOARD_REVISION)))
++
++$(eval $(call OPFW_TEMPLATE,$(OUTDIR)/uavobjectsinit.o,$(BOARD_TYPE),$(BOARD_REVISION)))
++
++# Add jtag targets (program and wipe)
++$(eval $(call JTAG_TEMPLATE,$(OUTDIR)/$(TARGET).bin,$(FW_BANK_BASE),$(FW_BANK_SIZE),$(OPENOCD_JTAG_CONFIG),$(OPENOCD_CONFIG)))
++
++.PHONY: elf lss sym hex bin bino opfw
++elf: $(OUTDIR)/$(TARGET).elf
++lss: $(OUTDIR)/$(TARGET).lss
++sym: $(OUTDIR)/$(TARGET).sym
++hex: $(OUTDIR)/$(TARGET).hex
++bin: $(OUTDIR)/$(TARGET).bin
++bino: $(OUTDIR)/$(TARGET).bin.o
++opfw: $(OUTDIR)/$(TARGET).opfw
++
++# Display sizes of sections.
++$(eval $(call SIZE_TEMPLATE, $(OUTDIR)/$(TARGET).elf))
++
++# Install: install binary file with prefix/suffix into install directory
++install: $(OUTDIR)/$(TARGET).opfw
++ifneq ($(INSTALL_DIR),)
++	@echo $(MSG_INSTALLING) $(call toprel, $<)
++	$(V1) mkdir -p $(INSTALL_DIR)
++	$(V1) $(INSTALL) $< $(INSTALL_DIR)/$(INSTALL_PFX)$(TARGET)$(INSTALL_SFX).opfw
++else
++	$(error INSTALL_DIR must be specified for $@)
++endif
++
++# Target: clean project.
++clean: clean_list
++
++clean_list :
++	@echo $(MSG_CLEANING)
++	$(V1) $(REMOVE) $(OUTDIR)/$(TARGET).map
++	$(V1) $(REMOVE) $(OUTDIR)/$(TARGET).elf
++	$(V1) $(REMOVE) $(OUTDIR)/$(TARGET).hex
++	$(V1) $(REMOVE) $(OUTDIR)/$(TARGET).bin
++	$(V1) $(REMOVE) $(OUTDIR)/$(TARGET).sym
++	$(V1) $(REMOVE) $(OUTDIR)/$(TARGET).lss
++	$(V1) $(REMOVE) $(OUTDIR)/$(TARGET).bin.o
++	$(V1) $(REMOVE) $(ALLOBJ)
++	$(V1) $(REMOVE) $(LSTFILES)
++	$(V1) $(REMOVE) $(DEPFILES)
++	$(V1) $(REMOVE) $(SRC:.c=.s)
++	$(V1) $(REMOVE) $(SRCARM:.c=.s)
++	$(V1) $(REMOVE) $(CPPSRC:.cpp=.s)
++	$(V1) $(REMOVE) $(CPPSRCARM:.cpp=.s)
++
++# Create output files directory
++# all known MS Windows OS define the ComSpec environment variable
++ifdef ComSpec
++$(shell md $(subst /,\\,$(OUTDIR)) 2>NUL)
++else
++$(shell mkdir -p $(OUTDIR) 2>/dev/null)
++endif
++
++# Include the dependency files.
++ifdef ComSpec
++-include $(shell md $(subst /,\\,$(OUTDIR))\dep 2>NUL) $(wildcard $(OUTDIR)/dep/*)
++else
++-include $(shell mkdir $(OUTDIR) 2>/dev/null) $(shell mkdir $(OUTDIR)/dep 2>/dev/null) $(wildcard $(OUTDIR)/dep/*)
++endif
++
++#create compile-time module auto-initialisation
++MODNAMES = ${notdir $(subst /revolution,,$(MODULES))}
++
++# Generate intermediate code
++gencode: ${OUTDIR}/InitMods.c ${OUTDIR}/pmlib_img.c ${OUTDIR}/pmlib_nat.c ${OUTDIR}/pmlibusr_img.c ${OUTDIR}/pmlibusr_nat.c ${OUTDIR}/pmfeatures.h 
++
++# Generate code for module initialization
++${OUTDIR}/InitMods.c: Makefile
++	$(V1) $(ECHO) $(MSG_MODINIT $(call toprel, $@))
++	$(V1) $(ECHO) $(QUOTE)// Autogenerated file$(QUOTE) > ${OUTDIR}/InitMods.c
++	$(V1) $(ECHO) $(QUOTE)${foreach MOD, ${MODNAMES}, extern unsigned int ${MOD}Initialize(void);}$(QUOTE)  >> ${OUTDIR}/InitMods.c
++	$(V1) $(ECHO) $(QUOTE)${foreach MOD, ${MODNAMES}, extern unsigned int ${MOD}Start(void);}$(QUOTE)  >> ${OUTDIR}/InitMods.c
++	$(V1) $(ECHO) $(QUOTE)void InitModules() {$(QUOTE) >> ${OUTDIR}/InitMods.c
++	$(V1) $(ECHO) $(QUOTE)${foreach MOD, ${MODNAMES}, ${MOD}Initialize();}$(QUOTE)  >> ${OUTDIR}/InitMods.c
++	$(V1) $(ECHO) $(QUOTE)}$(QUOTE) >> ${OUTDIR}/InitMods.c
++	$(V1) $(ECHO) $(QUOTE)void StartModules() {$(QUOTE) >> ${OUTDIR}/InitMods.c
++	$(V1) $(ECHO) $(QUOTE)${foreach MOD, ${MODNAMES}, ${MOD}Start();}$(QUOTE)  >> ${OUTDIR}/InitMods.c
++	$(V1) $(ECHO) $(QUOTE)}$(QUOTE) >> ${OUTDIR}/InitMods.c
++
++# Listing of phony targets.
++.PHONY : all build clean clean_list install
+diff --git a/flight/targets/boards/simwroom/firmware/UAVObjects.inc b/flight/targets/boards/simwroom/firmware/UAVObjects.inc
+new file mode 100644
+index 000000000..835e96964
+--- /dev/null
++++ b/flight/targets/boards/simwroom/firmware/UAVObjects.inc
+@@ -0,0 +1,125 @@
++#####
++# Project: OpenPilot
++#
++# Makefile for OpenPilot UAVObject code
++#
++# The OpenPilot Team, http://www.openpilot.org, Copyright (C) 2011.
++#
++# This program is free software; you can redistribute it and/or modify
++# it under the terms of the GNU General Public License as published by
++# the Free Software Foundation; either version 3 of the License, or
++# (at your option) any later version.
++#
++# This program is distributed in the hope that it will be useful, but
++# WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
++# or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
++# for more details.
++#
++# You should have received a copy of the GNU General Public License along
++# with this program; if not, write to the Free Software Foundation, Inc.,
++# 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
++#####
++
++# These are the UAVObjects supposed to be build as part of the OpenPilot target
++# (all architectures)
++
++UAVOBJSRCFILENAMES =
++UAVOBJSRCFILENAMES += statusgrounddrive
++UAVOBJSRCFILENAMES += pidstatus
++UAVOBJSRCFILENAMES += statusvtolland
++UAVOBJSRCFILENAMES += vtolselftuningstats
++UAVOBJSRCFILENAMES += accessorydesired
++UAVOBJSRCFILENAMES += actuatorcommand
++UAVOBJSRCFILENAMES += actuatordesired
++UAVOBJSRCFILENAMES += actuatorsettings
++UAVOBJSRCFILENAMES += attitudesettings
++UAVOBJSRCFILENAMES += attitudestate
++UAVOBJSRCFILENAMES += attitudesimulated
++UAVOBJSRCFILENAMES += gyrostate
++UAVOBJSRCFILENAMES += gyrosensor
++UAVOBJSRCFILENAMES += accelstate
++UAVOBJSRCFILENAMES += accelsensor
++UAVOBJSRCFILENAMES += accelgyrosettings
++UAVOBJSRCFILENAMES += ak8975sensor
++UAVOBJSRCFILENAMES += i2cbusscan
++UAVOBJSRCFILENAMES += missionprogress
++UAVOBJSRCFILENAMES += missionrecoverysettings
++UAVOBJSRCFILENAMES += sensorhubsettings
++UAVOBJSRCFILENAMES += settingsgeneration
++UAVOBJSRCFILENAMES += magsensor
++UAVOBJSRCFILENAMES += auxmagsensor
++UAVOBJSRCFILENAMES += auxmagsettings
++UAVOBJSRCFILENAMES += magstate
++UAVOBJSRCFILENAMES += barosensor
++UAVOBJSRCFILENAMES += airspeedsensor
++UAVOBJSRCFILENAMES += airspeedsettings
++UAVOBJSRCFILENAMES += airspeedstate
++UAVOBJSRCFILENAMES += debuglogsettings
++UAVOBJSRCFILENAMES += debuglogcontrol
++UAVOBJSRCFILENAMES += debuglogstatus
++UAVOBJSRCFILENAMES += debuglogentry
++UAVOBJSRCFILENAMES += firmwareiapobj
++UAVOBJSRCFILENAMES += flightbatterystate
++UAVOBJSRCFILENAMES += flighttelemetrystats
++UAVOBJSRCFILENAMES += gcstelemetrystats
++UAVOBJSRCFILENAMES += gcsreceiver
++UAVOBJSRCFILENAMES += gpspositionsensor
++UAVOBJSRCFILENAMES += gpssatellites
++UAVOBJSRCFILENAMES += gpstime
++UAVOBJSRCFILENAMES += gpsvelocitysensor
++UAVOBJSRCFILENAMES += gpsextendedstatus
++UAVOBJSRCFILENAMES += gpssettings
++UAVOBJSRCFILENAMES += vtolpathfollowersettings
++UAVOBJSRCFILENAMES += groundpathfollowersettings
++UAVOBJSRCFILENAMES += fixedwingpathfollowersettings
++UAVOBJSRCFILENAMES += fixedwingpathfollowerstatus
++UAVOBJSRCFILENAMES += homelocation
++UAVOBJSRCFILENAMES += i2cstats
++UAVOBJSRCFILENAMES += manualcontrolcommand
++UAVOBJSRCFILENAMES += manualcontrolsettings
++UAVOBJSRCFILENAMES += flightmodesettings
++UAVOBJSRCFILENAMES += mixersettings
++UAVOBJSRCFILENAMES += mixerstatus
++UAVOBJSRCFILENAMES += objectpersistence
++UAVOBJSRCFILENAMES += oplinkstatus
++UAVOBJSRCFILENAMES += pathaction
++UAVOBJSRCFILENAMES += pathdesired
++UAVOBJSRCFILENAMES += pathplan
++UAVOBJSRCFILENAMES += pathstatus
++UAVOBJSRCFILENAMES += pathsummary
++UAVOBJSRCFILENAMES += positionstate
++UAVOBJSRCFILENAMES += ratedesired
++UAVOBJSRCFILENAMES += relaytuning
++UAVOBJSRCFILENAMES += relaytuningsettings
++UAVOBJSRCFILENAMES += revocalibration
++UAVOBJSRCFILENAMES += revosettings
++UAVOBJSRCFILENAMES += stabilizationdesired
++UAVOBJSRCFILENAMES += stabilizationsettings
++UAVOBJSRCFILENAMES += stabilizationsettingsbank1
++UAVOBJSRCFILENAMES += stabilizationsettingsbank2
++UAVOBJSRCFILENAMES += stabilizationsettingsbank3
++UAVOBJSRCFILENAMES += stabilizationstatus
++UAVOBJSRCFILENAMES += stabilizationbank
++UAVOBJSRCFILENAMES += systemalarms
++UAVOBJSRCFILENAMES += systemsettings
++UAVOBJSRCFILENAMES += systemstats
++UAVOBJSRCFILENAMES += taskinfo
++UAVOBJSRCFILENAMES += callbackinfo
++UAVOBJSRCFILENAMES += velocitystate
++UAVOBJSRCFILENAMES += velocitydesired
++UAVOBJSRCFILENAMES += watchdogstatus
++UAVOBJSRCFILENAMES += waypoint
++UAVOBJSRCFILENAMES += waypointactive
++UAVOBJSRCFILENAMES += poilocation
++UAVOBJSRCFILENAMES += flightstatus
++UAVOBJSRCFILENAMES += hwsettings
++UAVOBJSRCFILENAMES += receiveractivity
++UAVOBJSRCFILENAMES += altitudeholdsettings
++UAVOBJSRCFILENAMES += altitudefiltersettings
++UAVOBJSRCFILENAMES += altitudeholdstatus
++UAVOBJSRCFILENAMES += ekfconfiguration
++UAVOBJSRCFILENAMES += ekfstatevariance
++UAVOBJSRCFILENAMES += takeofflocation
++
++UAVOBJSRC = $(foreach UAVOBJSRCFILE,$(UAVOBJSRCFILENAMES),$(UAVOBJSYNTHDIR)/$(UAVOBJSRCFILE).c )
++UAVOBJDEFINE = $(foreach UAVOBJSRCFILE,$(UAVOBJSRCFILENAMES),-DUAVOBJ_INIT_$(UAVOBJSRCFILE) )
+diff --git a/flight/targets/boards/simwroom/firmware/inc/FreeRTOSConfig.h b/flight/targets/boards/simwroom/firmware/inc/FreeRTOSConfig.h
+new file mode 100644
+index 000000000..7684e0507
+--- /dev/null
++++ b/flight/targets/boards/simwroom/firmware/inc/FreeRTOSConfig.h
+@@ -0,0 +1,104 @@
++#ifndef FREERTOS_CONFIG_H
++#define FREERTOS_CONFIG_H
++
++/*-----------------------------------------------------------
++* Application specific definitions.
++*
++* These definitions should be adjusted for your particular hardware and
++* application requirements.
++*
++* THESE PARAMETERS ARE DESCRIBED WITHIN THE 'CONFIGURATION' SECTION OF THE
++* FreeRTOS API DOCUMENTATION AVAILABLE ON THE FreeRTOS.org WEB SITE.
++*
++* See http://www.freertos.org/a00110.html.
++*----------------------------------------------------------*/
++
++/* Notes: We use 5 task priorities */
++
++
++/* The old FreeRTOS V8.0.1 Posix port (Source/portable/GCC/Posix, superseded
++ * by the FreeRTOS-Kernel V11.3.0 upgrade) used a bespoke set of per-platform
++ * macros here (COND_SIGNALING/CHECK_TASK_RESUMES/RUNNING_THREAD_MUTEX/
++ * TICK_SIGNAL/TICK_SIGWAIT/IDLE_SLEEPS) to select between several alternate
++ * signal+condvar suspend/resume implementations, one of which (the __APPLE__
++ * branch, i.e. this exact host) had a real missed-wakeup race between a
++ * thread marking itself about to sleep and actually calling
++ * pthread_cond_wait - confirmed via live process sampling (fw_simposix's
++ * flight-control callback thread sat blocked, not busy, for ~90 real
++ * seconds spanning an AltitudeVario runaway-climb test, while the resumer
++ * side of that race checks/signals threadStatus without holding the
++ * sleeper's own mutex). The new port (portable/ThirdParty/GCC/Posix)
++ * doesn't use any of these macros - it replaced the whole mechanism with a
++ * purpose-built event primitive (utils/wait_for_event.c) designed to avoid
++ * exactly that race, so there is nothing left to select per-platform here. */
++#ifdef __APPLE__
++        #define configUSE_PREEMPTION    1
++        #define configIDLE_SHOULD_YIELD 0
++#endif
++#ifdef __CYGWIN__
++        #define configUSE_PREEMPTION    0
++        #define configIDLE_SHOULD_YIELD 1
++#endif
++#ifdef __linux__
++        #define configUSE_PREEMPTION                 1
++        #define configIDLE_SHOULD_YIELD              0
++#endif
++
++
++#define configUSE_IDLE_HOOK                          1
++#define configUSE_TICK_HOOK                          0
++#define configCPU_CLOCK_HZ                           72000000
++#define configTICK_RATE_HZ                           1000
++#define configMAX_PRIORITIES                         8  /* was 7 - bumped again for CALLBACK_TASK_STABILIZATIONOUTERLOOP, see pios_callbackscheduler.h */
++#define configMINIMAL_STACK_SIZE                     256
++#define configTOTAL_HEAP_SIZE                        (45 * 1024)
++#define configMAX_TASK_NAME_LEN                      (16)
++#define configUSE_TRACE_FACILITY                     0
++#define configUSE_16_BIT_TICKS                       0
++#define configUSE_MUTEXES                            1
++#define configUSE_RECURSIVE_MUTEXES                  1
++#define configUSE_COUNTING_SEMAPHORES                0
++#define configUSE_ALTERNATIVE_API                    0
++/* The Posix port runs each task on a real pthread-managed OS stack, not a
++ * FreeRTOS-owned buffer (pxPortInitialiseStack() just returns pxTopOfStack
++ * unchanged) - so the generic pattern-based overflow check below is
++ * comparing against memory that was never actually used as the task's
++ * stack, and fires on effectively every task regardless of real usage.
++ * Meaningless here; the OS's own stack guard pages are what actually
++ * protect these threads. */
++#define configCHECK_FOR_STACK_OVERFLOW               0
++#define configQUEUE_REGISTRY_SIZE                    10
++
++
++/* Co-routine definitions. */
++#define configUSE_CO_ROUTINES                        0
++#define configMAX_CO_ROUTINE_PRIORITIES              (2)
++
++/* Set the following definitions to 1 to include the API function, or zero
++   to exclude the API function. */
++
++#define INCLUDE_vTaskPrioritySet                     1
++#define INCLUDE_uxTaskPriorityGet                    1
++#define INCLUDE_vTaskDelete                          1
++#define INCLUDE_vTaskCleanUpResources                0
++#define INCLUDE_vTaskSuspend                         1
++#define INCLUDE_vTaskDelayUntil                      1
++#define INCLUDE_vTaskDelay                           1
++#define INCLUDE_xTaskGetSchedulerState               1
++#define INCLUDE_xTaskGetCurrentTaskHandle            1
++#define INCLUDE_uxTaskGetStackHighWaterMark          0
++
++
++/* This is the raw value as per the Cortex-M3 NVIC.  Values can be 255
++   (lowest) to 1 (highest maskable) to 0 (highest non-maskable). */
++#define configKERNEL_INTERRUPT_PRIORITY              15 << 4 /* equivalent to NVIC priority 15 */
++        #define configMAX_SYSCALL_INTERRUPT_PRIORITY 3 << 4 /* equivalent to NVIC priority  3 */
++
++
++/* This is the value being used as per the ST library which permits 16
++   priority values, 0 to 15.  This must correspond to the
++   configKERNEL_INTERRUPT_PRIORITY setting.  Here 15 corresponds to the lowest
++   NVIC value of 255. */
++#define configLIBRARY_KERNEL_INTERRUPT_PRIORITY      15
++
++#endif /* FREERTOS_CONFIG_H */
+diff --git a/flight/targets/boards/simwroom/firmware/inc/FreeRTOSConfig_bk.h b/flight/targets/boards/simwroom/firmware/inc/FreeRTOSConfig_bk.h
+new file mode 100644
+index 000000000..3792f665b
+--- /dev/null
++++ b/flight/targets/boards/simwroom/firmware/inc/FreeRTOSConfig_bk.h
+@@ -0,0 +1,103 @@
++#ifndef FREERTOS_CONFIG_H
++#define FREERTOS_CONFIG_H
++
++/*-----------------------------------------------------------
++* Application specific definitions.
++*
++* These definitions should be adjusted for your particular hardware and
++* application requirements.
++*
++* THESE PARAMETERS ARE DESCRIBED WITHIN THE 'CONFIGURATION' SECTION OF THE
++* FreeRTOS API DOCUMENTATION AVAILABLE ON THE FreeRTOS.org WEB SITE.
++*
++* See http://www.freertos.org/a00110.html.
++*----------------------------------------------------------*/
++
++/**
++ * @addtogroup PIOS PIOS
++ * @{
++ * @addtogroup FreeRTOS FreeRTOS
++ * @{
++ */
++
++/* Notes: We use 5 task priorities */
++
++#define configCPU_CLOCK_HZ                           (SYSCLK_FREQ)   // really the NVIC clock ...
++#define configTICK_RATE_HZ                           ((portTickType)1000)
++#define configMAX_PRIORITIES                         ((unsigned portBASE_TYPE)5)
++#define configMINIMAL_STACK_SIZE                     ((unsigned short)512)
++#define configTOTAL_HEAP_SIZE                        ((size_t)(180 * 1024))  // this is minimum, not total
++#define configMAX_TASK_NAME_LEN                      (16)
++
++#define configUSE_PREEMPTION                         1
++#define configUSE_IDLE_HOOK                          1
++#define configUSE_TICK_HOOK                          0
++#define configUSE_TRACE_FACILITY                     0
++#define configUSE_16_BIT_TICKS                       0
++#define configIDLE_SHOULD_YIELD                      0
++#define configUSE_MUTEXES                            1
++#define configUSE_RECURSIVE_MUTEXES                  1
++#define configUSE_COUNTING_SEMAPHORES                0
++#define configUSE_ALTERNATIVE_API                    0
++#define configCHECK_FOR_STACK_OVERFLOW               2
++#define configQUEUE_REGISTRY_SIZE                    10
++
++#define configUSE_TIMERS                             1
++#define configTIMER_TASK_PRIORITY                    (configMAX_PRIORITIES - 1)      /* run timers at max priority */
++#define configTIMER_QUEUE_LENGTH                     10
++#define configTIMER_TASK_STACK_DEPTH                 configMINIMAL_STACK_SIZE
++
++/* Co-routine definitions. */
++#define configUSE_CO_ROUTINES                        0
++// #define configMAX_CO_ROUTINE_PRIORITIES              ( 2 )
++
++/* Set the following definitions to 1 to include the API function, or zero
++   to exclude the API function. */
++
++#define INCLUDE_vTaskPrioritySet                     1
++#define INCLUDE_uxTaskPriorityGet                    1
++#define INCLUDE_vTaskDelete                          1
++#define INCLUDE_vTaskCleanUpResources                1
++#define INCLUDE_vTaskSuspend                         1
++#define INCLUDE_vTaskDelayUntil                      1
++#define INCLUDE_vTaskDelay                           1
++#define INCLUDE_xTaskGetSchedulerState               1
++#define INCLUDE_xTaskGetCurrentTaskHandle            1
++#define INCLUDE_uxTaskGetStackHighWaterMark          1
++
++/* This is the raw value as per the Cortex-M3 NVIC.  Values can be 255
++   (lowest) to 1 (highest maskable) to 0 (highest non-maskable). */
++#define configKERNEL_INTERRUPT_PRIORITY              15 << 4 /* equivalent to NVIC priority 15 */
++        #define configMAX_SYSCALL_INTERRUPT_PRIORITY 3 << 4 /* equivalent to NVIC priority  3 */
++
++/* This is the value being used as per the ST library which permits 16
++   priority values, 0 to 15.  This must correspond to the
++   configKERNEL_INTERRUPT_PRIORITY setting.  Here 15 corresponds to the lowest
++   NVIC value of 255. */
++#define configLIBRARY_KERNEL_INTERRUPT_PRIORITY      15
++
++/* Enable run time stats collection */
++#define configGENERATE_RUN_TIME_STATS                1
++#define INCLUDE_uxTaskGetRunTime                     1
++
++/*
++ * Once we move to CMSIS2 we can at least use:
++ *
++ * CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
++ *
++ * (still nothing for the DWT registers, surprisingly)
++ */
++#define portCONFIGURE_TIMER_FOR_RUN_TIME_STATS()                                                                        \
++    do {                                                                                                                                                    \
++        (*(unsigned long *)0xe000edfc) |= (1 << 24); /* DEMCR |= DEMCR_TRCENA */             \
++        (*(unsigned long *)0xe0001000) |= 1; /* DWT_CTRL |= DWT_CYCCNT_ENA */        \
++    } \
++    while (0)
++#define portGET_RUN_TIME_COUNTER_VALUE() (*(unsigned long *)0xe0001004) /* DWT_CYCCNT */
++
++
++/**
++ * @}
++ */
++
++#endif /* FREERTOS_CONFIG_H */
+diff --git a/flight/targets/boards/simwroom/firmware/inc/dcc_stdio.h b/flight/targets/boards/simwroom/firmware/inc/dcc_stdio.h
+new file mode 100644
+index 000000000..3d7354918
+--- /dev/null
++++ b/flight/targets/boards/simwroom/firmware/inc/dcc_stdio.h
+@@ -0,0 +1,36 @@
++/***************************************************************************
++*   Copyright (C) 2008 by Dominic Rath                                    *
++*   Dominic.Rath@gmx.de                                                   *
++*   Copyright (C) 2008 by Spencer Oliver                                  *
++*   spen@spen-soft.co.uk                                                  *
++*                                                                         *
++*   This program is free software; you can redistribute it and/or modify  *
++*   it under the terms of the GNU General Public License as published by  *
++*   the Free Software Foundation; either version 2 of the License, or     *
++*   (at your option) any later version.                                   *
++*                                                                         *
++*   This program is distributed in the hope that it will be useful,       *
++*   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
++*   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
++*   GNU General Public License for more details.                          *
++*                                                                         *
++*   You should have received a copy of the GNU General Public License     *
++*   along with this program; if not, write to the                         *
++*   Free Software Foundation, Inc.,                                       *
++*   59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.             *
++***************************************************************************/
++
++#ifndef DCC_STDIO_H
++#define DCC_STDIO_H
++
++void dbg_trace_point(unsigned long number);
++
++void dbg_write_u32(const unsigned long *val, long len);
++void dbg_write_u16(const unsigned short *val, long len);
++void dbg_write_u8(const unsigned char *val, long len);
++
++void dbg_write_str(const char *msg);
++void dbg_write_char(char msg);
++void dbg_write_hex32(const unsigned long val);
++
++#endif /* DCC_STDIO_H */
+diff --git a/flight/targets/boards/simwroom/firmware/inc/openpilot.h b/flight/targets/boards/simwroom/firmware/inc/openpilot.h
+new file mode 100644
+index 000000000..42c876722
+--- /dev/null
++++ b/flight/targets/boards/simwroom/firmware/inc/openpilot.h
+@@ -0,0 +1,52 @@
++/**
++ ******************************************************************************
++ * @addtogroup OpenPilotSystem OpenPilot System
++ * @{
++ * @addtogroup OpenPilotCore OpenPilot Core
++ * @{
++ * @file       openpilot.h
++ * @author     The OpenPilot Team, http://www.openpilot.org Copyright (C) 2010.
++ * @brief      Main OpenPilot header.
++ * @see        The GNU Public License (GPL) Version 3
++ *
++ *****************************************************************************/
++/*
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
++ * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
++ * for more details.
++ *
++ * You should have received a copy of the GNU General Public License along
++ * with this program; if not, write to the Free Software Foundation, Inc.,
++ * 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
++ */
++
++
++#ifndef OPENPILOT_H
++#define OPENPILOT_H
++
++/* PIOS Includes */
++#include <pios.h>
++
++/* OpenPilot Libraries */
++#include <utlist.h>
++#include <uavobjectmanager.h>
++#include <eventdispatcher.h>
++#include <uavtalk.h>
++
++#include "alarms.h"
++#include <mathmisc.h>
++
++/* Global Functions */
++void OpenPilotInit(void);
++
++#endif /* OPENPILOT_H */
++/**
++ * @}
++ * @}
++ */
+diff --git a/flight/targets/boards/simwroom/firmware/inc/pios_config.h b/flight/targets/boards/simwroom/firmware/inc/pios_config.h
+new file mode 100644
+index 000000000..1167f0f6e
+--- /dev/null
++++ b/flight/targets/boards/simwroom/firmware/inc/pios_config.h
+@@ -0,0 +1,140 @@
++/**
++ ******************************************************************************
++ * @addtogroup OpenPilotSystem OpenPilot System
++ * @{
++ * @addtogroup OpenPilotCore OpenPilot Core
++ * @{
++ *
++ * @file       pios_config.h
++ * @author     The OpenPilot Team, http://www.openpilot.org Copyright (C) 2010.
++ * @brief      PiOS configuration header.
++ *             Central compile time config for the project.
++ *             In particular, pios_config.h is where you define which PiOS libraries
++ *             and features are included in the firmware.
++ * @see        The GNU Public License (GPL) Version 3
++ *
++ *****************************************************************************/
++/*
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
++ * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
++ * for more details.
++ *
++ * You should have received a copy of the GNU General Public License along
++ * with this program; if not, write to the Free Software Foundation, Inc.,
++ * 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
++ */
++
++
++#ifndef PIOS_CONFIG_H
++#define PIOS_CONFIG_H
++
++/* Major features */
++#define PIOS_INCLUDE_FREERTOS
++#define PIOS_INCLUDE_CALLBACKSCHEDULER
++#define PIOS_INCLUDE_BL_HELPER
++
++/* Enable/Disable PiOS Modules */
++// #define PIOS_INCLUDE_ADC
++#define PIOS_INCLUDE_DELAY
++// #define PIOS_INCLUDE_I2C
++#define PIOS_INCLUDE_IRQ
++#define PIOS_INCLUDE_LED
++#define PIOS_INCLUDE_SDCARD
++#define PIOS_USE_SETTINGS_ON_SDCARD
++// #define PIOS_INCLUDE_IAP
++#define PIOS_INCLUDE_SERVO
++#define PIOS_INCLUDE_SPI
++#define PIOS_INCLUDE_SYS
++#define PIOS_INCLUDE_TASK_MONITOR
++#define PIOS_INCLUDE_USART
++// #define PIOS_INCLUDE_USB
++#define PIOS_INCLUDE_USB_HID
++// #define PIOS_INCLUDE_GPIO
++#define PIOS_INCLUDE_EXTI
++#define PIOS_INCLUDE_RTC
++#define PIOS_INCLUDE_WDG
++#define PIOS_INCLUDE_UDP
++
++/* Select the sensors to include */
++// #define PIOS_INCLUDE_BMA180
++// #define PIOS_INCLUDE_HMC5X83
++// #define PIOS_INCLUDE_MPU6000
++// #define PIOS_MPU6000_ACCEL
++// #define PIOS_INCLUDE_L3GD20
++// #define PIOS_INCLUDE_MS5611
++// #define PIOS_INCLUDE_HCSR04
++#define PIOS_FLASH_ON_ACCEL /* true for second revo */
++
++#define PIOS_SENSOR_RATE    500.0f
++
++#define FLASH_FREERTOS
++/* Com systems to include */
++#define PIOS_INCLUDE_COM
++#define PIOS_INCLUDE_COM_TELEM
++#define PIOS_INCLUDE_COM_AUX
++#define PIOS_INCLUDE_COM_AUXSBUS
++#define PIOS_INCLUDE_COM_FLEXI
++
++#define PIOS_INCLUDE_GPS
++/* #define PIOS_INCLUDE_GPS_NMEA_PARSER */
++#define PIOS_INCLUDE_GPS_UBX_PARSER
++#define PIOS_OVERO_SPI
++/* Supported receiver interfaces */
++#define PIOS_INCLUDE_RCVR
++#define PIOS_INCLUDE_DSM
++// #define PIOS_INCLUDE_SBUS
++#define PIOS_INCLUDE_PPM
++#define PIOS_INCLUDE_PWM
++#define PIOS_INCLUDE_GCSRCVR
++
++/* Take the SAME Attitude-module branch the ESP32 Thing Plus hardware
++ * build takes (ATTITUDE_IMU_DRIVER = PIOS_ICM20602_Driver); on this
++ * target that driver is the posix simulation shim fed from bridge
++ * sensor objects (pios_icm20602_sim.c). */
++#define PIOS_INCLUDE_ICM20602
++/* #define PIOS_INCLUDE_OPLINKRCVR */
++#define PIOS_INCLUDE_IAP
++#define PIOS_INCLUDE_BL_HELPER
++
++#define PIOS_INCLUDE_SETTINGS
++#define PIOS_INCLUDE_FLASH
++/* A really shitty setting saving implementation */
++// #define PIOS_INCLUDE_FLASH_LOGFS_SETTINGS
++
++/* Other Interfaces */
++// #define PIOS_INCLUDE_I2C_ESC
++
++/* Flags that alter behaviors - mostly to lower resources for CC */
++#define PIOS_INCLUDE_INITCALL          /* Include init call structures */
++#define PIOS_TELEM_PRIORITY_QUEUE      /* Enable a priority queue in telemetry */
++#define PIOS_QUATERNION_STABILIZATION  /* Stabilization options */
++// #define PIOS_GPS_SETS_HOMELOCATION      /* GPS options */
++
++/* Alarm Thresholds */
++#define HEAP_LIMIT_WARNING             4000
++#define HEAP_LIMIT_CRITICAL            1000
++#define IRQSTACK_LIMIT_WARNING         150
++#define IRQSTACK_LIMIT_CRITICAL        80
++#define CPULOAD_LIMIT_WARNING          80
++#define CPULOAD_LIMIT_CRITICAL         95
++
++// This actually needs calibrating
++#define IDLE_COUNTS_PER_SEC_AT_NO_LOAD (8379692)
++
++#define REVOLUTION
++#define SIMPOSIX
++/* Variant marker: this build is the posix simulation twin of the ESP32
++ * Thing Plus flight controller (board id 0x1202), not generic simposix. */
++#define PIOS_SIMWROOM
++
++#endif /* PIOS_CONFIG_H */
++/**
++ * @}
++ * @}
++ */
+diff --git a/flight/targets/boards/simwroom/firmware/pios_board.c b/flight/targets/boards/simwroom/firmware/pios_board.c
+new file mode 100644
+index 000000000..2a519049a
+--- /dev/null
++++ b/flight/targets/boards/simwroom/firmware/pios_board.c
+@@ -0,0 +1,364 @@
++/**
++ ******************************************************************************
++ * @addtogroup Revolution Revolution configuration files
++ * @{
++ * @brief Configures the revolution board
++ * @{
++ *
++ * @file       pios_board.c
++ * @author     The OpenPilot Team, http://www.openpilot.org Copyright (C) 2011.
++ * @brief      Defines board specific static initializers for hardware for the Revolution board.
++ * @see        The GNU Public License (GPL) Version 3
++ *
++ *****************************************************************************/
++/*
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
++ * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
++ * for more details.
++ *
++ * You should have received a copy of the GNU General Public License along
++ * with this program; if not, write to the Free Software Foundation, Inc.,
++ * 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
++ */
++
++#include "inc/openpilot.h"
++#include <pios_board_info.h>
++#include <uavobjectsinit.h>
++#include <hwsettings.h>
++#include <manualcontrolsettings.h>
++#include <actuatorsettings.h>
++#include <taskinfo.h>
++#include <firmwareiapobj.h>
++#include <pios_icm20602.h>
++#include <pthread.h>
++#include <unistd.h>
++
++/* The 100-byte "OpFw" description the make system compiled into this image
++ * (make/firmware-defs.mk OPFW_TEMPLATE); its packed layout IS the blob the
++ * GCS parses out of FirmwareIAPObj.Description. */
++extern const struct fw_version_info fw_version_blob;
++
++/* GCS IAP reset sequence (Command 1122 -> 2233 -> 3344), mirroring the ESP32
++ * target's handler in its pios_board.c. On hardware the third command
++ * restarts the chip; here it ends the process after a short grace period so
++ * the write's ack and any pending telemetry drain first. The harness sees a
++ * clean exit, not a crash. */
++static void *sim_iap_exit_thread(__attribute__((unused)) void *arg)
++{
++    usleep(800 * 1000);
++    printf("FirmwareIAP: reboot requested by GCS -- exiting\n");
++    exit(0);
++    return NULL;
++}
++
++static void sim_iap_updated_cb(__attribute__((unused)) UAVObjEvent *ev)
++{
++    static uint8_t iap_step = 0;
++    FirmwareIAPObjData iap;
++
++    FirmwareIAPObjGet(&iap);
++    switch (iap.Command) {
++    case 1122:
++        iap_step = 1;
++        break;
++    case 2233:
++        iap_step = (iap_step == 1) ? 2 : 0;
++        break;
++    case 3344:
++        if (iap_step == 2) {
++            pthread_t t;
++            pthread_create(&t, NULL, sim_iap_exit_thread, NULL);
++            pthread_detach(t);
++        }
++        iap_step = 0;
++        break;
++    default:
++        iap_step = 0;
++        break;
++    }
++}
++
++
++/*
++ * Pull in the board-specific static HW definitions.
++ * Including .c files is a bit ugly but this allows all of
++ * the HW definitions to be const and static to limit their
++ * scope.
++ *
++ * NOTE: THIS IS THE ONLY PLACE THAT SHOULD EVER INCLUDE THIS FILE
++ */
++#include "../board_hw_defs.c"
++
++/**
++ * Sensor configurations
++ */
++
++/* One slot per selectable receiver group.
++ *  eg. PWM, PPM, GCS, SPEKTRUM1, SPEKTRUM2, SBUS
++ * NOTE: No slot in this map for NONE.
++ */
++uint32_t pios_rcvr_group_map[MANUALCONTROLSETTINGS_CHANNELGROUPS_NONE];
++
++// Was 512/512 - sized for a 57600-baud radio link on real hardware. On
++// SimPosix with external physics this port carries the ENTIRE simulated
++// sensor bus (500Hz gyro + accel + baro/mag/GPS + GCS control, tens of
++// KB/s in per-tick bursts from pios_udp.c's drain loop), and at 512B the
++// com fifo's whole-packet-discard-on-full behavior systematically
++// destroyed the TAIL of each burst - measured live: gyroMatches=28464 vs
++// accelMatches=195 (99.7% of AccelSensor lost, because accel is sent
++// last in each tick's burst), which starved the altitude estimator's
++// accel-integration branch down to ~4Hz. 8KB absorbs many full ticks of
++// burst while the (SimPosix-elevated, see telemetry.c) parser drains.
++#define PIOS_COM_TELEM_RF_RX_BUF_LEN  8192
++#define PIOS_COM_TELEM_RF_TX_BUF_LEN  4096
++
++// Every remaining com buffer bumped to desktop-appropriate sizes for the
++// same reason as TELEM_RF above - and one of these tiny values was the
++// PROVEN mechanism behind the deterministic last-packet-in-burst CRC
++// kill: the per-tick sensor burst is 65 bytes (Accel 27 + ObjReq 11 +
++// Gyro 27) and a 65-byte fifo with the classic one-reserved-byte
++// circular design holds exactly 64 - the final byte (always the last
++// packet's CRC) fell off EVERY tick, confirmed by the parser reporting
++// perfectly-framed packets whose received "CRC" byte was a constant
++// stale value while computed checksums varied normally. On real
++// hardware these sizes are fine (real links pace bytes; SimPosix
++// delivers whole bursts instantaneously).
++#define PIOS_COM_GPS_RX_BUF_LEN       1024
++
++#define PIOS_COM_TELEM_USB_RX_BUF_LEN 8192
++#define PIOS_COM_TELEM_USB_TX_BUF_LEN 4096
++
++#define PIOS_COM_BRIDGE_RX_BUF_LEN    1024
++#define PIOS_COM_BRIDGE_TX_BUF_LEN    1024
++
++#define PIOS_COM_AUX_RX_BUF_LEN       8192
++#define PIOS_COM_AUX_TX_BUF_LEN       4096
++
++uint32_t pios_com_aux_id       = 0;
++uint32_t pios_com_gps_id       = 0;
++uint32_t pios_com_telem_usb_id = 0;
++uint32_t pios_com_telem_rf_id  = 0;
++uint32_t pios_com_bridge_id    = 0;
++
++uintptr_t pios_uavo_settings_fs_id;
++uintptr_t pios_user_fs_id;
++
++/*
++ * Setup a com port based on the passed cfg, driver and buffer sizes. tx size of -1 make the port rx only
++ */
++static void PIOS_Board_configure_com(const struct pios_udp_cfg *usart_port_cfg, size_t rx_buf_len, size_t tx_buf_len,
++                                     const struct pios_com_driver *com_driver, uint32_t *pios_com_id)
++{
++    uint32_t pios_usart_id;
++
++    if (PIOS_UDP_Init(&pios_usart_id, usart_port_cfg)) {
++        PIOS_Assert(0);
++    }
++
++    uint8_t *rx_buffer = (uint8_t *)pvPortMalloc(rx_buf_len);
++    PIOS_Assert(rx_buffer);
++    if (tx_buf_len != -1) { // this is the case for rx/tx ports
++        uint8_t *tx_buffer = (uint8_t *)pvPortMalloc(tx_buf_len);
++        PIOS_Assert(tx_buffer);
++
++        if (PIOS_COM_Init(pios_com_id, com_driver, pios_usart_id,
++                          rx_buffer, rx_buf_len,
++                          tx_buffer, tx_buf_len)) {
++            PIOS_Assert(0);
++        }
++    } else { // rx only port
++        if (PIOS_COM_Init(pios_com_id, com_driver, pios_usart_id,
++                          rx_buffer, rx_buf_len,
++                          NULL, 0)) {
++            PIOS_Assert(0);
++        }
++    }
++}
++
++/**
++ * PIOS_Board_Init()
++ * initializes all the core subsystems on this specific hardware
++ * called from System/openpilot.c
++ */
++void PIOS_Board_Init(void)
++{
++    /* Delay system */
++    PIOS_DELAY_Init();
++
++    // Initialize logfs for settings.
++    // If linking in yaffs for testing, this will be /dev0 with settings stored
++    // via the logfs object api in /dev0/logfs/
++    if (PIOS_FLASHFS_Logfs_Init(&pios_uavo_settings_fs_id, NULL, NULL, 0)) {
++        PIOS_DEBUG_Assert(0);
++    }
++    // If linking in yaffs for testing, this will re-use the simposix yaffs /dev0 nor
++    // simulation, which does not support being instanced twice.
++    pios_user_fs_id = pios_uavo_settings_fs_id;
++
++    /* Initialize the task monitor */
++    if (PIOS_TASK_MONITOR_Initialize(TASKINFO_RUNNING_NUMELEM)) {
++        PIOS_Assert(0);
++    }
++
++    /* Initialize the delayed callback library */
++    PIOS_CALLBACKSCHEDULER_Initialize();
++
++    /* Initialize UAVObject libraries */
++    EventDispatcherInitialize();
++    UAVObjInitialize();
++
++    HwSettingsInitialize();
++
++    UAVObjectsInitializeAll();
++
++    /* The GCS identifies the board through FirmwareIAPObj -- populate the
++     * same identity the real ESP32 Thing Plus reports (board model 0x1202)
++     * plus this build's version description, so the GCS treats the
++     * simulation exactly like the hardware: same config screens, same
++     * silkscreen pin labels, same UAVO-set version check. */
++    {
++        FirmwareIAPObjInitialize();
++        FirmwareIAPObjData iap;
++        FirmwareIAPObjGet(&iap);
++        iap.BoardType     = pios_board_info_blob.board_type;
++        iap.BoardRevision = pios_board_info_blob.board_rev;
++        memset(iap.Description, 0, sizeof(iap.Description));
++        memcpy(iap.Description, &fw_version_blob,
++               sizeof(iap.Description) < sizeof(fw_version_blob) ?
++               sizeof(iap.Description) : sizeof(fw_version_blob));
++        FirmwareIAPObjSet(&iap);
++        UAVObjConnectCallback(FirmwareIAPObjHandle(), sim_iap_updated_cb,
++                              EV_UNPACKED);
++    }
++
++    /* Register the simulated ICM-20602 before the Attitude module starts
++     * looking for its queue -- same ordering as the hardware board init. */
++    if (PIOS_ICM20602_SIM_Init() != 0) {
++        PIOS_Assert(0);
++    }
++
++    /* Initialize the alarms library */
++    AlarmsInitialize();
++
++    /* Configure IO ports */
++
++    /* Configure Telemetry port */
++    uint8_t hwsettings_rv_telemetryport;
++    HwSettingsRV_TelemetryPortGet(&hwsettings_rv_telemetryport);
++
++    switch (hwsettings_rv_telemetryport) {
++    case HWSETTINGS_RV_TELEMETRYPORT_DISABLED:
++        break;
++    case HWSETTINGS_RV_TELEMETRYPORT_TELEMETRY:
++        PIOS_Board_configure_com(&pios_udp_telem_cfg, PIOS_COM_TELEM_RF_RX_BUF_LEN, PIOS_COM_TELEM_RF_TX_BUF_LEN, &pios_udp_com_driver, &pios_com_telem_rf_id);
++        break;
++    case HWSETTINGS_RV_TELEMETRYPORT_COMAUX:
++        PIOS_Board_configure_com(&pios_udp_telem_cfg, PIOS_COM_AUX_RX_BUF_LEN, PIOS_COM_AUX_TX_BUF_LEN, &pios_udp_com_driver, &pios_com_aux_id);
++        break;
++    } /*        hwsettings_rv_telemetryport */
++
++    /* Configure GPS port */
++    uint8_t hwsettings_rv_gpsport;
++    HwSettingsRV_GPSPortGet(&hwsettings_rv_gpsport);
++    switch (hwsettings_rv_gpsport) {
++    case HWSETTINGS_RV_GPSPORT_DISABLED:
++        break;
++
++    case HWSETTINGS_RV_GPSPORT_TELEMETRY:
++        PIOS_Board_configure_com(&pios_udp_gps_cfg, PIOS_COM_TELEM_RF_RX_BUF_LEN, PIOS_COM_TELEM_RF_TX_BUF_LEN, &pios_udp_com_driver, &pios_com_telem_rf_id);
++        break;
++
++    case HWSETTINGS_RV_GPSPORT_GPS:
++        PIOS_Board_configure_com(&pios_udp_gps_cfg, PIOS_COM_GPS_RX_BUF_LEN, -1, &pios_udp_com_driver, &pios_com_gps_id);
++        break;
++
++    case HWSETTINGS_RV_GPSPORT_COMAUX:
++        PIOS_Board_configure_com(&pios_udp_gps_cfg, PIOS_COM_AUX_RX_BUF_LEN, PIOS_COM_AUX_TX_BUF_LEN, &pios_udp_com_driver, &pios_com_aux_id);
++        break;
++    } /* hwsettings_rv_gpsport */
++
++    /* Configure AUXPort */
++    uint8_t hwsettings_rv_auxport;
++    HwSettingsRV_AuxPortGet(&hwsettings_rv_auxport);
++
++    switch (hwsettings_rv_auxport) {
++    case HWSETTINGS_RV_AUXPORT_DISABLED:
++        break;
++
++    case HWSETTINGS_RV_AUXPORT_TELEMETRY:
++        PIOS_Board_configure_com(&pios_udp_aux_cfg, PIOS_COM_TELEM_RF_RX_BUF_LEN, PIOS_COM_TELEM_RF_TX_BUF_LEN, &pios_udp_com_driver, &pios_com_telem_rf_id);
++        break;
++
++    case HWSETTINGS_RV_AUXPORT_COMAUX:
++        PIOS_Board_configure_com(&pios_udp_aux_cfg, PIOS_COM_AUX_RX_BUF_LEN, PIOS_COM_AUX_TX_BUF_LEN, &pios_udp_com_driver, &pios_com_aux_id);
++        break;
++        break;
++    } /* hwsettings_rv_auxport */
++
++#if defined(PIOS_INCLUDE_GCSRCVR)
++    GCSReceiverInitialize();
++    uint32_t pios_gcsrcvr_id;
++    PIOS_GCSRCVR_Init(&pios_gcsrcvr_id);
++    uint32_t pios_gcsrcvr_rcvr_id;
++    if (PIOS_RCVR_Init(&pios_gcsrcvr_rcvr_id, &pios_gcsrcvr_rcvr_driver, pios_gcsrcvr_id)) {
++        PIOS_Assert(0);
++    }
++    pios_rcvr_group_map[MANUALCONTROLSETTINGS_CHANNELGROUPS_GCS] = pios_gcsrcvr_rcvr_id;
++#endif /* PIOS_INCLUDE_GCSRCVR */
++
++    // BootFault ties to IAP backup-register boot-count tracking on real
++    // hardware (coptercontrol/pios_board.c) - there's no bootloader/IAP
++    // hardware to check here, and no code path anywhere sets this alarm
++    // for simposix, so it just sits at its Uninitialised default forever.
++    // A cold SITL process trivially never had a boot fault.
++    AlarmsClear(SYSTEMALARMS_ALARM_BOOTFAULT);
++
++    // GPS/Airspeed modules read HwSettings.OptionalModules exactly once,
++    // via MODULE_INITCALL in initTask() right after this function returns
++    // - a UAVTalk write from the ground tool after boot is far too late,
++    // GPSStart()/AirspeedStart() will have already decided not to create
++    // their tasks. Enable both here instead, before MODULE_INITIALISE_ALL
++    // runs. The simulated sensors (sensors.c) already publish plausible
++    // GPS/attitude/velocity data either way.
++    HwSettingsInitialize();
++    HwSettingsOptionalModulesData optionalModules;
++    HwSettingsOptionalModulesGet(&optionalModules);
++    optionalModules.GPS      = HWSETTINGS_OPTIONALMODULES_ENABLED;
++    optionalModules.Airspeed = HWSETTINGS_OPTIONALMODULES_ENABLED;
++    HwSettingsOptionalModulesSet(&optionalModules);
++
++    // ActuatorSettings.ChannelMin/Neutral/Max stock-default to a degenerate
++    // Min=Max=Neutral=1000 (the real "won't move until you run the Output
++    // wizard" safety default) - the Actuator module scales its internal
++    // mixer output into real PWM using these per-channel values, so a
++    // zero-span range pins every output at 1000us regardless of what the
++    // mixer computes. A runtime UAVTalk write for this object turned out to
++    // be unreliable over this SITL link for reasons not fully root-caused
++    // (isolated single-object writes for this specific object never landed,
++    // even though byte-identical writes to other settings objects worked
++    // fine) - setting it directly here at boot sidesteps that entirely,
++    // same rationale as the HwSettings.OptionalModules block above.
++    ActuatorSettingsInitialize();
++    ActuatorSettingsData actuatorSettings;
++    ActuatorSettingsGet(&actuatorSettings);
++    for (int i = 0; i < ACTUATORSETTINGS_CHANNELMIN_NUMELEM; i++) {
++        actuatorSettings.ChannelMin[i]  = 1000;
++        actuatorSettings.ChannelMax[i]  = 2000;
++        // Motor channels (the first 4, matching board_orientation_viz.py's
++        // QuadX mixer) use Neutral==Min for a clean 0-100% linear ESC
++        // calibration; the rest default to a servo-style centered 1500.
++        actuatorSettings.ChannelNeutral[i] = (i < 4) ? 1000 : 1500;
++    }
++    ActuatorSettingsSet(&actuatorSettings);
++}
++
++/**
++ * @}
++ * @}
++ */
+diff --git a/flight/targets/boards/simwroom/firmware/simwroom.cpp b/flight/targets/boards/simwroom/firmware/simwroom.cpp
+new file mode 100644
+index 000000000..69e53de79
+--- /dev/null
++++ b/flight/targets/boards/simwroom/firmware/simwroom.cpp
+@@ -0,0 +1,140 @@
++/**
++ ******************************************************************************
++ * @addtogroup OpenPilotSystem OpenPilot System
++ * @brief These files are the core system files of OpenPilot.
++ * They are the ground layer just above PiOS. In practice, OpenPilot actually starts
++ * in the main() function of openpilot.c
++ * @{
++ * @addtogroup OpenPilotCore OpenPilot Core
++ * @brief This is where the OP firmware starts. Those files also define the compile-time
++ * options of the firmware.
++ * @{
++ * @file       openpilot.c
++ * @author     The OpenPilot Team, http://www.openpilot.org Copyright (C) 2010.
++ * @brief      Sets up and runs main OpenPilot tasks.
++ * @see        The GNU Public License (GPL) Version 3
++ *
++ *****************************************************************************/
++/*
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
++ * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
++ * for more details.
++ *
++ * You should have received a copy of the GNU General Public License along
++ * with this program; if not, write to the Free Software Foundation, Inc.,
++ * 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
++ */
++
++extern "C" {
++#include "inc/openpilot.h"
++#include <systemmod.h>
++#include <uavobjectsinit.h>
++
++/* Task Priorities */
++#define PRIORITY_TASK_HOOKS (tskIDLE_PRIORITY + 3)
++
++/* Global Variables */
++
++/* Local Variables */
++#define INCLUDE_TEST_TASKS  0
++#if INCLUDE_TEST_TASKS
++static uint8_t sdcard_available;
++#endif
++char Buffer[1024];
++uint32_t Cache;
++
++/* Function Prototypes */
++#if INCLUDE_TEST_TASKS
++static void TaskTick(void *pvParameters);
++static void TaskTesting(void *pvParameters);
++static void TaskHIDTest(void *pvParameters);
++static void TaskServos(void *pvParameters);
++static void TaskSDCard(void *pvParameters);
++#endif
++int32_t CONSOLE_Parse(uint8_t port, char c);
++void OP_ADC_NotifyChange(uint32_t pin, uint32_t pin_value);
++
++/* Prototype of PIOS_Board_Init() function */
++extern void PIOS_Board_Init(void);
++extern void Stack_Change(void);
++static void Stack_Change_Weak() __attribute__((weakref("Stack_Change")));
++
++/* Local Variables */
++#define INIT_TASK_PRIORITY (tskIDLE_PRIORITY + configMAX_PRIORITIES - 1) // max priority
++#define INIT_TASK_STACK    (1024 / 4)                                                                              // XXX this seems excessive
++static xTaskHandle initTaskHandle;
++
++/* Function Prototypes */
++static void initTask(void *parameters);
++
++/* Prototype of generated InitModules() function */
++extern void InitModules(void);
++}
++
++/**
++ * OpenPilot Main function:
++ *
++ * Initialize PiOS<BR>
++ * Create the "System" task (SystemModInitializein Modules/System/systemmod.c) <BR>
++ * Start FreeRTOS Scheduler (vTaskStartScheduler)<BR>
++ * If something goes wrong, blink LED1 and LED2 every 100ms
++ *
++ */
++int main()
++{
++    int result;
++
++    /* NOTE: Do NOT modify the following start-up sequence */
++    /* Any new initialization functions should be added in OpenPilotInit() */
++
++    /* Brings up System using CMSIS functions, enables the LEDs. */
++    PIOS_SYS_Init();
++
++    /* For Revolution we use a FreeRTOS task to bring up the system so we can */
++    /* always rely on FreeRTOS primitive */
++    result = xTaskCreate(initTask, "init",
++                         INIT_TASK_STACK, NULL, INIT_TASK_PRIORITY,
++                         &initTaskHandle);
++    PIOS_Assert(result == pdPASS);
++
++    /* Start the FreeRTOS scheduler */
++    vTaskStartScheduler();
++
++    /* If all is well we will never reach here as the scheduler will now be running. */
++    /* Do some PIOS_LED_HEARTBEAT to user that something bad just happened */
++    PIOS_LED_Off(PIOS_LED_HEARTBEAT); \
++    for (;;) { \
++        PIOS_LED_Toggle(PIOS_LED_HEARTBEAT); \
++        PIOS_DELAY_WaitmS(100); \
++    }
++    ;
++
++    return 0;
++}
++/**
++ * Initialisation task.
++ *
++ * Runs board and module initialisation, then terminates.
++ */
++void initTask(__attribute__((unused)) void *parameters)
++{
++    /* board driver init */
++    PIOS_Board_Init();
++
++    /* Initialize modules */
++    MODULE_INITIALISE_ALL;
++
++    /* terminate this task */
++    vTaskDelete(NULL);
++}
++
++/**
++ * @}
++ * @}
++ */
+diff --git a/flight/targets/boards/simwroom/pios_board.h b/flight/targets/boards/simwroom/pios_board.h
+new file mode 100644
+index 000000000..79a8f3896
+--- /dev/null
++++ b/flight/targets/boards/simwroom/pios_board.h
+@@ -0,0 +1,253 @@
++/**
++ ******************************************************************************
++ * @addtogroup OpenPilotSystem OpenPilot System
++ * @{
++ * @addtogroup OpenPilotCore OpenPilot Core
++ * @{
++ * @file       pios_board.h
++ * @author     The OpenPilot Team, http://www.openpilot.org Copyright (C) 2012.
++ * @brief      Defines board hardware for the OpenPilot Version 1.1 hardware.
++ * @see        The GNU Public License (GPL) Version 3
++ *
++ *****************************************************************************/
++/*
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
++ * or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
++ * for more details.
++ *
++ * You should have received a copy of the GNU General Public License along
++ * with this program; if not, write to the Free Software Foundation, Inc.,
++ * 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
++ */
++
++#ifndef PIOS_BOARD_H
++#define PIOS_BOARD_H
++
++
++// ------------------------
++// Timers and Channels Used
++// ------------------------
++/*
++   Timer | Channel 1 | Channel 2 | Channel 3 | Channel 4
++   ------+-----------+-----------+-----------+----------
++   TIM1  |           |           |           |
++   TIM2  | --------------- PIOS_DELAY -----------------
++   TIM3  |           |           |           |
++   TIM4  |           |           |           |
++   TIM5  |           |           |           |
++   TIM6  |           |           |           |
++   TIM7  |           |           |           |
++   TIM8  |           |           |           |
++   ------+-----------+-----------+-----------+----------
++ */
++
++// ------------------------
++// DMA Channels Used
++// ------------------------
++/* Channel 1  -                                 */
++/* Channel 2  - SPI1 RX                         */
++/* Channel 3  - SPI1 TX                         */
++/* Channel 4  - SPI2 RX                         */
++/* Channel 5  - SPI2 TX                         */
++/* Channel 6  -                                 */
++/* Channel 7  -                                 */
++/* Channel 8  -                                 */
++/* Channel 9  -                                 */
++/* Channel 10 -                                 */
++/* Channel 11 -                                 */
++/* Channel 12 -                                 */
++
++// ------------------------
++// BOOTLOADER_SETTINGS
++// ------------------------
++// #define BOARD_READABLE	true
++// #define BOARD_WRITABLE	true
++// #define MAX_DEL_RETRYS	3
++
++
++// ------------------------
++// PIOS_LED
++// ------------------------
++#define PIOS_LED_NUM       3
++#define PIOS_LED_HEARTBEAT 0
++#define PIOS_LED_ALARM     1
++
++// ------------------------
++// PIOS_SPI
++// See also pios_board.c
++// ------------------------
++// #define PIOS_SPI_MAX_DEVS        3
++
++// ------------------------
++// PIOS_WDG
++// ------------------------
++#define PIOS_WATCHDOG_TIMEOUT  250
++// #define PIOS_WDG_REGISTER        RTC_BKP_DR4
++#define PIOS_WDG_ACTUATOR      0x0001
++#define PIOS_WDG_STABILIZATION 0x0002
++#define PIOS_WDG_ATTITUDE      0x0004
++#define PIOS_WDG_MANUAL        0x0008
++#define PIOS_WDG_SENSORS       0x0010
++
++// ------------------------
++// PIOS_I2C
++// See also pios_board.c
++// ------------------------
++// #define PIOS_I2C_MAX_DEVS			3
++// extern uint32_t pios_i2c_mag_adapter_id;
++// #define PIOS_I2C_MAIN_ADAPTER			(pios_i2c_mag_adapter_id)
++
++// -------------------------
++// PIOS_USART
++//
++// See also pios_board.c
++// -------------------------
++// #define PIOS_USART_MAX_DEVS             5
++
++// -------------------------
++// PIOS_COM
++//
++// See also pios_board.c
++// -------------------------
++#define PIOS_COM_MAX_DEVS 25
++extern uint32_t pios_com_telem_rf_id;
++extern uint32_t pios_com_gps_id;
++extern uint32_t pios_com_aux_id;
++extern uint32_t pios_com_telem_usb_id;
++extern uint32_t pios_com_bridge_id;
++extern uint32_t pios_com_vcp_id;
++#define PIOS_COM_AUX            (pios_com_aux_id)
++#define PIOS_COM_GPS            (pios_com_gps_id)
++#define PIOS_COM_TELEM_USB      (pios_com_telem_usb_id)
++#define PIOS_COM_TELEM_RF       (pios_com_telem_rf_id)
++#define PIOS_COM_BRIDGE         (pios_com_bridge_id)
++#define PIOS_COM_VCP            (pios_com_vcp_id)
++#define PIOS_COM_DEBUG          PIOS_COM_AUX
++
++// ------------------------
++// TELEMETRY
++// ------------------------
++#define TELEM_QUEUE_SIZE        20
++#define PIOS_TELEM_STACK_SIZE   624
++
++#define PIOS_COM_BUFFER_SIZE    1024
++#define PIOS_UDP_RX_BUFFER_SIZE PIOS_COM_BUFFER_SIZE
++#define PIOS_UDP_TX_BUFFER_SIZE PIOS_COM_BUFFER_SIZE
++
++// -------------------------
++// System Settings
++//
++// See also System_stm32f4xx.c
++// -------------------------
++// These macros are deprecated
++// please use PIOS_PERIPHERAL_APBx_CLOCK According to the table below
++// #define PIOS_MASTER_CLOCK
++// #define PIOS_PERIPHERAL_CLOCK
++// #define PIOS_PERIPHERAL_CLOCK
++
++#define PIOS_SYSCLK 168000000
++// Peripherals that belongs to APB1 are:
++// DAC			|PWR				|CAN1,2
++// I2C1,2,3		|UART4,5			|USART3,2
++// I2S3Ext		|SPI3/I2S3		|SPI2/I2S2
++// I2S2Ext		|IWDG				|WWDG
++// RTC/BKP reg
++// TIM2,3,4,5,6,7,12,13,14
++
++// Calculated as SYSCLK / APBPresc * (APBPre == 1 ? 1 : 2)
++// Default APB1 Prescaler = 4
++// #define PIOS_PERIPHERAL_APB1_CLOCK					(PIOS_SYSCLK / 2)
++
++// Peripherals belonging to APB2
++// SDIO			|EXTI				|SYSCFG			|SPI1
++// ADC1,2,3
++// USART1,6
++// TIM1,8,9,10,11
++//
++// Default APB2 Prescaler = 2
++//
++// #define PIOS_PERIPHERAL_APB2_CLOCK					PIOS_SYSCLK
++
++
++// -------------------------
++// Interrupt Priorities
++// -------------------------
++// #define PIOS_IRQ_PRIO_LOW                       12              // lower than RTOS
++// #define PIOS_IRQ_PRIO_MID                       8               // higher than RTOS
++// #define PIOS_IRQ_PRIO_HIGH                      5               // for SPI, ADC, I2C etc...
++// #define PIOS_IRQ_PRIO_HIGHEST                   4               // for USART etc...
++
++// ------------------------
++// PIOS_RCVR
++// See also pios_board.c
++// ------------------------
++#define PIOS_RCVR_MAX_DEVS     3
++#define PIOS_RCVR_MAX_CHANNELS 12
++#define PIOS_GCSRCVR_TIMEOUT_MS 100
++
++// -------------------------
++// Receiver PPM input
++// -------------------------
++// #define PIOS_PPM_MAX_DEVS            1
++// #define PIOS_PPM_NUM_INPUTS          12
++
++// -------------------------
++// Receiver PWM input
++// -------------------------
++// #define PIOS_PWM_MAX_DEVS            1
++// #define PIOS_PWM_NUM_INPUTS          8
++
++// -------------------------
++// Receiver SPEKTRUM input
++// -------------------------
++// #define PIOS_SPEKTRUM_MAX_DEVS       2
++// #define PIOS_SPEKTRUM_NUM_INPUTS     12
++
++// -------------------------
++// Receiver S.Bus input
++// -------------------------
++// #define PIOS_SBUS_MAX_DEVS           1
++// #define PIOS_SBUS_NUM_INPUTS         (16+2)
++
++// -------------------------
++// Receiver DSM input
++// -------------------------
++// #define PIOS_DSM_MAX_DEVS			2
++// #define PIOS_DSM_NUM_INPUTS			12
++
++// -------------------------
++// Servo outputs
++// -------------------------
++// #define PIOS_SERVO_UPDATE_HZ                    50
++// #define PIOS_SERVOS_INITIAL_POSITION            0 /* dont want to start motors, have no pulse till settings loaded */
++#define PIOS_SERVO_NUM_OUTPUTS 8
++#define PIOS_SERVO_NUM_TIMERS  PIOS_SERVO_NUM_OUTPUTS
++// --------------------------
++// Timer controller settings
++// --------------------------
++// #define PIOS_TIM_MAX_DEVS			6
++
++// -------------------------
++// ADC
++// None.
++// -------------------------
++
++// -------------------------
++// USB
++// -------------------------
++// #define PIOS_USB_MAX_DEVS                       1
++// #define PIOS_USB_ENABLED                        1 /* Should remove all references to this */
++// #define PIOS_USB_HID_MAX_DEVS                   1
++
++#endif /* PIOS_BOARD_H */
++
++/**
++ * @}
++ * @}
++ */
 diff --git a/shared/uavobjectdefinition/settingsgeneration.xml b/shared/uavobjectdefinition/settingsgeneration.xml
 new file mode 100644
 index 000000000..f4a6c33c3

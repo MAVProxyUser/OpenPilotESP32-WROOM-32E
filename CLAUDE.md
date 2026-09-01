@@ -181,6 +181,34 @@ and reboots, which turns a wedge into a boot loop — pick deliberately.
 
 This is why `pios/common/pios_mpu6000.c` is used unmodified.
 
+## The simwroom simulation twin: traps that already bit once
+
+`flight/targets/boards/simwroom/` (carried in the shared patch) is the posix
+twin of this board. Rules learned building it:
+
+- **`BOARD := SIM_POSIX`, never SIM_WROOM.** The build defines
+  `USE_$(BOARD)` and pios.h keys the whole POSIX-vs-STM32 architecture
+  selection off `USE_SIM_POSIX`; renaming BOARD silently drops the target
+  into the STM32 include path (realposix's board-info.mk documents the same
+  trap). BOARD names the ARCHITECTURE; `PIOS_SIMWROOM` in pios_config.h
+  names the variant. Board identity (0x1202) comes from
+  BOARD_TYPE/BOARD_REVISION, which are independent of BOARD.
+- **Every `.c` in flight/pios/posix/ compiles into EVERY posix target** —
+  library.mk does `SRC += $(wildcard $(PIOS_DEVLIB)*.c)`. A new posix driver
+  must guard its whole body (`#ifdef PIOS_INCLUDE_ICM20602`) or it breaks
+  simposix/realposix.
+- **The sensor registry is not in the posix wildcard.** `PIOS_SENSORS_Register`
+  lives in `flight/pios/common/pios_sensors.c`; the simwroom Makefile adds it
+  explicitly, same as the ESP32 CMake build does.
+- **New flight-tree files must be `git add`ed (staged, not committed)** in the
+  NinjaPilot checkout, or `git diff` misses them and they never reach
+  `patches/ninjapilot-shared-changes.patch`. The patch is regenerated as
+  `git diff > patch; git diff --cached >> patch`.
+- The twin advertises the REAL scale factors (±2000 dps → 1/16.4, ±8 g →
+  g/4096). If board_hw_defs.c ever changes the configured ranges, change
+  `pios_icm20602_sim.c` to match — the pair drifting apart silently skews
+  every sim-vs-hardware comparison.
+
 ## Do not try to build realposix here
 
 It needs `linux/can.h` and `sys/prctl.h` — SocketCAN, Linux-only by design.
