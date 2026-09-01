@@ -1080,8 +1080,193 @@ index 89e0ab573..e8bce7a2b 100755
  
  # Before trusting ANY score: is the shape we are grading against the shape the
  # vehicle was actually given? PathDesired is logged on change, so this is
+diff --git a/ground/gazebo_bridge/tools/chase_cam.py b/ground/gazebo_bridge/tools/chase_cam.py
+index f1906f04b..30b7b9776 100755
+--- a/ground/gazebo_bridge/tools/chase_cam.py
++++ b/ground/gazebo_bridge/tools/chase_cam.py
+@@ -30,8 +30,8 @@ from gz.msgs10.boolean_pb2 import Boolean
+ from gz.msgs10.entity_pb2 import Entity
+ from gz.msgs10.entity_factory_pb2 import EntityFactory
+ from gz.msgs10.image_pb2 import Image
+-from gz.msgs10.pose_pb2 import Pose
+ from gz.msgs10.pose_v_pb2 import Pose_V
++from gz.msgs10.twist_pb2 import Twist
+ 
+ WORLD = "quadcopter"
+ MODEL = "x3"
+@@ -52,7 +52,7 @@ OFF = (float(sys.argv[3]) if len(sys.argv) > 3 else 7.0,
+        float(sys.argv[5]) if len(sys.argv) > 5 else 1.2)
+ 
+ veh = {"p": None}
+-cam = {"p": None}
++rig = {"p": None, "q": None}
+ rec = {"proc": None, "n": 0, "lock": threading.Lock()}
+ 
+ 
+@@ -60,6 +60,10 @@ def on_pose(msg):
+     for p in msg.pose:
+         if p.name == MODEL:
+             veh["p"] = (p.position.x, p.position.y, p.position.z)
++        elif p.name == RIG:
++            rig["p"] = (p.position.x, p.position.y, p.position.z)
++            rig["q"] = (p.orientation.w, p.orientation.x,
++                        p.orientation.y, p.orientation.z)
+ 
+ 
+ def on_image(msg):
+@@ -97,12 +101,20 @@ def remove_legacy_rigs(node):
+ 
+ 
+ def spawn_rig(node):
++    # spawn AT the follow point if the vehicle is already known - no
++    # fly-in transient at the top of the recording
++    vp = veh["p"] or (0.0, 0.0, 0.0)
++    sx, sy, sz = vp[0] + OFF[0], vp[1] + OFF[1], vp[2] + OFF[2]
+     sdf = f"""<?xml version="1.0"?>
+ <sdf version="1.6">
+   <model name="{RIG}">
+-    <static>true</static>
+-    <pose>20 0 3 0 0 3.1416</pose>
++    <pose>{sx} {sy} {sz} 0 0 3.1416</pose>
+     <link name="link">
++      <gravity>false</gravity>
++      <inertial><mass>0.1</mass>
++        <inertia><ixx>0.001</ixx><iyy>0.001</iyy><izz>0.001</izz>
++                 <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia>
++      </inertial>
+       <sensor name="chase" type="camera">
+         <topic>{TOPIC}</topic>
+         <update_rate>{FPS}</update_rate>
+@@ -114,6 +126,8 @@ def spawn_rig(node):
+         <always_on>1</always_on>
+       </sensor>
+     </link>
++    <plugin filename="gz-sim-velocity-control-system"
++            name="gz::sim::systems::VelocityControl"/>
+   </model>
+ </sdf>"""
+     req = EntityFactory()
+@@ -133,51 +147,72 @@ def look_at_quat(d):
+     return (cy * cp, -sy * sp, cy * sp, sy * cp)  # w, x, y, z
+ 
+ 
++def q_mul(a, b):
++    return (a[0] * b[0] - a[1] * b[1] - a[2] * b[2] - a[3] * b[3],
++            a[0] * b[1] + a[1] * b[0] + a[2] * b[3] - a[3] * b[2],
++            a[0] * b[2] - a[1] * b[3] + a[2] * b[0] + a[3] * b[1],
++            a[0] * b[3] + a[1] * b[2] - a[2] * b[1] + a[3] * b[0])
++
++
++def q_conj(q):
++    return (q[0], -q[1], -q[2], -q[3])
++
++
++def q_rotate_inv(q, v):
++    """Rotate world vector v into the body frame of orientation q."""
++    p = (0.0, v[0], v[1], v[2])
++    r = q_mul(q_mul(q_conj(q), p), q)
++    return (r[1], r[2], r[3])
++
++
+ def follow_loop(node, stop):
+-    ALPHA = 0.12
+-    dbg = os.environ.get("NINJAPILOT_CHASE_DEBUG") == "1"
+-    last_dbg = [0.0]
++    """Velocity-servo the rig instead of teleporting it. set_pose is a
++    SERVICE round-trip and about half the calls time out under flight load
++    - the camera stepped at ~10Hz and the footage was visibly choppy. The
++    VelocityControl plugin integrates a commanded velocity every physics
++    step (same machinery as the intercept ball), so motion between the
++    30Hz commands is continuous, and topic publishes cannot time out.
++
++    Position: P-chase toward vehicle+offset. Orientation: P on the
++    quaternion error toward a look-at of the vehicle, commanded as world
++    angular velocity."""
++    pub = node.advertise(f"/model/{RIG}/cmd_vel", Twist)
++    time.sleep(1.0)  # discovery: publish-after-advertise goes into the void
++    KP_POS, VMAX = 2.2, 12.0
++    KP_ANG, WMAX = 3.0, 3.0
+     while not stop.is_set():
+-        vp = veh["p"]
+-        if vp is not None:
+-            tgt = (vp[0] + OFF[0], vp[1] + OFF[1], vp[2] + OFF[2])
+-            if cam["p"] is None:
+-                cam["p"] = tgt
+-            c = cam["p"]
+-            c = tuple(c[i] + ALPHA * (tgt[i] - c[i]) for i in range(3))
+-            cam["p"] = c
+-            d = tuple(vp[i] - c[i] for i in range(3))
+-            w, x, y, z = look_at_quat(d)
+-            req = Pose()
+-            req.name = RIG
+-            req.position.x, req.position.y, req.position.z = c
+-            req.orientation.w, req.orientation.x = w, x
+-            req.orientation.y, req.orientation.z = y, z
+-            try:
+-                # A missed deadline under flight load must NOT kill the
+-                # thread - the first version had no guard, one timeout
+-                # froze the camera at its spawn pose, and the whole video
+-                # was grass with a distant takeoff (the smoke test idled,
+-                # so it never saw a timeout).
+-                t0 = time.time()
+-                ok, rep = node.request(f"/world/{WORLD}/set_pose", req, Pose, Boolean, 500)
+-                if dbg and time.time() - last_dbg[0] > 1.0:
+-                    last_dbg[0] = time.time()
+-                    print("[chase-dbg] veh=%.1f,%.1f,%.1f cam=%.1f,%.1f,%.1f ok=%s rep=%s dt=%.0fms"
+-                          % (vp[0], vp[1], vp[2], c[0], c[1], c[2], ok,
+-                             getattr(rep, "data", None), 1000 * (time.time() - t0)), flush=True)
+-            except Exception as exc:
+-                if dbg:
+-                    print("[chase-dbg] set_pose EXC %r" % exc, flush=True)
+-        time.sleep(0.05)
++        vp, rp, rq = veh["p"], rig["p"], rig["q"]
++        if vp is not None and rp is not None and rq is not None:
++            # VelocityControl reads cmd_vel in the model's BODY frame (a
++            # cmd_vel convention). The ball never showed this because it
++            # spawns unrotated; this rig spawned facing the pad (yaw pi)
++            # and world-frame commands sign-flipped into a P-loop runaway
++            # straight into the barn. Rotate everything into body frame.
++            vw = tuple(max(-VMAX, min(VMAX, KP_POS * (vp[i] + OFF[i] - rp[i])))
++                       for i in range(3))
++            vb = q_rotate_inv(rq, vw)
++            tw = Twist()
++            tw.linear.x, tw.linear.y, tw.linear.z = vb
++            d = tuple(vp[i] - rp[i] for i in range(3))
++            qt = look_at_quat(d)
++            qe = q_mul(qt, q_conj(rq))
++            if qe[0] < 0.0:
++                qe = tuple(-c for c in qe)
++            sin_half = math.sqrt(max(0.0, 1.0 - qe[0] * qe[0]))
++            if sin_half > 1e-6:
++                angle = 2.0 * math.asin(min(1.0, sin_half))
++                scale = KP_ANG * angle / sin_half / 2.0
++                ww = tuple(max(-WMAX, min(WMAX, scale * qe[i + 1])) for i in range(3))
++                wb = q_rotate_inv(rq, ww)
++                tw.angular.x, tw.angular.y, tw.angular.z = wb
++            pub.publish(tw)
++        time.sleep(1.0 / 30.0)
+ 
+ 
+ def main():
+     node = transport.Node()
+     remove_legacy_rigs(node)
+     time.sleep(0.5)
+-    spawn_rig(node)
+-    time.sleep(1.0)
+     # GATE on the pose feed before anything records: gz discovery is
+     # multicast and occasionally a subscription silently never matches its
+     # publisher - one whole shoot came back as 95s of barn planks because
+@@ -195,6 +230,8 @@ def main():
+     if veh["p"] is None:
+         print("[chase] pose feed never arrived - aborting rather than filming scenery", flush=True)
+         sys.exit(3)
++    spawn_rig(node)
++    time.sleep(1.0)
+     if not node.subscribe(Image, TOPIC, on_image):
+         print("[chase] image subscribe failed", flush=True)
+         sys.exit(1)
 diff --git a/ground/gazebo_bridge/wroom_pilot.py b/ground/gazebo_bridge/wroom_pilot.py
-index 13445c3f1..4fc380be9 100644
+index 13445c3f1..10f09f6ba 100644
 --- a/ground/gazebo_bridge/wroom_pilot.py
 +++ b/ground/gazebo_bridge/wroom_pilot.py
 @@ -63,6 +63,19 @@ def truth_ned():
@@ -1177,7 +1362,7 @@ index 13445c3f1..4fc380be9 100644
                           "%.3f" % gb.control.throttle, "%.3f" % gb.control.roll,
                           "%.3f" % gb.control.pitch, "%.3f" % gb.control.yaw])
  
-@@ -438,3 +482,201 @@ def rth_test():
+@@ -438,3 +482,223 @@ def rth_test():
                % (tn, te, math.hypot(tn, te)), flush=True)
      _finish(pilot, "PASS - returned home and landed %.2fm from the pad" % math.hypot(tn, te)
              if (ok and landed) else "FAIL - %s" % (pilot.fail_reason or "did not complete"))
@@ -1314,10 +1499,22 @@ index 13445c3f1..4fc380be9 100644
 +    def arrested():
 +        z, _roll, _pitch = _zdot()
 +        _ok, _n, _e, _alt, _vn, _ve, climb = pilot.nav()
-+        if z > 0.85 and climb > -0.8:
++        # Exit while still sinking a little (-1.5): the recover loop keeps
++        # arresting, and every extra second spent here at dead-neutral
++        # sticks used to be pure horizontal COASTING - the flip flings the
++        # vehicle sideways at several m/s, and vid04 measured it carried
++        # up to 32m off-station during catches that only watched vertical.
++        if z > 0.85 and climb > -1.5:
 +            caught[0] = True
 +        return caught[0]
-+    r3 = pilot.raw(3.5, 0.90, 0.0, 0.0, "catch%d" % idx, until=arrested, floor=1.0)
++
++    def brake_sticks():
++        # a pilot doesn't just level after a flip - they pull against the
++        # slide. Velocity-null the horizontal drift while arresting.
++        _ok, _n, _e, _alt, vn, ve, _c = pilot.nav()
++        return pilot.velocity(0.0, 0.0, vn, ve)
++    r3 = pilot.raw(3.5, 0.90, lambda: brake_sticks()[0], lambda: brake_sticks()[1],
++                   "catch%d" % idx, until=arrested, floor=1.0)
 +    if r3 not in ("until", "done"):
 +        pilot.tilt_check = True
 +        return False, pilot.min_alt_seen, 0.0, flip_s
@@ -1326,7 +1523,7 @@ index 13445c3f1..4fc380be9 100644
 +    # -- stabilize: a beat at hover thrust with the tilt check still off,
 +    # so the attitude transient finishes before anything may call it a
 +    # crash. Only then does the closed-loop pilot get the aircraft back.
-+    pilot.raw(0.8, gb.HOVER_THRUST + pilot.trim, 0.0, 0.0, "stab%d" % idx)
++    pilot.raw(0.5, gb.HOVER_THRUST + pilot.trim, 0.0, 0.0, "stab%d" % idx)
 +    pilot.tilt_check = True
 +
 +    # -- recover: hand back to the closed-loop pilot, and WAIT until the
@@ -1336,12 +1533,22 @@ index 13445c3f1..4fc380be9 100644
 +    at_perch = [False]
 +
 +    def perched():
-+        okp, _n, _e, alt, _vn, _ve, climb = pilot.nav()
-+        if okp and alt > PERCH_ALT - 0.5 and abs(climb) < 0.4:
++        okp, n, e, alt, _vn, _ve, climb = pilot.nav()
++        # BOTH axes, or the next flip launches from wherever this one
++        # slid to - vid04's flip 3 punched from 14m off-station because
++        # this gate only watched altitude.
++        if okp and alt > PERCH_ALT - 0.5 and abs(climb) < 0.4 and math.hypot(n, e) < 2.0:
 +            at_perch[0] = True
 +        return at_perch[0]
-+    ok = pilot.fly_until(16.0, PERCH_ALT, tgt_n=0.0, tgt_e=0.0,
-+                         label="recover%d" % idx, done=perched)
++    # sport caps for the comeback: the hover numbers are derated for calm
++    # station-keeping on laggy GPS, but post-flip there are tens of meters
++    # to make up and the video reads every extra second as a struggle.
++    pilot.MAX_CLIMB, pilot.HVEL_MAX, pilot.THR_MAX = 2.0, 2.5, 0.85
++    try:
++        ok = pilot.fly_until(20.0, PERCH_ALT, tgt_n=0.0, tgt_e=0.0,
++                             label="recover%d" % idx, done=perched)
++    finally:
++        pilot.MAX_CLIMB, pilot.HVEL_MAX, pilot.THR_MAX = Pilot.MAX_CLIMB, Pilot.HVEL_MAX, Pilot.THR_MAX
 +    ok = ok and at_perch[0]
 +
 +    completed = seen_up[0] and seen_inv[0] and caught[0] and r == "until" and ok
