@@ -794,6 +794,24 @@ index 35ec8468a..34c8b8dfd 100644
          } else {
              // Unknown board
              qDebug() << "Unknown board " << board;
+diff --git a/ground/openpilotgcs/src/plugins/config/configoutputwidget.cpp b/ground/openpilotgcs/src/plugins/config/configoutputwidget.cpp
+index 72115e68c..3ca232f53 100644
+--- a/ground/openpilotgcs/src/plugins/config/configoutputwidget.cpp
++++ b/ground/openpilotgcs/src/plugins/config/configoutputwidget.cpp
+@@ -376,6 +376,13 @@ void ConfigOutputWidget::refreshWidgetsValues(UAVObject *obj)
+             // TIM5_CH1 (ch8). See osd32mp1/dt-pwm-unlock.sh for the pins.
+             bankLabels << "1 TIM8 (1-3)" << "2 TIM4 (4-5)" << "3 TIM5 (6,8)" << "4 TIM3 (7)";
+             channelBanks << 1 << 1 << 1 << 2 << 2 << 3 << 4 << 3 << 4 << 4;
++        } else if ((board & 0xff00) == 0x1200) {
++            /* NinjaPilot ESP32 Thing Plus: the MCPWM driver applies bank
++             * 0's rate to every timer (channels share MCPWM timers in
++             * fixed pairs), so the four motor outputs are ONE bank and
++             * its rate is the global PWM frame rate. Plain PWM only. */
++            bankLabels << "1 MCPWM (1-4)";
++            channelBanks << 1 << 1 << 1 << 1;
+         }
+     }
+ 
 diff --git a/ground/openpilotgcs/src/plugins/config/images/multirotor-shapes.svg b/ground/openpilotgcs/src/plugins/config/images/multirotor-shapes.svg
 index 23df6e045..5ac0d0201 100644
 --- a/ground/openpilotgcs/src/plugins/config/images/multirotor-shapes.svg
@@ -807,6 +825,37 @@ index 23df6e045..5ac0d0201 100644
       id="quad-plus"
       transform="matrix(1.25,0,0,-1.25,-146.76331,3148.707)"><g
         id="g5429"><path
+diff --git a/ground/openpilotgcs/src/plugins/config/outputchannelform.cpp b/ground/openpilotgcs/src/plugins/config/outputchannelform.cpp
+index 2d3a1d608..e2640dd74 100644
+--- a/ground/openpilotgcs/src/plugins/config/outputchannelform.cpp
++++ b/ground/openpilotgcs/src/plugins/config/outputchannelform.cpp
+@@ -419,9 +419,26 @@ void OutputChannelForm::updateChannelLabel()
+             isRealposix = true;
+         }
+     }
++    static const char *esp32Pins[4] = { "GPIO15", "GPIO33", "GPIO27", "GPIO12" };
++    static const char *esp32PinDetail[4] = {
++        "GPIO15 (ADC2_3 / TOUCH3 / MTDO) = M1 front-left",
++        "GPIO33 (ADC1_5 / TOUCH8 / 32K_XN) = M2 front-right",
++        "GPIO27 (ADC2_7 / TOUCH7) = M3 rear-right",
++        "GPIO12 (ADC2_5 / TOUCH5 / MTDI) = M4 rear-left"
++    };
++    bool isEsp32 = false;
++    if (pm) {
++        UAVObjectUtilManager *utilMngr = pm->getObject<UAVObjectUtilManager>();
++        if (utilMngr && (utilMngr->getBoardModel() & 0xff00) == 0x1200) {
++            isEsp32 = true;
++        }
++    }
+     if (isRealposix && index() < 8) {
+         ui.actuatorNumber->setText(QString("%1 %2").arg(index() + 1).arg(realposixPins[index()]));
+         ui.actuatorNumber->setToolTip(tr("Output %1: %2").arg(index() + 1).arg(realposixPinDetail[index()]));
++    } else if (isEsp32 && index() < 4) {
++        ui.actuatorNumber->setText(QString("%1 %2").arg(index() + 1).arg(esp32Pins[index()]));
++        ui.actuatorNumber->setToolTip(tr("Output %1: %2").arg(index() + 1).arg(esp32PinDetail[index()]));
+     } else {
+         ui.actuatorNumber->setText(QString("%1").arg(index() + 1));
+     }
 diff --git a/ground/openpilotgcs/src/plugins/coreplugin/connectionmanager.cpp b/ground/openpilotgcs/src/plugins/coreplugin/connectionmanager.cpp
 index 1a68bc29f..c58bb5f9b 100644
 --- a/ground/openpilotgcs/src/plugins/coreplugin/connectionmanager.cpp
@@ -1486,6 +1535,22 @@ index 9ca2409a0..2b6a40134 100644
      $$UAVOBJECT_SYNTHETICS/airspeedsensor.cpp \
      $$UAVOBJECT_SYNTHETICS/airspeedsettings.cpp \
      $$UAVOBJECT_SYNTHETICS/airspeedstate.cpp \
+diff --git a/ground/openpilotgcs/src/plugins/uavobjectutil/devicedescriptorstruct.h b/ground/openpilotgcs/src/plugins/uavobjectutil/devicedescriptorstruct.h
+index acd774c86..b901e7ab2 100644
+--- a/ground/openpilotgcs/src/plugins/uavobjectutil/devicedescriptorstruct.h
++++ b/ground/openpilotgcs/src/plugins/uavobjectutil/devicedescriptorstruct.h
+@@ -59,6 +59,11 @@ public:
+             // NinjaPilot realposix on the OSD32MP1 (Linux/FreeRTOS port)
+             return QString("RealPosix");
+ 
++            break;
++        case 0x1202:
++            // NinjaPilot ESP32 port on the SparkFun Thing Plus
++            return QString("ESP32 Thing Plus");
++
+             break;
+         default:
+             return QString("");
 diff --git a/ground/openpilotgcs/src/plugins/uavtalk/telemetrymonitor.cpp b/ground/openpilotgcs/src/plugins/uavtalk/telemetrymonitor.cpp
 index a9b741a39..e3009ef1c 100644
 --- a/ground/openpilotgcs/src/plugins/uavtalk/telemetrymonitor.cpp
@@ -1596,6 +1661,22 @@ index a9b741a39..e3009ef1c 100644
          // Process next object if telemetry is still available
          GCSTelemetryStats::DataFields gcsStats = gcsStatsObj->getData();
  
+diff --git a/ground/openpilotgcs/src/plugins/uploader/devicewidget.cpp b/ground/openpilotgcs/src/plugins/uploader/devicewidget.cpp
+index e61cce024..1bb587104 100644
+--- a/ground/openpilotgcs/src/plugins/uploader/devicewidget.cpp
++++ b/ground/openpilotgcs/src/plugins/uploader/devicewidget.cpp
+@@ -110,6 +110,11 @@ void DeviceWidget::populate()
+         // this fork's qrc no longer carries the Revolution artwork)
+         devicePic.load(":/uploader/images/gcs-board-osd32mp1.png");
+         break;
++    case 0x1202:
++        // NinjaPilot ESP32 Thing Plus -- board photo pending an asset;
++        // the name label above already identifies it.
++        devicePic.load("");
++        break;
+     default:
+         // Clear
+         devicePic.load("");
 diff --git a/ground/pyuavtalk/uavtalk_client.py b/ground/pyuavtalk/uavtalk_client.py
 index d927b78b6..b5d759329 100644
 --- a/ground/pyuavtalk/uavtalk_client.py
