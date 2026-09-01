@@ -38,6 +38,12 @@ stay on core 0.
 - Telemetry serves TCP and UDP on port 9000; UDP is preferred (a connected
   TCP client arms lwIP's 250 ms tcp fast timer -- the residual scheduler
   stall source; a UDP client never starts it)
+- GCS connects are cheap: metaobjects fetch lazily on first use instead of
+  at connect (157 -> 46 objects), and a SettingsGeneration token lets
+  reconnects skip refetching unchanged settings entirely (down to ~11)
+- The stabilization loop watchdog judges wall-clock pass gap (warn 12 ms /
+  critical 30 ms) instead of counting missed samples, so the characterized
+  ~3.6 ms scheduler stalls no longer blink STAB at an idle bench
 - 60 s characterization with WiFi telemetry active, full flight stack:
   0 Attitude alarm events, 7 Stabilization warnings/min, CPU 34 %
 

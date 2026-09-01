@@ -160,7 +160,7 @@ index 57c978da2..6c2d6bdb7 100644
          accel_bias.Y  = accelGyroSettings.accel_bias.Y;
          accel_bias.Z  = accelGyroSettings.accel_bias.Z;
 diff --git a/flight/modules/Stabilization/innerloop.c b/flight/modules/Stabilization/innerloop.c
-index c983e8a07..0a5251b46 100644
+index c983e8a07..341abcb71 100644
 --- a/flight/modules/Stabilization/innerloop.c
 +++ b/flight/modules/Stabilization/innerloop.c
 @@ -241,6 +241,28 @@ static void stabilizationInnerloopTask()
@@ -192,6 +192,66 @@ index c983e8a07..0a5251b46 100644
  #endif
          // check if gyro keeps updating
          if (stabSettings.monitor.gyroupdates < 1) {
+@@ -277,6 +299,31 @@ static void stabilizationInnerloopTask()
+             }
+             lastPassMs = nowMs;
+         }
++#elif defined(USE_ESP32)
++        /* Same reasoning as the realposix branch above, with ESP32 numbers:
++         * the characterized lwIP/kernel-lock stalls pause the scheduler
++         * ~3.6 ms a couple of times a second, samples queue rather than
++         * drop, and the loop catches up within a pass. Counting missed
++         * samples turned that known-normal hiccup into a STAB warning
++         * blinking at an idle bench. Judge the wall-clock pass gap
++         * instead: warn past 12 ms, critical past 30 ms. */
++        {
++            static uint32_t lastPassMs = 0;
++            static bool     wdArmed    = false;
++            uint32_t nowMs = xTaskGetTickCount() * portTICK_RATE_MS;
++            if (wdArmed) {
++                uint32_t gapMs = nowMs - lastPassMs;
++                if (gapMs > 12) {
++                    warn = true;
++                }
++                if (gapMs > 30) {
++                    crit = true;
++                }
++            } else {
++                wdArmed = true;
++            }
++            lastPassMs = nowMs;
++        }
+ #else
+         if (stabSettings.monitor.gyroupdates > 1) {
+             // warning if we missed a gyro update
+diff --git a/flight/modules/System/systemmod.c b/flight/modules/System/systemmod.c
+index 74c56eea1..c148a3aa7 100644
+--- a/flight/modules/System/systemmod.c
++++ b/flight/modules/System/systemmod.c
+@@ -51,6 +51,7 @@
+ #include <objectpersistence.h>
+ #include <flightstatus.h>
+ #include <systemstats.h>
++#include <settingsgeneration.h>
+ #include <systemsettings.h>
+ #include <i2cstats.h>
+ #include <taskinfo.h>
+@@ -557,6 +558,15 @@ static void updateStats()
+     float temp_voltage = PIOS_ADC_PinGetVolt(PIOS_ADC_TEMPERATURE_PIN);
+     stats.CPUTemp = PIOS_CONVERT_VOLT_TO_CPU_TEMP(temp_voltage);;
+ #endif
++    if (SettingsGenerationHandle()) {
++        extern volatile uint32_t uavobj_settings_generation;
++        SettingsGenerationData gen;
++        SettingsGenerationGet(&gen);
++        if (gen.Generation != uavobj_settings_generation) {
++            gen.Generation = uavobj_settings_generation;
++            SettingsGenerationSet(&gen);
++        }
++    }
+     SystemStatsSet(&stats);
+ }
+ 
 diff --git a/flight/pios/common/pios_callbackscheduler.c b/flight/pios/common/pios_callbackscheduler.c
 index 468f7c008..30959c70f 100644
 --- a/flight/pios/common/pios_callbackscheduler.c
@@ -341,7 +401,7 @@ index 614d96867..c45624709 100644
   * List of event queues and the eventmask associated with the queue.
   */
 diff --git a/flight/uavobjects/uavobjectmanager.c b/flight/uavobjects/uavobjectmanager.c
-index 9feedbbb4..6498a85fe 100644
+index 9feedbbb4..c4725ccff 100644
 --- a/flight/uavobjects/uavobjectmanager.c
 +++ b/flight/uavobjects/uavobjectmanager.c
 @@ -73,6 +73,12 @@ int32_t UAVObjDelete(UAVObjHandle obj_handle, uint16_t instId) __attribute__((we
@@ -357,7 +417,40 @@ index 9feedbbb4..6498a85fe 100644
  // Private variables
  static xSemaphoreHandle mutex;
  static const UAVObjMetadata defMetadata = {
-@@ -255,6 +261,19 @@ UAVObjHandle UAVObjRegister(uint32_t id,
+@@ -89,6 +95,13 @@ static const UAVObjMetadata defMetadata = {
+ 
+ static UAVObjStats stats;
+ 
++/* Bumped on every settings-object change (see sendEvent). systemmod
++ * publishes it through the SettingsGeneration UAVO so a reconnecting GCS
++ * can prove its cached settings are still current and skip refetching
++ * them. Seeded at init so two different boots can never present the same
++ * value for different state. */
++volatile uint32_t uavobj_settings_generation;
++
+ /**
+  * Initialize the object manager
+  * \return 0 Success
+@@ -98,6 +111,18 @@ int32_t UAVObjInitialize()
+ {
+     // Initialize variables
+     memset(&stats, 0, sizeof(UAVObjStats));
++    /* The seed must differ across boots, or a reboot that loads different
++     * NVS content could present a colliding generation and let the GCS
++     * falsely skip its refetch. The tick is always zero this early, so use
++     * the hardware RNG where there is one. */
++#if defined(USE_ESP32)
++    {
++        extern uint32_t esp_random(void);
++        uavobj_settings_generation = esp_random();
++    }
++#else
++    uavobj_settings_generation = (uint32_t)PIOS_DELAY_GetuS() ^ 0x5EED5EED;
++#endif
+ 
+     /* Initialize _uavo_handles start/stop pointers */
+         #if (defined(__MACH__) && defined(__APPLE__))
+@@ -255,6 +280,19 @@ UAVObjHandle UAVObjRegister(uint32_t id,
          goto unlock_exit;
      }
  
@@ -377,7 +470,7 @@ index 9feedbbb4..6498a85fe 100644
      /* Fill in the details about this UAVO */
      uavo_data->id = id;
      uavo_data->instance_size = num_bytes;
-@@ -867,6 +886,19 @@ return rc;
+@@ -867,6 +905,19 @@ return rc;
   */
  int32_t UAVObjSetData(UAVObjHandle obj_handle, const void *dataIn)
  {
@@ -397,7 +490,7 @@ index 9feedbbb4..6498a85fe 100644
      return UAVObjSetInstanceData(obj_handle, 0, dataIn);
  }
  
-@@ -878,6 +910,19 @@ int32_t UAVObjSetData(UAVObjHandle obj_handle, const void *dataIn)
+@@ -878,6 +929,19 @@ int32_t UAVObjSetData(UAVObjHandle obj_handle, const void *dataIn)
   */
  int32_t UAVObjSetDataField(UAVObjHandle obj_handle, const void *dataIn, uint32_t offset, uint32_t size)
  {
@@ -417,7 +510,7 @@ index 9feedbbb4..6498a85fe 100644
      return UAVObjSetInstanceDataField(obj_handle, 0, dataIn, offset, size);
  }
  
-@@ -889,6 +934,19 @@ int32_t UAVObjSetDataField(UAVObjHandle obj_handle, const void *dataIn, uint32_t
+@@ -889,6 +953,19 @@ int32_t UAVObjSetDataField(UAVObjHandle obj_handle, const void *dataIn, uint32_t
   */
  int32_t UAVObjGetData(UAVObjHandle obj_handle, void *dataOut)
  {
@@ -437,7 +530,7 @@ index 9feedbbb4..6498a85fe 100644
      return UAVObjGetInstanceData(obj_handle, 0, dataOut);
  }
  
-@@ -900,6 +958,19 @@ int32_t UAVObjGetData(UAVObjHandle obj_handle, void *dataOut)
+@@ -900,6 +977,19 @@ int32_t UAVObjGetData(UAVObjHandle obj_handle, void *dataOut)
   */
  int32_t UAVObjGetDataField(UAVObjHandle obj_handle, void *dataOut, uint32_t offset, uint32_t size)
  {
@@ -457,7 +550,7 @@ index 9feedbbb4..6498a85fe 100644
      return UAVObjGetInstanceDataField(obj_handle, 0, dataOut, offset, size);
  }
  
-@@ -913,6 +984,19 @@ int32_t UAVObjGetDataField(UAVObjHandle obj_handle, void *dataOut, uint32_t offs
+@@ -913,6 +1003,19 @@ int32_t UAVObjGetDataField(UAVObjHandle obj_handle, void *dataOut, uint32_t offs
  int32_t UAVObjSetInstanceData(UAVObjHandle obj_handle, uint16_t instId,
                                const void *dataIn)
  {
@@ -477,7 +570,7 @@ index 9feedbbb4..6498a85fe 100644
      PIOS_Assert(obj_handle);
  
      // Lock
-@@ -963,6 +1047,19 @@ unlock_exit:
+@@ -963,6 +1066,19 @@ unlock_exit:
   */
  int32_t UAVObjSetInstanceDataField(UAVObjHandle obj_handle, uint16_t instId, const void *dataIn, uint32_t offset, uint32_t size)
  {
@@ -497,7 +590,7 @@ index 9feedbbb4..6498a85fe 100644
      PIOS_Assert(obj_handle);
  
      // Lock
-@@ -1030,6 +1127,19 @@ unlock_exit:
+@@ -1030,6 +1146,19 @@ unlock_exit:
  int32_t UAVObjGetInstanceData(UAVObjHandle obj_handle, uint16_t instId,
                                void *dataOut)
  {
@@ -517,7 +610,7 @@ index 9feedbbb4..6498a85fe 100644
      PIOS_Assert(obj_handle);
  
      // Lock
-@@ -1076,6 +1186,19 @@ unlock_exit:
+@@ -1076,6 +1205,19 @@ unlock_exit:
   */
  int32_t UAVObjGetInstanceDataField(UAVObjHandle obj_handle, uint16_t instId, void *dataOut, uint32_t offset, uint32_t size)
  {
@@ -537,6 +630,18 @@ index 9feedbbb4..6498a85fe 100644
      PIOS_Assert(obj_handle);
  
      // Lock
+@@ -1530,6 +1672,11 @@ xSemaphoreGiveRecursive(mutex);
+  */
+ int32_t sendEvent(struct UAVOBase *obj, uint16_t instId, UAVObjEventType triggered_event)
+ {
++    if (obj->flags.isSettings &&
++        (triggered_event == EV_UPDATED || triggered_event == EV_UNPACKED)) {
++        uavobj_settings_generation++;
++    }
++
+     /* Set up the message that will be sent to all registered listeners */
+     UAVObjEvent msg = {
+         .obj    = (UAVObjHandle)obj,
 diff --git a/flight/uavobjects/uavobjectpersistence.c b/flight/uavobjects/uavobjectpersistence.c
 index 4acbd41e5..b4eea54a6 100644
 --- a/flight/uavobjects/uavobjectpersistence.c
@@ -1212,6 +1317,187 @@ index a59688229..6a3d76455 100644
      enum VEHICLE_TYPE { VEHICLE_UNKNOWN, VEHICLE_MULTI, VEHICLE_FIXEDWING, VEHICLE_HELI, VEHICLE_SURFACE };
      enum VEHICLE_SUB_TYPE { MULTI_ROTOR_UNKNOWN, MULTI_ROTOR_TRI_Y, MULTI_ROTOR_QUAD_X, MULTI_ROTOR_QUAD_PLUS, MULTI_ROTOR_QUAD_H,
                              MULTI_ROTOR_HEXA, MULTI_ROTOR_HEXA_H, MULTI_ROTOR_HEXA_X, MULTI_ROTOR_HEXA_COAX_Y, MULTI_ROTOR_OCTO,
+diff --git a/ground/openpilotgcs/src/plugins/uavobjectbrowser/uavobjectbrowserwidget.cpp b/ground/openpilotgcs/src/plugins/uavobjectbrowser/uavobjectbrowserwidget.cpp
+index cea702e25..fe3ee0ad6 100644
+--- a/ground/openpilotgcs/src/plugins/uavobjectbrowser/uavobjectbrowserwidget.cpp
++++ b/ground/openpilotgcs/src/plugins/uavobjectbrowser/uavobjectbrowserwidget.cpp
+@@ -31,6 +31,8 @@
+ #include "ui_uavobjectbrowser.h"
+ #include "ui_viewoptions.h"
+ #include "uavobjectmanager.h"
++#include "uavdataobject.h"
++#include <extensionsystem/pluginmanager.h>
+ #include <QStringList>
+ #include <QHBoxLayout>
+ #include <QVBoxLayout>
+@@ -103,6 +105,25 @@ void UAVObjectBrowserWidget::showMetaData(bool show)
+     foreach(QModelIndex index, metaIndexes) {
+         m_browser->treeView->setRowHidden(index.row(), index.parent(), !show);
+     }
++
++    if (show && !m_metaDataFetched) {
++        /* Metaobjects are no longer prefetched at connect (they were half
++         * the retrieval burst); the first time someone actually looks at
++         * metadata, sync all of them from the board so the rows show the
++         * flight side's truth rather than local defaults. */
++        ExtensionSystem::PluginManager *pm = ExtensionSystem::PluginManager::instance();
++        UAVObjectManager *objManager     = pm->getObject<UAVObjectManager>();
++        if (objManager) {
++            QList< QList<UAVObject *> > objList = objManager->getObjects();
++            foreach(const QList<UAVObject *> &instances, objList) {
++                UAVDataObject *dobj = dynamic_cast<UAVDataObject *>(instances.first());
++                if (dobj && dobj->getMetaObject()) {
++                    dobj->getMetaObject()->requestUpdate();
++                }
++            }
++            m_metaDataFetched = true;
++        }
++    }
+ }
+ 
+ void UAVObjectBrowserWidget::showDescription(bool show)
+diff --git a/ground/openpilotgcs/src/plugins/uavobjectbrowser/uavobjectbrowserwidget.h b/ground/openpilotgcs/src/plugins/uavobjectbrowser/uavobjectbrowserwidget.h
+index 92cb4af3f..054469175 100644
+--- a/ground/openpilotgcs/src/plugins/uavobjectbrowser/uavobjectbrowserwidget.h
++++ b/ground/openpilotgcs/src/plugins/uavobjectbrowser/uavobjectbrowserwidget.h
+@@ -93,6 +93,7 @@ signals:
+     void viewOptionsChanged(bool categorized, bool scientific, bool metadata, bool description);
+     void splitterChanged(QByteArray state);
+ private:
++    bool m_metaDataFetched = false;
+     QPushButton *m_requestUpdate;
+     QPushButton *m_sendUpdate;
+     Ui_UAVObjectBrowser *m_browser;
+diff --git a/ground/openpilotgcs/src/plugins/uavobjects/uavobjects.pro b/ground/openpilotgcs/src/plugins/uavobjects/uavobjects.pro
+index 9ca2409a0..2b6a40134 100644
+--- a/ground/openpilotgcs/src/plugins/uavobjects/uavobjects.pro
++++ b/ground/openpilotgcs/src/plugins/uavobjects/uavobjects.pro
+@@ -43,6 +43,7 @@ HEADERS += \
+     $$UAVOBJECT_SYNTHETICS/actuatorcommand.h \
+     $$UAVOBJECT_SYNTHETICS/actuatordesired.h \
+     $$UAVOBJECT_SYNTHETICS/actuatorsettings.h \
++    $$UAVOBJECT_SYNTHETICS/settingsgeneration.h \
+     $$UAVOBJECT_SYNTHETICS/airspeedsensor.h \
+     $$UAVOBJECT_SYNTHETICS/airspeedsettings.h \
+     $$UAVOBJECT_SYNTHETICS/airspeedstate.h \
+@@ -155,6 +156,7 @@ SOURCES += \
+     $$UAVOBJECT_SYNTHETICS/actuatorcommand.cpp \
+     $$UAVOBJECT_SYNTHETICS/actuatordesired.cpp \
+     $$UAVOBJECT_SYNTHETICS/actuatorsettings.cpp \
++    $$UAVOBJECT_SYNTHETICS/settingsgeneration.cpp \
+     $$UAVOBJECT_SYNTHETICS/airspeedsensor.cpp \
+     $$UAVOBJECT_SYNTHETICS/airspeedsettings.cpp \
+     $$UAVOBJECT_SYNTHETICS/airspeedstate.cpp \
+diff --git a/ground/openpilotgcs/src/plugins/uavtalk/telemetrymonitor.cpp b/ground/openpilotgcs/src/plugins/uavtalk/telemetrymonitor.cpp
+index a9b741a39..e3009ef1c 100644
+--- a/ground/openpilotgcs/src/plugins/uavtalk/telemetrymonitor.cpp
++++ b/ground/openpilotgcs/src/plugins/uavtalk/telemetrymonitor.cpp
+@@ -26,6 +26,12 @@
+  */
+ 
+ #include "telemetrymonitor.h"
++
++/* The generation token must OUTLIVE this object: a TelemetryMonitor is
++ * constructed per connection and deleted on disconnect, so a member here
++ * would forget the last synced generation at exactly the moment it is
++ * needed. Process-lifetime by design. */
++static quint32 lastSettingsGeneration = 0;
+ #include "coreplugin/connectionmanager.h"
+ #include "coreplugin/icore.h"
+ 
+@@ -74,6 +80,15 @@ void TelemetryMonitor::startRetrievingObjects()
+ {
+     // Clear object queue
+     queue.clear();
++    /* SettingsGeneration goes first: if the board still presents the same
++     * generation we recorded after our last COMPLETE retrieval, every
++     * settings object in the queue is provably unchanged and gets pruned
++     * when the reply lands (see transactionCompleted). Boards without the
++     * object simply NACK and the full retrieval proceeds as always. */
++    UAVObject *genObj = objMngr->getObject(QString("SettingsGeneration"));
++    if (genObj) {
++        queue.enqueue(genObj);
++    }
+     // Get all objects, add metaobjects, settings and data objects with OnChange update mode to the queue
+     QList< QList<UAVObject *> > objs = objMngr->getObjects();
+     for (int n = 0; n < objs.length(); ++n) {
+@@ -82,12 +97,20 @@ void TelemetryMonitor::startRetrievingObjects()
+         UAVDataObject *dobj = dynamic_cast<UAVDataObject *>(obj);
+         UAVObject::Metadata mdata = obj->getMetadata();
+         if (mobj != NULL) {
+-            queue.enqueue(obj);
++            /* Metaobjects are NOT prefetched. There are ~111 of them and
++             * they were half of the connect burst, yet nothing needs them
++             * until a user looks at or edits metadata -- the GCS's own
++             * send engine runs off its local copies, which default to the
++             * same XML values the firmware compiled in. The object
++             * browser fetches them on first use (showMetaData); a board
++             * carrying saved metadata overrides is the one case that now
++             * syncs late instead of at connect. */
+         } else if (dobj != NULL) {
+             if (dobj->isSettingsObject()) {
+                 queue.enqueue(obj);
+             } else {
+-                if (UAVObject::GetFlightTelemetryUpdateMode(mdata) == UAVObject::UPDATEMODE_ONCHANGE) {
++                if (UAVObject::GetFlightTelemetryUpdateMode(mdata) == UAVObject::UPDATEMODE_ONCHANGE &&
++                    obj != genObj) {   // already enqueued first, above
+                     queue.enqueue(obj);
+                 }
+             }
+@@ -105,6 +128,13 @@ void TelemetryMonitor::startRetrievingObjects()
+ void TelemetryMonitor::stopRetrievingObjects()
+ {
+     qDebug("Object retrieval has been cancelled");
++    /* Only a retrieval stopped MIDWAY invalidates the generation token --
++     * this slot also runs on every ordinary disconnect, where the queue is
++     * already empty and the last sync completed. Wiping the token there
++     * silently disabled the reconnect skip entirely. */
++    if (!queue.isEmpty() || objPending != NULL) {
++        lastSettingsGeneration = 0;
++    }
+     queue.clear();
+ }
+ 
+@@ -116,6 +146,12 @@ void TelemetryMonitor::retrieveNextObject()
+     // If queue is empty return
+     if (queue.isEmpty()) {
+         qDebug("Object retrieval completed");
++        {
++            UAVObject *genObj = objMngr->getObject(QString("SettingsGeneration"));
++            if (genObj) {
++                lastSettingsGeneration = genObj->getField("Generation")->getValue().toUInt();
++            }
++        }
+         if (firmwareIAPObj->getBoardType()) {
+             emit connected();
+         } else {
+@@ -148,6 +184,26 @@ void TelemetryMonitor::transactionCompleted(UAVObject *obj, bool success)
+         // Disconnect from sending object
+         obj->disconnect(this);
+         objPending = NULL;
++
++        if (success && obj->getName() == "SettingsGeneration") {
++            quint32 gen = obj->getField("Generation")->getValue().toUInt();
++            if (gen != 0 && gen == lastSettingsGeneration) {
++                /* Board settings provably unchanged since our last complete
++                 * sync: drop every settings object from the queue. Metas are
++                 * lazy already, so what remains is the handful of on-change
++                 * data snapshots. */
++                int before = queue.count();
++                QMutableListIterator<UAVObject *> it(queue);
++                while (it.hasNext()) {
++                    UAVDataObject *dobj = dynamic_cast<UAVDataObject *>(it.next());
++                    if (dobj && dobj->isSettingsObject()) {
++                        it.remove();
++                    }
++                }
++                qDebug() << QString("SettingsGeneration match (%1): pruned %2 settings objects from retrieval")
++                    .arg(gen).arg(before - queue.count());
++            }
++        }
+         // Process next object if telemetry is still available
+         GCSTelemetryStats::DataFields gcsStats = gcsStatsObj->getData();
+ 
 diff --git a/ground/pyuavtalk/uavtalk_client.py b/ground/pyuavtalk/uavtalk_client.py
 index d927b78b6..b5d759329 100644
 --- a/ground/pyuavtalk/uavtalk_client.py
@@ -1234,3 +1520,19 @@ index d927b78b6..b5d759329 100644
  
      def send(self, data):
          self.ser.write(data)
+diff --git a/shared/uavobjectdefinition/settingsgeneration.xml b/shared/uavobjectdefinition/settingsgeneration.xml
+new file mode 100644
+index 000000000..f4a6c33c3
+--- /dev/null
++++ b/shared/uavobjectdefinition/settingsgeneration.xml
+@@ -0,0 +1,10 @@
++<xml>
++    <object name="SettingsGeneration" singleinstance="true" settings="false" category="System">
++        <description>Session token for ground-station settings caching: seeded randomly at boot and incremented whenever any settings object changes, so a reconnecting GCS can skip refetching settings it already holds.</description>
++        <field name="Generation" units="" type="uint32" elements="1"/>
++        <access gcs="readonly" flight="readwrite"/>
++        <telemetrygcs acked="false" updatemode="manual" period="0"/>
++        <telemetryflight acked="false" updatemode="onchange" period="0"/>
++        <logging updatemode="manual" period="0"/>
++    </object>
++</xml>

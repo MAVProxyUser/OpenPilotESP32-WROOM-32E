@@ -155,6 +155,7 @@ set(UAVO_SYNTH_SRCS
     ${UAVOSYNTH}/ekfstatevariance.c
     ${UAVOSYNTH}/faultsettings.c
     ${UAVOSYNTH}/firmwareiapobj.c
+    ${UAVOSYNTH}/settingsgeneration.c
     ${UAVOSYNTH}/fixedwingpathfollowersettings.c
     ${UAVOSYNTH}/fixedwingpathfollowerstatus.c
     ${UAVOSYNTH}/flightbatterysettings.c
@@ -357,6 +358,7 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE
     UAVOBJ_INIT_callbackinfo=1
     UAVOBJ_INIT_faultsettings=1
     UAVOBJ_INIT_firmwareiapobj=1
+    UAVOBJ_INIT_settingsgeneration=1
     UAVOBJ_INIT_flightmodesettings=1
     UAVOBJ_INIT_flightstatus=1
     UAVOBJ_INIT_flighttelemetrystats=1
@@ -423,6 +425,7 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE
     UAVOBJ_INIT_callbackinfo=1
     UAVOBJ_INIT_faultsettings=1
     UAVOBJ_INIT_firmwareiapobj=1
+    UAVOBJ_INIT_settingsgeneration=1
     UAVOBJ_INIT_flightmodesettings=1
     UAVOBJ_INIT_flightstatus=1
     UAVOBJ_INIT_flighttelemetrystats=1
