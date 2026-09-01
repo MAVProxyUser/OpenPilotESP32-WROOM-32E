@@ -313,6 +313,9 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE
     USE_ESP32=1
     # gates the stabilizedhandler ownership guard for the onboard flip
     MODULE_FLIP_BUILTIN=1
+    # Autotune module deliberately NOT built for the real board (user call,
+    # 2026-09-01): tuning happens through bank DEFAULTS and the GCS only.
+    # The module remains available to the sim targets.
     # Per-task diagnostics (TaskInfo/CallbackInfo: stack remaining, running
     # flag, runtime percent). Without this the objects exist but stay
     # all-zero -- which cost a full wedge-reproduction run whose TaskInfo

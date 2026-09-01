@@ -146,13 +146,13 @@ static void board_com_init(uint32_t *com_id,
 /* ---------------------------------------------------------------------- *
  * Default airframe: Quad X
  *
- * This target has no settings filesystem (see the PIOS_FLASHFS stubs above),
- * so anything the GCS writes lives in RAM and is gone at the next power-up.
- * A quad whose mixer evaporates on reboot is worse than no mixer at all, so
- * the Quad X configuration is compiled in here and reapplied every boot. The
- * GCS can still change any of it at runtime -- the change just will not
- * survive a reset until there is a real settings backend behind
- * pios_uavo_settings_fs_id.
+ * STALE-COMMENT FIX (2026-09-01): this target HAS a settings filesystem
+ * now -- pios_flashfs_nvs.c, keyed by object id + instance, size-checked
+ * on load, committed on save; UAVObjRegister() loads every settings
+ * object from it at boot. These compiled-in Quad X defaults apply ONLY
+ * to an unprovisioned board (first boot after flash-erase), so a fresh
+ * board is flyable; once anything has been saved, stored settings win
+ * (see the IsProvisioned() gate below).
  * ---------------------------------------------------------------------- */
 static void board_apply_default_airframe(void)
 {

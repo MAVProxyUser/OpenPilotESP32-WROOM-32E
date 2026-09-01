@@ -80,7 +80,16 @@ Prebuilt images in the repo root, from this exact tree:
 
 - `firmware_normal_41hz.bin` - the flight build: 41Hz DLPF, self-leveling
   Stabilized3 defaults, Rate-yaw default (no AxisLock arming-gesture
-  windup), MotorsSpinWhileArmed default TRUE, onboard Flip module.
+  windup), MotorsSpinWhileArmed default TRUE, onboard Flip module, and
+  4-inch-class Bank1 defaults (rate 0.0032/0.0075/0.00005, attitude Kp
+  3.2 - modest refinements inside the envelope CC3D-era 250s flew; the
+  Autotune module is deliberately NOT built for the real board).
+  Settings persistence: NVS-backed, keyed by object id + instance,
+  size-validated on load (a layout change orphans old blobs safely),
+  committed on save; compiled-in Quad X defaults touch only an
+  unprovisioned board. NOTE: a board with a SAVED Bank1 keeps its saved
+  values - check the GCS after flashing and clear/set the bank if the
+  new defaults are wanted.
 - `firmware_esc_cal.bin` - the BOARD_ESC_CAL power-up calibration variant.
   Flash, unplug USB, battery on, listen for the tones, reflash normal.
   Never fly this build.
