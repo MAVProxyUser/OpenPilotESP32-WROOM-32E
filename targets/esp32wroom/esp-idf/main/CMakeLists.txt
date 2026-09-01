@@ -98,6 +98,7 @@ set(LIB_SRCS
 # StateEstimation chain.
 set(NINJA_MODULE_SRCS
     ${FLIGHT}/modules/Attitude/attitude.c
+    ${FLIGHT}/modules/Flip/flip.c
     ${FLIGHT}/modules/Stabilization/stabilization.c
     ${FLIGHT}/modules/Stabilization/innerloop.c
     ${FLIGHT}/modules/Stabilization/outerloop.c
@@ -156,6 +157,7 @@ set(UAVO_SYNTH_SRCS
     ${UAVOSYNTH}/faultsettings.c
     ${UAVOSYNTH}/firmwareiapobj.c
     ${UAVOSYNTH}/settingsgeneration.c
+    ${UAVOSYNTH}/flipstatus.c
     ${UAVOSYNTH}/fixedwingpathfollowersettings.c
     ${UAVOSYNTH}/fixedwingpathfollowerstatus.c
     ${UAVOSYNTH}/flightbatterysettings.c
@@ -280,6 +282,7 @@ idf_component_register(
         ${FLIGHT}/modules/Stabilization/inc
         ${FLIGHT}/modules/Actuator/inc
         ${FLIGHT}/modules/ManualControl/inc
+        ${FLIGHT}/modules/Flip/inc
         ${FLIGHT}/modules/Telemetry/inc
         ${FLIGHT}/modules/System/inc
         ${UAVOSYNTH}
@@ -308,6 +311,8 @@ target_linker_script(${COMPONENT_LIB} INTERFACE "uavo_handles.ld")
 # build silently falls into the STM32 include path and fails confusingly.
 target_compile_definitions(${COMPONENT_LIB} PRIVATE
     USE_ESP32=1
+    # gates the stabilizedhandler ownership guard for the onboard flip
+    MODULE_FLIP_BUILTIN=1
     # Per-task diagnostics (TaskInfo/CallbackInfo: stack remaining, running
     # flag, runtime percent). Without this the objects exist but stay
     # all-zero -- which cost a full wedge-reproduction run whose TaskInfo
@@ -348,6 +353,7 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE
 # Keep this list in step with UAVO_SYNTH_SRCS above.
 target_compile_definitions(${COMPONENT_LIB} PRIVATE
     UAVOBJ_INIT_accelgyrosettings=1
+    UAVOBJ_INIT_flipstatus=1
     UAVOBJ_INIT_accelstate=1
     UAVOBJ_INIT_accessorydesired=1
     UAVOBJ_INIT_actuatorcommand=1
@@ -415,6 +421,7 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE
 # Keep this list in step with UAVO_SYNTH_SRCS above.
 target_compile_definitions(${COMPONENT_LIB} PRIVATE
     UAVOBJ_INIT_accelgyrosettings=1
+    UAVOBJ_INIT_flipstatus=1
     UAVOBJ_INIT_accelstate=1
     UAVOBJ_INIT_accessorydesired=1
     UAVOBJ_INIT_actuatorcommand=1

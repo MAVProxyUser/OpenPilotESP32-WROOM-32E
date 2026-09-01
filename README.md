@@ -185,7 +185,28 @@ First-day results (2026-09-01, all GPS-only feedback at 10 Hz):
   with the guidance loop outside the firmware. (Caveat: gz navsat is
   ublox-grade clean; real GPS noise will widen that number.)
 
-**The backflip works** (`run_wroom.sh <label> flip`, `NINJAPILOT_WROOM_FLIPS=n`
+**The backflip is now ONBOARD** - flip.pde came home to the board.
+`flight/modules/Flip` (compiled into BOTH the real ESP32 firmware and the
+sim twin) runs the whole maneuver at task rate against loop-fresh gyro
+data: the ground side writes `FlipStatus.Command = Flip` and the board
+owns punch, rotation (angle from the gyro integral - measured dt, never
+assumed), spin-kill, and catch, with stabilizedhandler deferring to the
+sequencer while it runs. Sim-validated 10/10 across two 5-flip batches:
+~10s cycles, lows 6.5-7.5m, every catch clean. NOT yet flown on real
+hardware - that needs Bank2 provisioning on the board, a trigger path,
+and a deliberate decision (and a lot of open air).
+
+The lag chronicle, for the record: the ground-piloted flip fought a
+~0.25s stick-transport lag; onboard has none - and promptly relearned
+the OTHER lessons at 100Hz: an integral that adds gyro*nominal-dt loses
+every scheduler tick (352 deg believed vs ~500 real); a taper must be
+gentle enough for the rate loop to physically track (gain 1.9, the
+effective slope the piloted flips flew - a 900 deg/s^2 trapezoid exits
+at 355 deg/s); and a sensorless anti-drift lean overcorrects (the board
+arrests vertically, whoever can SEE velocity brakes horizontally).
+
+**The ground-piloted flip** (previous milestone, kept for A/B on switch
+position 5): (`run_wroom.sh <label> flip`, `NINJAPILOT_WROOM_FLIPS=n`
 for repeats): switch position 1 is a flip slot (Stabilized2 =
 Rate/Rate/Rate/Manual pulling Bank2, ManualRate.Pitch 540 deg/s via
 FlightModeMap) and the pilot flies punch -> full-rate rotation ->

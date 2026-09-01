@@ -212,6 +212,42 @@ index 57c978da2..6c2d6bdb7 100644
          accel_bias.X  = accelGyroSettings.accel_bias.X;
          accel_bias.Y  = accelGyroSettings.accel_bias.Y;
          accel_bias.Z  = accelGyroSettings.accel_bias.Z;
+diff --git a/flight/modules/ManualControl/stabilizedhandler.c b/flight/modules/ManualControl/stabilizedhandler.c
+index 306fa4d68..662555e54 100644
+--- a/flight/modules/ManualControl/stabilizedhandler.c
++++ b/flight/modules/ManualControl/stabilizedhandler.c
+@@ -34,6 +34,9 @@
+ #include <stabilizationdesired.h>
+ #include <flightmodesettings.h>
+ #include <stabilizationbank.h>
++#ifdef MODULE_FLIP_BUILTIN
++#include <flipstatus.h>
++#endif
+ 
+ // Private constants
+ 
+@@ -75,6 +78,21 @@ void stabilizedHandler(bool newinit)
+         StabilizationDesiredInitialize();
+         StabilizationBankInitialize();
+     }
++#ifdef MODULE_FLIP_BUILTIN
++    // While the Flip module runs a maneuver it is the SOLE writer of
++    // StabilizationDesired (same single-owner discipline as ArduCopter's
++    // flip mode taking over from the pilot). Interleaving stick writes at
++    // receiver rate mid-flip would fight the sequencer at 50Hz.
++    {
++        FlipStatusStateOptions flipState;
++        FlipStatusStateGet(&flipState);
++        if (flipState == FLIPSTATUS_STATE_PUNCH ||
++            flipState == FLIPSTATUS_STATE_ROTATE ||
++            flipState == FLIPSTATUS_STATE_CATCH) {
++            return;
++        }
++    }
++#endif
+     ManualControlCommandData cmd;
+     ManualControlCommandGet(&cmd);
+ 
 diff --git a/flight/modules/Sensors/simulated/Sensors/sensors.c b/flight/modules/Sensors/simulated/Sensors/sensors.c
 index 0faa36f93..457dd8ac4 100644
 --- a/flight/modules/Sensors/simulated/Sensors/sensors.c
@@ -465,10 +501,10 @@ index 99607a487..835e96964 100644
  UAVOBJSRCFILENAMES += auxmagsensor
  UAVOBJSRCFILENAMES += auxmagsettings
 diff --git a/flight/targets/boards/simwroom/firmware/Makefile b/flight/targets/boards/simwroom/firmware/Makefile
-index de36b5fd6..d91381ab5 100644
+index de36b5fd6..67b7355d3 100644
 --- a/flight/targets/boards/simwroom/firmware/Makefile
 +++ b/flight/targets/boards/simwroom/firmware/Makefile
-@@ -57,6 +57,12 @@ MODULES = ManualControl Stabilization Attitude
+@@ -57,6 +57,15 @@ MODULES = ManualControl Stabilization Attitude
  MODULES += Telemetry
  MODULES += Actuator
  MODULES += Receiver
@@ -478,9 +514,24 @@ index de36b5fd6..d91381ab5 100644
 +# flight, slots also land as host files) is how the last several real bugs
 +# were found. Documented here so nobody mistakes it for a hardware feature.
 +MODULES += Logging
++# The onboard flip sequencer (see flight/modules/Flip/flip.c) - the
++# board-side flip.pde. Runs on the REAL board too (ESP32 CMake list).
++MODULES += Flip
  
  SRC += $(FLIGHTLIB)/notification.c
  
+diff --git a/flight/targets/boards/simwroom/firmware/UAVObjects.inc b/flight/targets/boards/simwroom/firmware/UAVObjects.inc
+index 835e96964..334c732a9 100644
+--- a/flight/targets/boards/simwroom/firmware/UAVObjects.inc
++++ b/flight/targets/boards/simwroom/firmware/UAVObjects.inc
+@@ -46,6 +46,7 @@ UAVOBJSRCFILENAMES += missionprogress
+ UAVOBJSRCFILENAMES += missionrecoverysettings
+ UAVOBJSRCFILENAMES += sensorhubsettings
+ UAVOBJSRCFILENAMES += settingsgeneration
++UAVOBJSRCFILENAMES += flipstatus
+ UAVOBJSRCFILENAMES += magsensor
+ UAVOBJSRCFILENAMES += auxmagsensor
+ UAVOBJSRCFILENAMES += auxmagsettings
 diff --git a/flight/uavobjects/inc/uavobjectprivate.h b/flight/uavobjects/inc/uavobjectprivate.h
 index 614d96867..c45624709 100644
 --- a/flight/uavobjects/inc/uavobjectprivate.h
@@ -839,10 +890,10 @@ index e67e684e4..16b62103e 100644
      uint8_t rxbyte = rxbuffer[(*position)++];
  
 diff --git a/ground/gazebo_bridge/gazebo_bridge.py b/ground/gazebo_bridge/gazebo_bridge.py
-index e965b652a..714953a64 100644
+index e965b652a..7f16dba70 100644
 --- a/ground/gazebo_bridge/gazebo_bridge.py
 +++ b/ground/gazebo_bridge/gazebo_bridge.py
-@@ -66,6 +66,31 @@ def print(*args, **kwargs):  # noqa: A001 - deliberate module-wide shadow
+@@ -66,6 +66,33 @@ def print(*args, **kwargs):  # noqa: A001 - deliberate module-wide shadow
  # state estimator/hold-mode logic work", since the latter was found to be
  # broken independent of which vertical-channel filter algorithm is used).
  TEST_MODE = os.environ.get("NINJAPILOT_TEST_MODE", "scripted")
@@ -863,18 +914,20 @@ index e965b652a..714953a64 100644
 +def _fms_values(armed):
 +    fms = bov.flight_mode_settings(armed, _stab1_modes())
 +    if WROOM:
-+        # Switch position 1 is the FLIP slot: full-authority rate mode on
-+        # every axis, manual thrust. Stabilized2's simposix meaning
-+        # (AltitudeVario) needs StateEstimation, which this stack does not
-+        # have. The rates come from Bank2 (see FlightModeMap +
-+        # StabilizationSettingsBank2 in send_config) so hover keeps its
-+        # own tame Bank1 numbers.
-+        fms["Stabilization2Settings"] = ["Rate", "Rate", "Rate", "Manual"]
++        # Switch position 1 is the ONBOARD-flip slot. The sequencer
++        # (flight/modules/Flip) writes StabilizationDesired's per-axis
++        # modes itself, so this slot flies plain Attitude - it exists so
++        # Bank2 is ACTIVE during the maneuver, because innerloop.c clamps
++        # every rate setpoint to the active bank's MaximumRate and
++        # Bank1's 180 would cut the flip to a 2s mush. Position 5
++        # (Stabilized6, Rate/Rate/Rate by default) keeps the ground-
++        # piloted flip alive for A/B comparison - also on Bank2.
++        fms["Stabilization2Settings"] = ["Attitude", "Attitude", "AxisLock", "Manual"]
 +    return fms
  # NINJAPILOT_MISSION=star flies ONLY the 5-point star at 8m + land -
  # a ~90s iteration loop for corner/yaw tuning instead of the 4.5min
  # full star/octagon/KF mission.
-@@ -616,12 +641,19 @@ class ControlState(object):
+@@ -616,13 +643,20 @@ class ControlState(object):
          # RevoSettings.FusionAlgorithm value CHANGE (while disarmed) does,
          # confirmed by reading stateestimation.c's own reinit gate.
          self.request_estimator_reset = False
@@ -889,13 +942,23 @@ index e965b652a..714953a64 100644
          return [
              throttle_us,
 -            1500, 1500, 1500,                      # Roll/Pitch/Yaw sticks - neutral
+-            bov.flight_mode_channel(self.mode_position),
 +            bov.slider_channel(self.roll),
 +            bov.slider_channel(self.pitch),
 +            bov.slider_channel(self.yaw),
-             bov.flight_mode_channel(self.mode_position),
++            bov.flight_mode_channel(self.mode_position, 6 if WROOM else bov.FLIGHT_MODE_NUMBER),
              1500, 1500, 1500,                      # unused disturbance channels
          ]
-@@ -3730,10 +3762,14 @@ def uavtalk_thread():
+ 
+@@ -2074,6 +2108,7 @@ def set_yaw_control(client, mode):
+ 
+ _last_relay = [None]   # latest RelayTuning (periodic 1Hz while tuning)
+ _last_bank1 = [None]   # latest StabilizationSettingsBank1 (pushed on change)
++_last_flipstatus = [None]   # latest FlipStatus (onboard flip sequencer state)
+ _last_flightstatus = [None]  # latest FlightStatus (mode verification)
+ _fms_position_override = [None]  # FlightModePosition override (autotune remaps slot 4)
+ 
+@@ -3730,10 +3765,14 @@ def uavtalk_thread():
                        f"{home['Be'][0]:.4f} {home['Be'][1]:.4f} {home['Be'][2]:.4f}", flush=True)
                  break
              time.sleep(0.1)
@@ -914,7 +977,7 @@ index e965b652a..714953a64 100644
          send_reliable("MixerSettings", bov.resolve_enum_values(db["MixerSettings"], bov.mixer_settings()))
          time.sleep(0.2)
          # STOCK values, deliberately. An earlier session set
-@@ -3750,11 +3786,12 @@ def uavtalk_thread():
+@@ -3750,11 +3789,12 @@ def uavtalk_thread():
          # The stock slow rate is slow BY DESIGN: real accel bias drifts
          # over minutes, and everything faster than that is real motion the
          # integrator needs to see.
@@ -932,7 +995,15 @@ index e965b652a..714953a64 100644
          # Without this, the flight side has no idea GCSReceiver's channels
          # are meant to be Throttle/Roll/Pitch/Yaw/FlightMode - nothing ever
          # reaches ManualControlCommand/StabilizationDesired at all.
-@@ -3769,7 +3806,7 @@ def uavtalk_thread():
+@@ -3765,11 +3805,14 @@ def uavtalk_thread():
+             "ChannelNeutral": [1050, 1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500],
+             "ChannelMax": [2000] * 9,
+             "ResponseTime": [0] * 7, "Deadband": 0.02, "DeadbandAssistedControl": 0.08,
+-            "FlightModeNumber": 5, "FailsafeFlightModeSwitchPosition": -1,
++            # wroom uses 6 switch bins so position 5 (Stabilized6, the
++            # piloted-flip Rate slot) exists; with 5 bins it would clamp
++            # into the PathPlanner bin - a mode this stack cannot fly
++            "FlightModeNumber": 6 if WROOM else 5, "FailsafeFlightModeSwitchPosition": -1,
              "FailsafeChannel": [-1, 0, 0, 0, 0, 0, 0, 0],
          })
          time.sleep(0.2)
@@ -941,7 +1012,7 @@ index e965b652a..714953a64 100644
          send_reliable("FlightModeSettings", bov.resolve_enum_values(db["FlightModeSettings"], fms))
          time.sleep(0.2)
          # This bridge exists to unit-test real flight-code changes, so it
-@@ -4004,8 +4041,9 @@ def uavtalk_thread():
+@@ -4004,8 +4047,9 @@ def uavtalk_thread():
              "LandVerticalVelPID": [0.35, 3.0, 0.05, 0.9],
          }
          _vtol_pf_values[0] = bov.resolve_enum_values(db["VtolPathFollowerSettings"], vtol_pf)
@@ -953,7 +1024,7 @@ index e965b652a..714953a64 100644
          # Note: VtolPathFollowerSettings.YawControl="manual" (set above)
          # makes vtolflycontroller.cpp's UpdateStabilizationDesired() take
          # the yaw_attitude=false branch (flight/modules/PathFollower/
-@@ -4078,6 +4116,13 @@ def uavtalk_thread():
+@@ -4078,6 +4122,13 @@ def uavtalk_thread():
              "LowThrottleZeroIntegral": "TRUE",
              "ScaleToAirspeed": 0, "ScaleToAirspeedLimits": [0.05, 3],
              "FlightModeAssistMap": ["None"] * 6,
@@ -962,12 +1033,12 @@ index e965b652a..714953a64 100644
 +            # re-copied from the mapped bank on every mode change, so the
 +            # flip rates apply the instant the mode switches - and hover's
 +            # rates come back the instant it switches home.
-+            "FlightModeMap": (["Bank1", "Bank2", "Bank1", "Bank1", "Bank1", "Bank1"]
++            "FlightModeMap": (["Bank1", "Bank2", "Bank1", "Bank1", "Bank1", "Bank2"]
 +                              if WROOM else ["Bank1"] * 6),
          }
          send_reliable("StabilizationSettings", bov.resolve_enum_values(db["StabilizationSettings"], stab_settings))
          time.sleep(0.2)
-@@ -4222,17 +4267,50 @@ def uavtalk_thread():
+@@ -4222,17 +4273,51 @@ def uavtalk_thread():
          send_reliable("StabilizationSettingsBank1", bov.resolve_enum_values(db["StabilizationSettingsBank1"], stab_bank))
          send_reliable("StabilizationBank", bov.resolve_enum_values(db["StabilizationBank"], stab_bank))
          time.sleep(0.2)
@@ -1019,12 +1090,40 @@ index e965b652a..714953a64 100644
 +            modes.update({"wroom_hover": wroom_pilot.hover_test,
 +                          "wroom_sticks": wroom_pilot.sticks_test,
 +                          "wroom_rth": wroom_pilot.rth_test,
-+                          "wroom_flip": wroom_pilot.flip_test})
++                          "wroom_flip": wroom_pilot.flip_test,
++                          "wroom_oflip": wroom_pilot.onboard_flip_test})
 +        target = modes.get(TEST_MODE, run_test_sequence)
  
          def run_with_fc_logging():
              # Runs in its own thread while client.run() keeps pumping packets
-@@ -4427,7 +4505,7 @@ def uavtalk_thread():
+@@ -4244,7 +4329,16 @@ def uavtalk_thread():
+                                  else (FC_LOG_OBJECTS_MISSION + (
+                                      FC_LOG_OBJECTS_DEEP
+                                      if os.environ.get("NINJAPILOT_DEEP_LOG") == "1" else [])
+-                                     if TEST_MODE in ("mission", "intercept") else ()))
++                                     if TEST_MODE in ("mission", "intercept")
++                                     # wroom flip diagnosis: the whole command
++                                     # chain, fast - SD in, RateDesired out of
++                                     # the outer loop, ActuatorDesired out of
++                                     # the inner
++                                     else ([("StabilizationDesired", "periodic", 100),
++                                            ("RateDesired", "periodic", 100),
++                                            ("ActuatorDesired", "periodic", 100),
++                                            ("FlipStatus", "onchange", 0)]
++                                           if TEST_MODE.startswith("wroom_") else ())))
+                 time.sleep(1.0)  # let metadata writes land before arming
+             target()
+             if TEST_MODE != "pull_logs":
+@@ -4312,6 +4406,8 @@ def uavtalk_thread():
+             _last_log_status[0] = decoded
+         elif objdef.name == "RelayTuning":
+             _last_relay[0] = decoded
++        elif objdef.name == "FlipStatus":
++            _last_flipstatus[0] = decoded
+         elif objdef.name == "StabilizationSettingsBank1":
+             _last_bank1[0] = decoded
+         elif objdef.name == "DebugLogEntry":
+@@ -4427,7 +4523,7 @@ def uavtalk_thread():
          while True:
              if configured["done"] and client.connected:
                  if control.armed != last_arm_state["armed"]:
@@ -1033,7 +1132,7 @@ index e965b652a..714953a64 100644
                      # The arming toggle re-sends the WHOLE FlightModeSettings
                      # (UAVTalk writes are whole-object) - without honoring
                      # this override it silently stomps any custom switch
-@@ -4640,12 +4718,16 @@ _accel_send_count = [0, 0.0]  # [total sends, last debug print time]
+@@ -4640,12 +4736,16 @@ _accel_send_count = [0, 0.0]  # [total sends, last debug print time]
  # send_config()'s wait_for_mag/HomeLocation.Be step already blocks briefly
  # at startup for the same reason.
  def publish_baro(client):
@@ -1051,7 +1150,7 @@ index e965b652a..714953a64 100644
      if have_mag:
          client.send_object("MagSensor", {"x": mag_body[0], "y": mag_body[1], "z": mag_body[2], "temperature": 25.0})
 diff --git a/ground/gazebo_bridge/run_wroom.sh b/ground/gazebo_bridge/run_wroom.sh
-index b7a3a6295..b9ae6e7ee 100755
+index b7a3a6295..dada6a668 100755
 --- a/ground/gazebo_bridge/run_wroom.sh
 +++ b/ground/gazebo_bridge/run_wroom.sh
 @@ -8,10 +8,10 @@
@@ -1063,7 +1162,7 @@ index b7a3a6295..b9ae6e7ee 100755
  set -u
  HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 -LABEL="${1:?usage: run_wroom.sh <label> [hover|sticks|rth]}"
-+LABEL="${1:?usage: run_wroom.sh <label> [hover|sticks|rth|flip]}"
++LABEL="${1:?usage: run_wroom.sh <label> [hover|sticks|rth|flip|oflip]}"
  MODE="${2:-hover}"
  SCRATCH="${TMPDIR:-/tmp}"
  FCWD="$SCRATCH/wroom_fcwd"
@@ -1276,7 +1375,7 @@ index f1906f04b..30b7b9776 100755
          print("[chase] image subscribe failed", flush=True)
          sys.exit(1)
 diff --git a/ground/gazebo_bridge/wroom_pilot.py b/ground/gazebo_bridge/wroom_pilot.py
-index 13445c3f1..be7000093 100644
+index 13445c3f1..07587cbc6 100644
 --- a/ground/gazebo_bridge/wroom_pilot.py
 +++ b/ground/gazebo_bridge/wroom_pilot.py
 @@ -63,6 +63,19 @@ def truth_ned():
@@ -1407,7 +1506,7 @@ index 13445c3f1..be7000093 100644
                           "%.3f" % gb.control.throttle, "%.3f" % gb.control.roll,
                           "%.3f" % gb.control.pitch, "%.3f" % gb.control.yaw])
  
-@@ -438,3 +484,281 @@ def rth_test():
+@@ -438,3 +484,372 @@ def rth_test():
                % (tn, te, math.hypot(tn, te)), flush=True)
      _finish(pilot, "PASS - returned home and landed %.2fm from the pad" % math.hypot(tn, te)
              if (ok and landed) else "FAIL - %s" % (pilot.fail_reason or "did not complete"))
@@ -1474,7 +1573,7 @@ index 13445c3f1..be7000093 100644
 +    # original attitude rather than "stop rotating".
 +    seen_up = [False]
 +    seen_inv = [False]
-+    gb.control.mode_position = 1
++    gb.control.mode_position = 5   # Stabilized6 = Rate/Rate/Rate on Bank2 (piloted-flip slot)
 +    t_flip = time.time()
 +
 +    def flip_angle():
@@ -1689,6 +1788,97 @@ index 13445c3f1..be7000093 100644
 +            if (landed and n_ok == len(results) and n_ok == n_flips)
 +            else "FAIL - %d/%d flips (%s)" % (n_ok, len(results),
 +                                              pilot.fail_reason or "see flip lines"))
++
++
++def _do_onboard_flip(pilot, idx):
++    """One BOARD-side flip: switch to the flip slot, write
++    FlipStatus.Command, and watch the module fly the maneuver. The bridge's
++    only jobs are the trigger and the closed-loop recovery afterward - the
++    sequencing lag that dominated the piloted flip's tuning is gone.
++    Returns (completed, min_alt, loss, flip_s)."""
++    client = gb._mission_client[0]
++    ok0, _n0, _e0, alt0, _v0, _v1, _c0 = pilot.nav()
++    print("[wroom] oflip %d: engaging onboard sequencer (alt %.1fm)" % (idx, alt0), flush=True)
++    pilot.tilt_check = False
++    gb.control.mode_position = 1     # flip slot: Attitude flying, Bank2 active
++    gb.control.roll = gb.control.pitch = 0.0
++    time.sleep(0.4)                  # let the mode/bank switch land
++    gb._last_flipstatus[0] = None
++    client.send_object("FlipStatus", {"Command": "Flip", "State": "Idle",
++                                      "Flips": 0, "LastAngle": 0.0})
++    t0 = time.time()
++    seen = set()
++    last_angle = 0.0
++    terminal = None
++    while time.time() - t0 < 8.0:
++        fs = gb._last_flipstatus[0]
++        if fs is not None:
++            state = fs["State"]
++            if state not in seen:
++                seen.add(state)
++                print("[wroom] oflip %d: board reports %s" % (idx, state), flush=True)
++            if state in ("Done", "Abort"):
++                terminal = state
++                last_angle = fs.get("LastAngle", 0.0)
++                break
++        okn, n, e, alt, vn, ve, climb = pilot.nav()
++        pilot.rec.row("oflip%d" % idx, n, e, alt, vn, ve, climb)
++        _h, _tn, _te, talt = truth_ned()
++        pilot.min_alt_seen = min(pilot.min_alt_seen, talt)
++        if talt > pilot.CEILING_M:
++            terminal = "ceiling"
++            break
++        time.sleep(0.04)
++    gb.control.mode_position = 0
++    # dead-stick beat at hover, then the sport position loop. A
++    # velocity-null brakeout stage here was measured WORSE (ob10): tilting
++    # against the slide while residual sink remains starves the vertical
++    # and one flip bottomed at 0.17m - the same lesson as the onboard
++    # tilt-gate. The position loop brakes the slide fine once climbing.
++    pilot.raw(0.4, gb.HOVER_THRUST + pilot.trim, 0.0, 0.0, "obstab%d" % idx)
++    pilot.tilt_check = True
++    at_perch = [False]
++
++    def perched():
++        okp, n, e, alt, _vn, _ve, climb = pilot.nav()
++        if okp and alt > PERCH_ALT - 0.6 and abs(climb) < 0.6 and math.hypot(n - PERCH_N, e) < 2.5:
++            at_perch[0] = True
++        return at_perch[0]
++    pilot.MAX_CLIMB, pilot.HVEL_MAX, pilot.THR_MAX = 2.0, 2.5, 0.85
++    try:
++        ok = pilot.fly_until(20.0, PERCH_ALT, tgt_n=PERCH_N, tgt_e=0.0,
++                             label="obrecover%d" % idx, done=perched)
++    finally:
++        pilot.MAX_CLIMB, pilot.HVEL_MAX, pilot.THR_MAX = Pilot.MAX_CLIMB, Pilot.HVEL_MAX, Pilot.THR_MAX
++    completed = terminal == "Done" and ok and at_perch[0]
++    loss = alt0 - pilot.min_alt_seen
++    print("[wroom] oflip %d: %s - board angle %.0f deg, lowest %.2fm (%.2fm below entry)"
++          % (idx, "COMPLETE" if completed else "INCOMPLETE (%s)" % terminal,
++             last_angle, pilot.min_alt_seen, loss), flush=True)
++    return completed, pilot.min_alt_seen, loss, 0.0
++
++
++def onboard_flip_test():
++    pilot = _start("wroom_oflip")
++    if pilot is None:
++        return
++    n_flips = int(os.environ.get("NINJAPILOT_WROOM_FLIPS", "1"))
++    ok = pilot.takeoff(PERCH_ALT)
++    if ok:
++        ok = pilot.fly_until(8.0, PERCH_ALT, tgt_n=PERCH_N, tgt_e=0.0, label="settle")
++    results = []
++    if ok:
++        for i in range(1, n_flips + 1):
++            pilot.min_alt_seen = 99.0
++            done = _do_onboard_flip(pilot, i)
++            results.append(done)
++            if not done[0]:
++                break
++    landed = pilot.descend_and_land() if (ok and results and results[-1][0]) else False
++    n_ok = sum(1 for rr in results if rr[0])
++    _finish(pilot, "PASS - %d/%d ONBOARD backflips completed, landed" % (n_ok, len(results))
++            if (landed and n_ok == len(results) and n_ok == n_flips)
++            else "FAIL - %d/%d onboard flips" % (n_ok, len(results)))
 diff --git a/ground/openpilotgcs/src/libs/utils/logfile.h b/ground/openpilotgcs/src/libs/utils/logfile.h
 index 7fbf676bc..c51c168f7 100644
 --- a/ground/openpilotgcs/src/libs/utils/logfile.h
@@ -2662,26 +2852,6 @@ index 92cb4af3f..054469175 100644
      QPushButton *m_requestUpdate;
      QPushButton *m_sendUpdate;
      Ui_UAVObjectBrowser *m_browser;
-diff --git a/ground/openpilotgcs/src/plugins/uavobjects/uavobjects.pro b/ground/openpilotgcs/src/plugins/uavobjects/uavobjects.pro
-index 9ca2409a0..2b6a40134 100644
---- a/ground/openpilotgcs/src/plugins/uavobjects/uavobjects.pro
-+++ b/ground/openpilotgcs/src/plugins/uavobjects/uavobjects.pro
-@@ -43,6 +43,7 @@ HEADERS += \
-     $$UAVOBJECT_SYNTHETICS/actuatorcommand.h \
-     $$UAVOBJECT_SYNTHETICS/actuatordesired.h \
-     $$UAVOBJECT_SYNTHETICS/actuatorsettings.h \
-+    $$UAVOBJECT_SYNTHETICS/settingsgeneration.h \
-     $$UAVOBJECT_SYNTHETICS/airspeedsensor.h \
-     $$UAVOBJECT_SYNTHETICS/airspeedsettings.h \
-     $$UAVOBJECT_SYNTHETICS/airspeedstate.h \
-@@ -155,6 +156,7 @@ SOURCES += \
-     $$UAVOBJECT_SYNTHETICS/actuatorcommand.cpp \
-     $$UAVOBJECT_SYNTHETICS/actuatordesired.cpp \
-     $$UAVOBJECT_SYNTHETICS/actuatorsettings.cpp \
-+    $$UAVOBJECT_SYNTHETICS/settingsgeneration.cpp \
-     $$UAVOBJECT_SYNTHETICS/airspeedsensor.cpp \
-     $$UAVOBJECT_SYNTHETICS/airspeedsettings.cpp \
-     $$UAVOBJECT_SYNTHETICS/airspeedstate.cpp \
 diff --git a/ground/openpilotgcs/src/plugins/uavobjectutil/devicedescriptorstruct.h b/ground/openpilotgcs/src/plugins/uavobjectutil/devicedescriptorstruct.h
 index acd774c86..b901e7ab2 100644
 --- a/ground/openpilotgcs/src/plugins/uavobjectutil/devicedescriptorstruct.h
@@ -2937,10 +3107,10 @@ index 139a0dc0a..e6ec7e68b 100644
  </xml>
 diff --git a/flight/modules/Flip/flip.c b/flight/modules/Flip/flip.c
 new file mode 100644
-index 000000000..24b35079c
+index 000000000..95daa666c
 --- /dev/null
 +++ b/flight/modules/Flip/flip.c
-@@ -0,0 +1,229 @@
+@@ -0,0 +1,292 @@
 +/**
 + ******************************************************************************
 + * @addtogroup OpenPilotModules OpenPilot Modules
@@ -2999,13 +3169,43 @@ index 000000000..24b35079c
 +#define FLIP_PUNCH_THRUST 0.95f
 +#define FLIP_PUNCH_MS     900
 +#define FLIP_RATE_MAX     460.0f  // deg/s; must be inside the bank's ManualRate/MaximumRate
-+#define FLIP_TAPER_GAIN   3.5f    // deg/s of command per deg remaining
++#define FLIP_TAPER_GAIN   1.9f   // deg/s of commanded rate per deg remaining.
++                                  // NOT higher, NOT a trapezoid: gain 3.5 blew
++                                  // through level at full rate (braking needs
++                                  // ~200 deg of physics), and a 900 deg/s^2
++                                  // trapezoid demanded torque the mixer does not
++                                  // have at flip collective - the vehicle exited
++                                  // with 355 deg/s residual and the catch spent
++                                  // 10m of sky arresting it. 1.9 is the gain the
++                                  // ground-piloted flips EFFECTIVELY flew (their
++                                  // 3.0 through 0.25s of lag) across ~40 clean
++                                  // maneuvers: gentle enough for the rate loop to
++                                  // actually track, so the residual at level is
++                                  // small enough for the spin-kill beat.
++#define FLIP_SPINKILL_MS  300     // rate-zero beat after the rotation, before the
++                                  // Attitude catch - Attitude cannot out-rate a
++                                  // residual spin (proven twice, ground and board)
 +#define FLIP_THR_UP       0.60f   // collective while thrust points up-ish (cos > 0.35)
 +#define FLIP_THR_INV      0.10f   // collective while inverted
 +#define FLIP_ROTATE_MS_MAX 2500
-+#define FLIP_EXIT_DEG     355.0f  // land just shy of level; Attitude catch closes the rest
++#define FLIP_EXIT_DEG     352.0f  // land just shy of level; the catch closes the rest
 +#define FLIP_CATCH_THRUST 0.90f   // NOT higher: full collective leaves the mixer no differential
-+#define FLIP_CATCH_MS     1200
++#define FLIP_CATCH_LEAN   0.0f    // MEASURED AND ZEROED: a fixed -8 deg nose-down
++                                  // lean (open-loop brake against the deterministic
++                                  // southward fling) DOUBLED the drift to 36-47m -
++                                  // the fling varies flip to flip and a sensorless
++                                  // lean overcorrects into a northward streak. The
++                                  // board arrests VERTICALLY only; horizontal
++                                  // braking belongs to whoever can see velocity
++                                  // (the ground pilot's recovery, or a human).
++#define FLIP_CATCH_MS     1400   // arrest MOST of the fall, then hand off: this
++                                 // board has NO vertical-velocity sensor, so it
++                                 // cannot exit on "arrested"; 1400ms at 0.90 takes
++                                 // a proper flip's -4 m/s down to about -1 and
++                                 // costs 1s less horizontal coasting than the
++                                 // 2400ms version (whose dead-stick drift ran
++                                 // 15-20m). The recovering pilot inherits a small
++                                 // residual sink it can see and null.
 +#define FLIP_LEVEL_DEG    25.0f   // required entry attitude
 +
 +static xTaskHandle taskHandle;
@@ -3062,7 +3262,7 @@ index 000000000..24b35079c
 +        sd.StabilizationMode.Pitch  = STABILIZATIONDESIRED_STABILIZATIONMODE_ATTITUDE;
 +        sd.StabilizationMode.Yaw    = STABILIZATIONDESIRED_STABILIZATIONMODE_AXISLOCK;
 +        sd.Roll   = 0.0f;
-+        sd.Pitch  = 0.0f;
++        sd.Pitch  = (phase == FLIPSTATUS_STATE_CATCH) ? FLIP_CATCH_LEAN : 0.0f;
 +        sd.Yaw    = 0.0f;
 +    }
 +    sd.StabilizationMode.Thrust = STABILIZATIONDESIRED_STABILIZATIONMODE_MANUAL;
@@ -3077,9 +3277,24 @@ index 000000000..24b35079c
 +    uint32_t phase_ms = 0;
 +    float angle_deg   = 0.0f;
 +    uint16_t done_ms  = 0;
++    uint32_t last_us  = PIOS_DELAY_GetuS();
++    float dt_s        = (float)LOOP_MS / 1000.0f;
 +
 +    while (1) {
 +        vTaskDelayUntil(&lastSysTime, LOOP_MS / portTICK_RATE_MS);
++        // MEASURED dt, never the nominal loop period: under load the posix
++        // scheduler delivers fewer iterations than 100Hz, and an integral
++        // that adds gyro*10ms per ITERATION loses exactly the missing
++        // fraction - the first flights read 352 deg while the vehicle had
++        // done ~500, and every catch inherited a full-speed spin.
++        {
++            uint32_t now_us = PIOS_DELAY_GetuS();
++            dt_s = (float)(now_us - last_us) * 1e-6f;
++            last_us = now_us;
++            if (dt_s < 0.0f || dt_s > 0.05f) {
++                dt_s = (float)LOOP_MS / 1000.0f;
++            }
++        }
 +        FlipStatusGet(&st);
 +
 +        // Loss of the right flight state releases ownership instantly,
@@ -3101,8 +3316,9 @@ index 000000000..24b35079c
 +                AttitudeStateGet(&att0);
 +                if (flying_stabilized() &&
 +                    fabsf(att0.Roll) < FLIP_LEVEL_DEG && fabsf(att0.Pitch) < FLIP_LEVEL_DEG) {
-+                    phase_ms  = 0;
-+                    angle_deg = 0.0f;
++                    phase_ms     = 0;
++                    angle_deg    = 0.0f;
++                    st.LastAngle = 0.0f;   // doubles as the beat-entry marker below
 +                    set_state(&st, FLIPSTATUS_STATE_PUNCH);
 +                } else {
 +                    set_state(&st, FLIPSTATUS_STATE_ABORT);
@@ -3112,7 +3328,7 @@ index 000000000..24b35079c
 +
 +        case FLIPSTATUS_STATE_PUNCH:
 +            sd_write(FLIPSTATUS_STATE_PUNCH, 0.0f, FLIP_PUNCH_THRUST);
-+            phase_ms += LOOP_MS;
++            phase_ms += (uint32_t)(dt_s * 1000.0f);
 +            if (phase_ms >= FLIP_PUNCH_MS) {
 +                phase_ms = 0;
 +                set_state(&st, FLIPSTATUS_STATE_ROTATE);
@@ -3125,25 +3341,42 @@ index 000000000..24b35079c
 +            // wrap gymnastics, no telemetry lag, exact by construction.
 +            GyroStateData gyro;
 +            GyroStateGet(&gyro);
-+            angle_deg += gyro.y * ((float)LOOP_MS / 1000.0f);
++            angle_deg += gyro.y * dt_s;
 +
-+            float remaining = FLIP_EXIT_DEG - angle_deg;
-+            float rate = boundf(FLIP_TAPER_GAIN * remaining, 0.0f, FLIP_RATE_MAX);
-+            float z    = cosf(DEG2RAD(angle_deg));
-+            sd_write(FLIPSTATUS_STATE_ROTATE, rate,
-+                     (z > 0.35f) ? FLIP_THR_UP : FLIP_THR_INV);
-+            phase_ms += LOOP_MS;
-+            if (angle_deg >= FLIP_EXIT_DEG || phase_ms >= FLIP_ROTATE_MS_MAX) {
-+                st.LastAngle = angle_deg;
-+                phase_ms     = 0;
-+                set_state(&st, FLIPSTATUS_STATE_CATCH);
++            if (angle_deg < FLIP_EXIT_DEG && phase_ms < FLIP_ROTATE_MS_MAX) {
++                float remaining = FLIP_EXIT_DEG - angle_deg;
++                float rate = boundf(FLIP_TAPER_GAIN * remaining, 0.0f, FLIP_RATE_MAX);
++                float z    = cosf(DEG2RAD(angle_deg));
++                // brake segment gets FLIP_THR_UP regardless of tilt:
++                // differential torque scales with collective, and the
++                // braking needs the torque more than the energy budget
++                // needs the thrust discipline
++                bool braking = remaining < 130.0f;
++                sd_write(FLIPSTATUS_STATE_ROTATE, rate,
++                         (z > 0.35f || braking) ? FLIP_THR_UP : FLIP_THR_INV);
++                phase_ms += (uint32_t)(dt_s * 1000.0f);
++            } else {
++                // spin-kill beat: rate zero, still in Rate mode, so the
++                // gyro loop scrubs whatever residual the profile left
++                // before Attitude is asked to hold anything
++                if (st.LastAngle == 0.0f) {
++                    st.LastAngle = angle_deg;   // record where the profile ended
++                    phase_ms     = 0;           // and start the beat timer
++                    FlipStatusSet(&st);
++                }
++                sd_write(FLIPSTATUS_STATE_ROTATE, 0.0f, 0.70f);
++                phase_ms += (uint32_t)(dt_s * 1000.0f);
++                if (phase_ms >= FLIP_SPINKILL_MS) {
++                    phase_ms = 0;
++                    set_state(&st, FLIPSTATUS_STATE_CATCH);
++                }
 +            }
 +            break;
 +        }
 +
 +        case FLIPSTATUS_STATE_CATCH:
 +            sd_write(FLIPSTATUS_STATE_CATCH, 0.0f, FLIP_CATCH_THRUST);
-+            phase_ms += LOOP_MS;
++            phase_ms += (uint32_t)(dt_s * 1000.0f);
 +            if (phase_ms >= FLIP_CATCH_MS) {
 +                st.Flips++;
 +                phase_ms = 0;
@@ -3156,7 +3389,7 @@ index 000000000..24b35079c
 +        case FLIPSTATUS_STATE_ABORT:
 +            // ownership already released (handler resumes on these states);
 +            // linger briefly so the ground side can see the terminal state
-+            done_ms += LOOP_MS;
++            done_ms += (uint16_t)(dt_s * 1000.0f);
 +            if (done_ms >= 500) {
 +                done_ms = 0;
 +                set_state(&st, FLIPSTATUS_STATE_IDLE);
@@ -6196,6 +6429,28 @@ index 000000000..13445c3f1
 +              % (tn, te, math.hypot(tn, te)), flush=True)
 +    _finish(pilot, "PASS - returned home and landed %.2fm from the pad" % math.hypot(tn, te)
 +            if (ok and landed) else "FAIL - %s" % (pilot.fail_reason or "did not complete"))
+diff --git a/ground/openpilotgcs/src/plugins/uavobjects/uavobjects.pro b/ground/openpilotgcs/src/plugins/uavobjects/uavobjects.pro
+index 9ca2409a0..c678f6d1f 100644
+--- a/ground/openpilotgcs/src/plugins/uavobjects/uavobjects.pro
++++ b/ground/openpilotgcs/src/plugins/uavobjects/uavobjects.pro
+@@ -43,6 +43,8 @@ HEADERS += \
+     $$UAVOBJECT_SYNTHETICS/actuatorcommand.h \
+     $$UAVOBJECT_SYNTHETICS/actuatordesired.h \
+     $$UAVOBJECT_SYNTHETICS/actuatorsettings.h \
++    $$UAVOBJECT_SYNTHETICS/settingsgeneration.h \
++    $$UAVOBJECT_SYNTHETICS/flipstatus.h \
+     $$UAVOBJECT_SYNTHETICS/airspeedsensor.h \
+     $$UAVOBJECT_SYNTHETICS/airspeedsettings.h \
+     $$UAVOBJECT_SYNTHETICS/airspeedstate.h \
+@@ -155,6 +157,8 @@ SOURCES += \
+     $$UAVOBJECT_SYNTHETICS/actuatorcommand.cpp \
+     $$UAVOBJECT_SYNTHETICS/actuatordesired.cpp \
+     $$UAVOBJECT_SYNTHETICS/actuatorsettings.cpp \
++    $$UAVOBJECT_SYNTHETICS/settingsgeneration.cpp \
++    $$UAVOBJECT_SYNTHETICS/flipstatus.cpp \
+     $$UAVOBJECT_SYNTHETICS/airspeedsensor.cpp \
+     $$UAVOBJECT_SYNTHETICS/airspeedsettings.cpp \
+     $$UAVOBJECT_SYNTHETICS/airspeedstate.cpp \
 diff --git a/shared/uavobjectdefinition/flipstatus.xml b/shared/uavobjectdefinition/flipstatus.xml
 new file mode 100644
 index 000000000..3e1cc48fb
