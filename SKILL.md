@@ -169,7 +169,13 @@ cd /path/to/NinjaPilot-15.02.ninja/ground/gazebo_bridge
 ./run_wroom.sh <label> hover     # GPS-only hover, 4m / 30s
 ./run_wroom.sh <label> sticks    # scripted stick pokes, attitude tracking
 ./run_wroom.sh <label> rth       # 15m flyout, GPS-only return-to-home
+./run_wroom.sh <label> flip      # backflip(s) from a 13m perch
 ```
+
+`NINJAPILOT_WROOM_FLIPS=5` chains flips in one flight (recovery re-climbs
+to the perch between them). `NINJAPILOT_FLIP_LAG` (default 0.25s) is the
+stick-command latency the flip endgame predicts across - retune it if the
+telemetry path's timing ever changes.
 
 Each run purges slots, resets the scene, flies, pulls the FC's own
 DebugLog (the twin compiles the Logging module as a documented sim-only

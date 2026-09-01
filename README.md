@@ -185,9 +185,21 @@ First-day results (2026-09-01, all GPS-only feedback at 10 Hz):
   with the guidance loop outside the firmware. (Caveat: gz navsat is
   ublox-grade clean; real GPS noise will widen that number.)
 
-A controlled backflip (Rate-mode parlor trick) is deliberately deferred
-until hover is trusted on the real board; it needs a Rate/Rate/Rate bank
-on a second flight-mode position.
+**The backflip works** (`run_wroom.sh <label> flip`, `NINJAPILOT_WROOM_FLIPS=n`
+for repeats): switch position 1 is a flip slot (Stabilized2 =
+Rate/Rate/Rate/Manual pulling Bank2, ManualRate.Pitch 540 deg/s via
+FlightModeMap) and the pilot flies punch -> full-rate rotation ->
+angle-closed-loop taper -> Attitude-mode catch -> arrest -> recover.
+15/15 completed across three consecutive five-flip flights: rotation
+0.75-0.88s, lowest point 4.4-8.1m against a 1.5m abort floor, every
+catch clean. The hard-won lessons live as comments in wroom_pilot.py;
+the headline three, each paid for with a crashed run: differential
+torque scales with collective so the mixer has NO attitude authority at
+full throttle (arrest at 0.90, never higher); "stop rotating" is not a
+recovery (rate mode parks contentedly upside down - the taper must land
+the rotation ON level); and the ~0.25s stick-command latency is 125 deg
+at flip rate, so the endgame steers by a lag-PREDICTED angle, not the
+telemetry's.
 
 ## Hardware
 
