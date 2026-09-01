@@ -177,6 +177,23 @@ to the perch between them). `NINJAPILOT_FLIP_LAG` (default 0.25s) is the
 stick-command latency the flip endgame predicts across - retune it if the
 telemetry path's timing ever changes.
 
+To FILM a flight (chase-cam mp4, GPU-rendered, no GUI needed - adapted
+from the Cheetah port's record_video.py): start the run, then
+
+```bash
+./venv/bin/python3 tools/chase_cam.py /tmp/flight.mp4 95 5 0 0.8
+```
+
+(args: out, seconds, then camera offset east/north/up - due east sees a
+backflip in full profile). It spawns a camera rig teleported along a
+smoothed follow path via /world/.../set_pose, pipes frames to ffmpeg, and
+refuses to record until vehicle poses are actually arriving - gz's
+multicast discovery occasionally leaves a subscription silently unmatched,
+and the symptom is 95 seconds of scenery. Rig names/topics are unique per
+run because the create service AUTO-RENAMES duplicates instead of failing:
+stale rigs otherwise pile up publishing onto a shared topic, and the
+recorder pulls frames from a camera parked inside the barn.
+
 Each run purges slots, resets the scene, flies, pulls the FC's own
 DebugLog (the twin compiles the Logging module as a documented sim-only
 deviation), writes a pilot track CSV to logs/, and renders the
