@@ -83,6 +83,12 @@ found by this work:
   existed, `Create()` returned without updating `stackSize`, so the shared
   stack was whatever the *first* caller asked for. Now takes the maximum.
   **This does increase stack allocation on other targets.**
+- `uavtalk.c` — the receive state machine's checksum state read the CRC
+  byte without checking the feed buffer still had one. A frame whose
+  header+payload ends exactly on a receive-chunk boundary (118-byte
+  ActuatorSettings against a 128-byte telemetry read) consumed a stale
+  byte as its CRC and was dropped with no NACK, on every attempt. Every
+  other state already guarded against feed starvation.
 - `attitude.c` — the ADXL345-only read path was not guarded by
   `PIOS_INCLUDE_ADXL345` (every other use of that driver in the file is), and
   the task stack was hardcoded at 540 bytes with no per-board override.

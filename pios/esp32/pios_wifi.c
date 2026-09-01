@@ -155,15 +155,36 @@ static void wifi_server_task(__attribute__((unused)) void *arg)
         }
 
         if (wifi.client >= 0 && FD_ISSET(wifi.client, &rf)) {
+            /* Backpressure matters here. rx_in_cb returns how many bytes
+             * the COM fifo actually accepted; when the telemetry RX task
+             * is behind, that can be less than we handed it. Dropping the
+             * remainder desyncs the UAVTalk parser mid-frame -- the next
+             * frame's header gets consumed as payload continuation, its
+             * CRC fails, and the following frames are eaten during resync.
+             * That is not hypothetical: every GCS write of ActuatorSettings
+             * (a 129-byte frame) was lost exactly this way while smaller
+             * writes survived, which cost a full debugging session. So:
+             * push the remainder until it is all accepted, and only then
+             * recv again -- TCP's own flow control backs the socket up
+             * harmlessly while we wait. */
             uint8_t buf[WIFI_RX_CHUNK];
             int n = recv(wifi.client, buf, sizeof(buf), MSG_DONTWAIT);
             if (n <= 0 && !(n < 0 && errno == EWOULDBLOCK)) {
                 close(wifi.client);
                 wifi.client = -1;
             } else if (n > 0 && wifi.rx_in_cb) {
-                bool woken = false;
-                (wifi.rx_in_cb)(wifi.rx_in_context, buf, (uint16_t)n,
-                                NULL, &woken);
+                uint16_t off = 0;
+                for (int spins = 0; off < (uint16_t)n && spins < 200; spins++) {
+                    bool woken = false;
+                    uint16_t took = (wifi.rx_in_cb)(wifi.rx_in_context,
+                                                    buf + off,
+                                                    (uint16_t)(n - off),
+                                                    NULL, &woken);
+                    off += took;
+                    if (off < (uint16_t)n) {
+                        vTaskDelay(pdMS_TO_TICKS(2));
+                    }
+                }
             }
         }
     }
