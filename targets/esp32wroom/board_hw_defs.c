@@ -158,7 +158,18 @@ const struct pios_icm20602_cfg pios_icm20602_cfg = {
      *
      * With a real DLPF selected the base rate is 1kHz and Smpl_rate_div_dlp
      * applies: 1000/(1+1) = 500Hz, matching PIOS_SENSOR_RATE. */
-    .filter               = PIOS_ICM20602_DLPF_176HZ,
+    /* 41Hz, down from 176. The 2026-09-01 flight logs caught the attitude
+     * estimate contradicting its own accelerometer by 9 degrees the moment
+     * the motors spooled (accel said nose-UP +7.5, estimate said nose-DOWN
+     * -5, |a| swinging 7.6-13.4 m/s^2): motor vibration on a 4-inch frame
+     * lives at 200-500Hz, and at 176Hz bandwidth it walks into the gyro and
+     * rectifies into phantom deg/s that the CC filter integrates. The FC
+     * then tips a LEVEL vehicle to chase the phantom - both real-flight
+     * flips. A CC3D on the same frame never cared because the MPU6000
+     * samples at 8kHz internally; the ICM-20602 at DLPF>0 runs a 1kHz ODR.
+     * 41Hz crushes the vibration band ~20dB+ while adding ~6ms of group
+     * delay - well inside this loop's budget. */
+    .filter               = PIOS_ICM20602_DLPF_41HZ,
     .orientation          = PIOS_ICM20602_TOP_0DEG,
     .fast_prescaler       = PIOS_SPI_PRESCALER_4,
     .std_prescaler        = PIOS_SPI_PRESCALER_64,
