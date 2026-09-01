@@ -1917,6 +1917,19 @@ index 0d5dc0c08..70d908dfc 100644
          <logging updatemode="manual" period="0"/>
      </object>
  </xml>
+diff --git a/shared/uavobjectdefinition/flightmodesettings.xml b/shared/uavobjectdefinition/flightmodesettings.xml
+index c758ff454..56c94d15f 100644
+--- a/shared/uavobjectdefinition/flightmodesettings.xml
++++ b/shared/uavobjectdefinition/flightmodesettings.xml
+@@ -30,7 +30,7 @@
+         <field name="Stabilization3Settings" units="" type="enum"
+ 		elementnames="Roll,Pitch,Yaw,Thrust"
+ 		options="Manual,Rate,Attitude,AxisLock,WeakLeveling,VirtualBar,Acro+,Rattitude,RelayRate,RelayAttitude,AltitudeHold,AltitudeVario,CruiseControl"
+-		defaultvalue="Rate,Rate,Rate,Manual"
++		defaultvalue="Attitude,Attitude,Rate,Manual"
+ 		limits="%NE:AltitudeHold:AltitudeVario:CruiseControl; \
+ 			%NE:AltitudeHold:AltitudeVario:CruiseControl; \
+ 			%NE:AltitudeHold:AltitudeVario:CruiseControl:Attitude:Rattitude:Acro+:WeakLeveling:VirtualBar; \
 diff --git a/shared/uavobjectdefinition/manualcontrolcommand.xml b/shared/uavobjectdefinition/manualcontrolcommand.xml
 index 139a0dc0a..e6ec7e68b 100644
 --- a/shared/uavobjectdefinition/manualcontrolcommand.xml
