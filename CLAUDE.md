@@ -29,6 +29,18 @@ WiFi/lwIP stack (core 0) are separated by silicon. Code that genuinely
 wants core 0, byte-sized stacks, or no pinning calls
 `(xTaskCreatePinnedToCore)(...)` with parentheses to bypass the macro.
 
+## SMP timing: measured-flat levers — do not re-try without new information
+
+- **QIO flash is ALREADY ACTIVE.** The ROM banner prints "mode:DIO"
+  because the image header must be DIO for the ROM; the second-stage
+  bootloader upgrades to QIO at runtime (bootloader_enable_qio_mode is in
+  the bootloader map). A session was nearly spent "enabling" it.
+- **LWIP_IRAM_OPTIMIZATION + SPI_MASTER_IN_IRAM: no measurable effect.**
+  3x60s A/B against known-good on the bench-idle stab-warning metric:
+  means 9.0 vs 7.0 per minute, spreads 5-14 -- inside run noise.
+  Reverted. If IRAM placement is ever revisited, bring a finer metric
+  than alarm transitions (the DR-gap counters from the git history).
+
 ## SMP timing: ~4 ms whole-scheduler stalls are characterized — and bisects here LIE
 
 lwIP timer work on core 0 meets flight tasks through the SMP global kernel
