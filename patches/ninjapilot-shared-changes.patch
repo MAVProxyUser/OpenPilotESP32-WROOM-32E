@@ -1317,6 +1317,84 @@ index a59688229..6a3d76455 100644
      enum VEHICLE_TYPE { VEHICLE_UNKNOWN, VEHICLE_MULTI, VEHICLE_FIXEDWING, VEHICLE_HELI, VEHICLE_SURFACE };
      enum VEHICLE_SUB_TYPE { MULTI_ROTOR_UNKNOWN, MULTI_ROTOR_TRI_Y, MULTI_ROTOR_QUAD_X, MULTI_ROTOR_QUAD_PLUS, MULTI_ROTOR_QUAD_H,
                              MULTI_ROTOR_HEXA, MULTI_ROTOR_HEXA_H, MULTI_ROTOR_HEXA_X, MULTI_ROTOR_HEXA_COAX_Y, MULTI_ROTOR_OCTO,
+diff --git a/ground/openpilotgcs/src/plugins/telemetry/monitorwidget.cpp b/ground/openpilotgcs/src/plugins/telemetry/monitorwidget.cpp
+index 529bc8817..caf08c1ed 100644
+--- a/ground/openpilotgcs/src/plugins/telemetry/monitorwidget.cpp
++++ b/ground/openpilotgcs/src/plugins/telemetry/monitorwidget.cpp
+@@ -1,4 +1,5 @@
+ #include "monitorwidget.h"
++#include <cmath>
+ 
+ #include <utils/stylehelper.h>
+ 
+@@ -176,8 +177,16 @@ MonitorWidget::MonitorWidget(QWidget *parent) :
+ 
+     connected = false;
+ 
+-    setMin(0.0);
+-    setMax(1200.0);
++    /* Serial-era scaling (linear, 1200 bytes/s full scale) pegged the Rx
++     * bar permanently once telemetry moved to WiFi -- ordinary idle push
++     * traffic is ~1.1 KB/s. Log scale from 100 B/s to 20 KB/s: idle sits
++     * mid-band, silence and connect bursts are both visible. */
++    setMin(100.0);
++    setMax(20000.0);
++    /* GCS->board is heartbeats and occasional settings writes: single
++     * bytes-per-second at idle, a few hundred in a save burst. */
++    txMinValue = 5.0;
++    txMaxValue = 5000.0;
+ 
+     telemetryUpdated(0.0, 0.0);
+ }
+@@ -216,7 +225,7 @@ void MonitorWidget::telemetryConnected()
+     if (!connected) {
+         // flash the lights
+         setToolTip(tr("Connected"));
+-        telemetryUpdated(maxValue, maxValue);
++        telemetryUpdated(txMaxValue, maxValue);
+         connected = true;
+     }
+ }
+@@ -230,7 +239,7 @@ void MonitorWidget::telemetryDisconnected()
+         setToolTip(tr("Disconnected"));
+ 
+         // flash the lights???
+-        telemetryUpdated(maxValue, maxValue);
++        telemetryUpdated(txMaxValue, maxValue);
+ 
+         telemetryUpdated(0.0, 0.0);
+     }
+@@ -243,8 +252,11 @@ void MonitorWidget::telemetryDisconnected()
+  */
+ void MonitorWidget::telemetryUpdated(double txRate, double rxRate)
+ {
+-    double txIndex = (txRate - minValue) / (maxValue - minValue) * txNodes.count();
+-    double rxIndex = (rxRate - minValue) / (maxValue - minValue) * rxNodes.count();
++    /* Logarithmic bar mapping -- see the comment at setMax(). */
++    double txIndex = (txRate <= txMinValue) ? 0.0 :
++                     log10(txRate / txMinValue) / log10(txMaxValue / txMinValue) * txNodes.count();
++    double rxIndex = (rxRate <= minValue) ? 0.0 :
++                     log10(rxRate / minValue) / log10(maxValue / minValue) * rxNodes.count();
+ 
+     if (connected) {
+         this->setToolTip(QString("Tx: %0 bytes/s, Rx: %1 bytes/s").arg(txRate).arg(rxRate));
+diff --git a/ground/openpilotgcs/src/plugins/telemetry/monitorwidget.h b/ground/openpilotgcs/src/plugins/telemetry/monitorwidget.h
+index 729d25775..6e59c6fb4 100644
+--- a/ground/openpilotgcs/src/plugins/telemetry/monitorwidget.h
++++ b/ground/openpilotgcs/src/plugins/telemetry/monitorwidget.h
+@@ -48,6 +48,12 @@ private:
+ 
+     double minValue;
+     double maxValue;
++    /* The two directions live in different worlds: the board pushes ~1 KB/s
++     * of telemetry at idle while the GCS sends a few dozen bytes of
++     * heartbeats -- one shared scale starves whichever side it was not
++     * tuned for. minValue/maxValue keep the RX meaning; TX gets its own. */
++    double txMinValue;
++    double txMaxValue;
+ 
+     QGraphicsSvgItem *graph;
+ 
 diff --git a/ground/openpilotgcs/src/plugins/uavobjectbrowser/uavobjectbrowserwidget.cpp b/ground/openpilotgcs/src/plugins/uavobjectbrowser/uavobjectbrowserwidget.cpp
 index cea702e25..fe3ee0ad6 100644
 --- a/ground/openpilotgcs/src/plugins/uavobjectbrowser/uavobjectbrowserwidget.cpp
