@@ -890,10 +890,10 @@ index e67e684e4..16b62103e 100644
      uint8_t rxbyte = rxbuffer[(*position)++];
  
 diff --git a/ground/gazebo_bridge/gazebo_bridge.py b/ground/gazebo_bridge/gazebo_bridge.py
-index e965b652a..118bac3ed 100644
+index e965b652a..05e8595b0 100644
 --- a/ground/gazebo_bridge/gazebo_bridge.py
 +++ b/ground/gazebo_bridge/gazebo_bridge.py
-@@ -66,6 +66,33 @@ def print(*args, **kwargs):  # noqa: A001 - deliberate module-wide shadow
+@@ -66,6 +66,38 @@ def print(*args, **kwargs):  # noqa: A001 - deliberate module-wide shadow
  # state estimator/hold-mode logic work", since the latter was found to be
  # broken independent of which vertical-channel filter algorithm is used).
  TEST_MODE = os.environ.get("NINJAPILOT_TEST_MODE", "scripted")
@@ -906,9 +906,14 @@ index e965b652a..118bac3ed 100644
 +
 +
 +def _stab1_modes():
-+    # Wroom flies the board's own Stabilized1 default (Attitude/Attitude/
-+    # AxisLock) - twin fidelity; simposix keeps its yaw-Attitude convention.
-+    return ["Attitude", "Attitude", "AxisLock"] if WROOM else ["Attitude", "Attitude", "Attitude"]
++    # Wroom flies the board's own Stabilized1 default - twin fidelity.
++    # Yaw is RATE (fork default since 2026-09-01): AxisLock's accumulator
++    # winds up during the arming yaw gesture and kicks the motors with a
++    # full-scale yaw command at first spool (seen in the 16:30 real-flight
++    # log as a 160us diagonal PWM split); Rate yaw has no accumulator, so
++    # the gesture dies with the stick. Simposix keeps its yaw-Attitude
++    # convention.
++    return ["Attitude", "Attitude", "Rate"] if WROOM else ["Attitude", "Attitude", "Attitude"]
 +
 +
 +def _fms_values(armed):
@@ -927,7 +932,7 @@ index e965b652a..118bac3ed 100644
  # NINJAPILOT_MISSION=star flies ONLY the 5-point star at 8m + land -
  # a ~90s iteration loop for corner/yaw tuning instead of the 4.5min
  # full star/octagon/KF mission.
-@@ -616,13 +643,20 @@ class ControlState(object):
+@@ -616,13 +648,20 @@ class ControlState(object):
          # RevoSettings.FusionAlgorithm value CHANGE (while disarmed) does,
          # confirmed by reading stateestimation.c's own reinit gate.
          self.request_estimator_reset = False
@@ -950,7 +955,7 @@ index e965b652a..118bac3ed 100644
              1500, 1500, 1500,                      # unused disturbance channels
          ]
  
-@@ -2074,6 +2108,7 @@ def set_yaw_control(client, mode):
+@@ -2074,6 +2113,7 @@ def set_yaw_control(client, mode):
  
  _last_relay = [None]   # latest RelayTuning (periodic 1Hz while tuning)
  _last_bank1 = [None]   # latest StabilizationSettingsBank1 (pushed on change)
@@ -958,7 +963,7 @@ index e965b652a..118bac3ed 100644
  _last_flightstatus = [None]  # latest FlightStatus (mode verification)
  _fms_position_override = [None]  # FlightModePosition override (autotune remaps slot 4)
  
-@@ -3730,10 +3765,14 @@ def uavtalk_thread():
+@@ -3730,10 +3770,14 @@ def uavtalk_thread():
                        f"{home['Be'][0]:.4f} {home['Be'][1]:.4f} {home['Be'][2]:.4f}", flush=True)
                  break
              time.sleep(0.1)
@@ -977,7 +982,7 @@ index e965b652a..118bac3ed 100644
          send_reliable("MixerSettings", bov.resolve_enum_values(db["MixerSettings"], bov.mixer_settings()))
          time.sleep(0.2)
          # STOCK values, deliberately. An earlier session set
-@@ -3750,11 +3789,12 @@ def uavtalk_thread():
+@@ -3750,11 +3794,12 @@ def uavtalk_thread():
          # The stock slow rate is slow BY DESIGN: real accel bias drifts
          # over minutes, and everything faster than that is real motion the
          # integrator needs to see.
@@ -995,7 +1000,7 @@ index e965b652a..118bac3ed 100644
          # Without this, the flight side has no idea GCSReceiver's channels
          # are meant to be Throttle/Roll/Pitch/Yaw/FlightMode - nothing ever
          # reaches ManualControlCommand/StabilizationDesired at all.
-@@ -3765,11 +3805,14 @@ def uavtalk_thread():
+@@ -3765,11 +3810,14 @@ def uavtalk_thread():
              "ChannelNeutral": [1050, 1500, 1500, 1500, 1500, 1500, 1500, 1500, 1500],
              "ChannelMax": [2000] * 9,
              "ResponseTime": [0] * 7, "Deadband": 0.02, "DeadbandAssistedControl": 0.08,
@@ -1012,7 +1017,7 @@ index e965b652a..118bac3ed 100644
          send_reliable("FlightModeSettings", bov.resolve_enum_values(db["FlightModeSettings"], fms))
          time.sleep(0.2)
          # This bridge exists to unit-test real flight-code changes, so it
-@@ -4004,8 +4047,9 @@ def uavtalk_thread():
+@@ -4004,8 +4052,9 @@ def uavtalk_thread():
              "LandVerticalVelPID": [0.35, 3.0, 0.05, 0.9],
          }
          _vtol_pf_values[0] = bov.resolve_enum_values(db["VtolPathFollowerSettings"], vtol_pf)
@@ -1024,7 +1029,7 @@ index e965b652a..118bac3ed 100644
          # Note: VtolPathFollowerSettings.YawControl="manual" (set above)
          # makes vtolflycontroller.cpp's UpdateStabilizationDesired() take
          # the yaw_attitude=false branch (flight/modules/PathFollower/
-@@ -4078,6 +4122,13 @@ def uavtalk_thread():
+@@ -4078,6 +4127,13 @@ def uavtalk_thread():
              "LowThrottleZeroIntegral": "TRUE",
              "ScaleToAirspeed": 0, "ScaleToAirspeedLimits": [0.05, 3],
              "FlightModeAssistMap": ["None"] * 6,
@@ -1038,7 +1043,7 @@ index e965b652a..118bac3ed 100644
          }
          send_reliable("StabilizationSettings", bov.resolve_enum_values(db["StabilizationSettings"], stab_settings))
          time.sleep(0.2)
-@@ -4222,17 +4273,51 @@ def uavtalk_thread():
+@@ -4222,17 +4278,51 @@ def uavtalk_thread():
          send_reliable("StabilizationSettingsBank1", bov.resolve_enum_values(db["StabilizationSettingsBank1"], stab_bank))
          send_reliable("StabilizationBank", bov.resolve_enum_values(db["StabilizationBank"], stab_bank))
          time.sleep(0.2)
@@ -1096,7 +1101,7 @@ index e965b652a..118bac3ed 100644
  
          def run_with_fc_logging():
              # Runs in its own thread while client.run() keeps pumping packets
-@@ -4244,7 +4329,16 @@ def uavtalk_thread():
+@@ -4244,7 +4334,16 @@ def uavtalk_thread():
                                   else (FC_LOG_OBJECTS_MISSION + (
                                       FC_LOG_OBJECTS_DEEP
                                       if os.environ.get("NINJAPILOT_DEEP_LOG") == "1" else [])
@@ -1114,7 +1119,7 @@ index e965b652a..118bac3ed 100644
                  time.sleep(1.0)  # let metadata writes land before arming
              target()
              if TEST_MODE != "pull_logs":
-@@ -4312,6 +4406,8 @@ def uavtalk_thread():
+@@ -4312,6 +4411,8 @@ def uavtalk_thread():
              _last_log_status[0] = decoded
          elif objdef.name == "RelayTuning":
              _last_relay[0] = decoded
@@ -1123,7 +1128,7 @@ index e965b652a..118bac3ed 100644
          elif objdef.name == "StabilizationSettingsBank1":
              _last_bank1[0] = decoded
          elif objdef.name == "DebugLogEntry":
-@@ -4427,7 +4523,7 @@ def uavtalk_thread():
+@@ -4427,7 +4528,7 @@ def uavtalk_thread():
          while True:
              if configured["done"] and client.connected:
                  if control.armed != last_arm_state["armed"]:
@@ -1132,7 +1137,7 @@ index e965b652a..118bac3ed 100644
                      # The arming toggle re-sends the WHOLE FlightModeSettings
                      # (UAVTalk writes are whole-object) - without honoring
                      # this override it silently stomps any custom switch
-@@ -4640,12 +4736,16 @@ _accel_send_count = [0, 0.0]  # [total sends, last debug print time]
+@@ -4640,12 +4741,16 @@ _accel_send_count = [0, 0.0]  # [total sends, last debug print time]
  # send_config()'s wait_for_mag/HomeLocation.Be step already blocks briefly
  # at startup for the same reason.
  def publish_baro(client):
@@ -1149,7 +1154,7 @@ index e965b652a..118bac3ed 100644
      have_mag, mag_body = state.mag_snapshot()
      if have_mag:
          client.send_object("MagSensor", {"x": mag_body[0], "y": mag_body[1], "z": mag_body[2], "temperature": 25.0})
-@@ -4737,6 +4837,13 @@ gz_motor_pub = None
+@@ -4737,6 +4842,13 @@ gz_motor_pub = None
  # lands on the wrong physical motor and fights itself. Matching each mixer
  # motor to the rotor that's actually in its assumed slot gives a complete,
  # unambiguous remap: M1->rotor_2, M2->rotor_0, M3->rotor_3, M4->rotor_1.
@@ -3093,19 +3098,6 @@ index 0d5dc0c08..70d908dfc 100644
          <logging updatemode="manual" period="0"/>
      </object>
  </xml>
-diff --git a/shared/uavobjectdefinition/flightmodesettings.xml b/shared/uavobjectdefinition/flightmodesettings.xml
-index c758ff454..56c94d15f 100644
---- a/shared/uavobjectdefinition/flightmodesettings.xml
-+++ b/shared/uavobjectdefinition/flightmodesettings.xml
-@@ -30,7 +30,7 @@
-         <field name="Stabilization3Settings" units="" type="enum"
- 		elementnames="Roll,Pitch,Yaw,Thrust"
- 		options="Manual,Rate,Attitude,AxisLock,WeakLeveling,VirtualBar,Acro+,Rattitude,RelayRate,RelayAttitude,AltitudeHold,AltitudeVario,CruiseControl"
--		defaultvalue="Rate,Rate,Rate,Manual"
-+		defaultvalue="Attitude,Attitude,Rate,Manual"
- 		limits="%NE:AltitudeHold:AltitudeVario:CruiseControl; \
- 			%NE:AltitudeHold:AltitudeVario:CruiseControl; \
- 			%NE:AltitudeHold:AltitudeVario:CruiseControl:Attitude:Rattitude:Acro+:WeakLeveling:VirtualBar; \
 diff --git a/shared/uavobjectdefinition/manualcontrolcommand.xml b/shared/uavobjectdefinition/manualcontrolcommand.xml
 index 139a0dc0a..e6ec7e68b 100644
 --- a/shared/uavobjectdefinition/manualcontrolcommand.xml
@@ -6465,6 +6457,41 @@ index 9ca2409a0..c678f6d1f 100644
      $$UAVOBJECT_SYNTHETICS/airspeedsensor.cpp \
      $$UAVOBJECT_SYNTHETICS/airspeedsettings.cpp \
      $$UAVOBJECT_SYNTHETICS/airspeedstate.cpp \
+diff --git a/shared/uavobjectdefinition/actuatorsettings.xml b/shared/uavobjectdefinition/actuatorsettings.xml
+index 24c1decb0..862306457 100644
+--- a/shared/uavobjectdefinition/actuatorsettings.xml
++++ b/shared/uavobjectdefinition/actuatorsettings.xml
+@@ -8,7 +8,7 @@
+         <field name="ChannelMin" units="us" type="int16" elements="12" defaultvalue="1000"/>
+         <field name="ChannelType" units="" type="enum" elements="12" options="PWM,MK,ASTEC4,PWM Alarm Buzzer,Arming led,Info led" defaultvalue="PWM"/>
+         <field name="ChannelAddr" units="" type="uint8" elements="12" defaultvalue="0,1,2,3,4,5,6,7,8,9,10,11"/>
+-        <field name="MotorsSpinWhileArmed" units="" type="enum" elements="1" options="FALSE,TRUE" defaultvalue="FALSE"/>
++        <field name="MotorsSpinWhileArmed" units="" type="enum" elements="1" options="FALSE,TRUE" defaultvalue="TRUE"/>
+ 	<field name="LowThrottleZeroAxis" units="" type="enum" elementnames="Roll,Pitch,Yaw" options="FALSE,TRUE" defaultvalue="FALSE,FALSE,FALSE"/>
+         <access gcs="readwrite" flight="readwrite"/>
+         <telemetrygcs acked="true" updatemode="onchange" period="0"/>
+diff --git a/shared/uavobjectdefinition/flightmodesettings.xml b/shared/uavobjectdefinition/flightmodesettings.xml
+index c758ff454..dd016d2b8 100644
+--- a/shared/uavobjectdefinition/flightmodesettings.xml
++++ b/shared/uavobjectdefinition/flightmodesettings.xml
+@@ -8,7 +8,7 @@
+         <field name="Stabilization1Settings" units="" type="enum"
+ 		elementnames="Roll,Pitch,Yaw,Thrust"
+ 		options="Manual,Rate,Attitude,AxisLock,WeakLeveling,VirtualBar,Acro+,Rattitude,RelayRate,RelayAttitude,AltitudeHold,AltitudeVario,CruiseControl"
+-		defaultvalue="Attitude,Attitude,AxisLock,Manual"
++		defaultvalue="Attitude,Attitude,Rate,Manual"
+ 		limits="%NE:AltitudeHold:AltitudeVario:CruiseControl; \
+ 			%NE:AltitudeHold:AltitudeVario:CruiseControl; \
+ 			%NE:AltitudeHold:AltitudeVario:CruiseControl:Attitude:Rattitude:Acro+:WeakLeveling:VirtualBar; \
+@@ -30,7 +30,7 @@
+         <field name="Stabilization3Settings" units="" type="enum"
+ 		elementnames="Roll,Pitch,Yaw,Thrust"
+ 		options="Manual,Rate,Attitude,AxisLock,WeakLeveling,VirtualBar,Acro+,Rattitude,RelayRate,RelayAttitude,AltitudeHold,AltitudeVario,CruiseControl"
+-		defaultvalue="Rate,Rate,Rate,Manual"
++		defaultvalue="Attitude,Attitude,Rate,Manual"
+ 		limits="%NE:AltitudeHold:AltitudeVario:CruiseControl; \
+ 			%NE:AltitudeHold:AltitudeVario:CruiseControl; \
+ 			%NE:AltitudeHold:AltitudeVario:CruiseControl:Attitude:Rattitude:Acro+:WeakLeveling:VirtualBar; \
 diff --git a/shared/uavobjectdefinition/flipstatus.xml b/shared/uavobjectdefinition/flipstatus.xml
 new file mode 100644
 index 000000000..3e1cc48fb
