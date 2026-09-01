@@ -29,6 +29,27 @@ WiFi/lwIP stack (core 0) are separated by silicon. Code that genuinely
 wants core 0, byte-sized stacks, or no pinning calls
 `(xTaskCreatePinnedToCore)(...)` with parentheses to bypass the macro.
 
+## RULE: a new board id must tour the GCS's board tables
+
+The GCS gates features on getBoardModel() in about a dozen places, and
+every one of them fails SILENTLY for an unknown id: the Attitude config
+tab vanished, the Output page showed dead bank dropdowns, the board name
+was blank -- each discovered one user complaint at a time until a full
+grep of getBoardModel() closed the rest. If a board id ever changes or a
+new target appears, audit every call site in one pass instead.
+
+## ESC range calibration cannot exist on this board -- do not reintroduce it
+
+The procedure requires the controller alive and holding max throttle
+BEFORE the ESCs first see power. Stock boards run the FC from USB while
+the battery waits -- here that is the forbidden dual-supply state -- and
+on battery alone the controller and ESCs power up together, so the ESC
+calibration window closes before WiFi telemetry returns. The wizard page
+is removed from the ESP32 flow deliberately. BOARD_ESC_CAL (a boot mode
+holding max-then-min from power-up) is the supported way; the RF
+switch-wiggle calibration was retired in favor of the wizard's output
+calibration and lives in git history.
+
 ## SMP timing: measured-flat levers — do not re-try without new information
 
 - **QIO flash is ALREADY ACTIVE.** The ROM banner prints "mode:DIO"

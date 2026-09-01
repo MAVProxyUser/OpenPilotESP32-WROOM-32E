@@ -25,19 +25,28 @@ stay on core 0.
 - WiFi telemetry: UAVTalk over TCP :9000, UDP discovery beacon on :9999,
   credentials provisioned offline by `tools/wifi_setup.py`. Modem power save
   is off -- deterministic latency beats standby current on a flight board
-- On-board RF motor calibration: a transmitter switch-wiggle enters a
-  per-motor idle-point capture loop with LED blink-count feedback, saved to
-  NVS. No ground station, no USB, battery power only
-- The NinjaPilot GCS Setup Wizard recognises the board (0x1202), locks input
-  to the Spektrum satellite, draws the Thing Plus in its connection diagram,
-  and skips the battery-powered calibration pages whenever the GCS link is
-  USB serial (see Power, below). The vehicle page and wizard label motors by
-  silkscreen pin (15/33/27/12) instead of generic channel numbers, and the
-  firmware reports a full version blob (git hash, date, UAVO-set sha1) so
-  the GCS version-mismatch check compares real values
+- Motor idle points come from the wizard's output-calibration page over
+  WiFi (battery power, no USB). True ESC range calibration is the
+  BOARD_ESC_CAL boot mode: flash it over USB with no battery, unplug,
+  connect the battery, and the board boots straight into the max-then-min
+  sequence inside the ESCs' calibration window
+- The NinjaPilot GCS is fully board-aware: the Setup Wizard recognises
+  0x1202, locks input to the Spektrum satellite, draws the Thing Plus in
+  its connection diagram, and never offers ESC range calibration (it
+  needs the controller alive before the ESCs power, impossible on a
+  single-rail board -- output calibration is offered on network links
+  instead). The vehicle, output and attitude config pages all carry the
+  real pin names and the CC-style calibration screens; the hardware tab
+  is a reference card. The firmware reports a full version blob (git
+  hash, date, UAVO-set sha1) and honors the GCS's IAP reboot sequence,
+  so post-save reboots happen automatically instead of ending in a
+  "Reboot failed" dialog
 - Telemetry serves TCP and UDP on port 9000; UDP is preferred (a connected
   TCP client arms lwIP's 250 ms tcp fast timer -- the residual scheduler
-  stall source; a UDP client never starts it)
+  stall source; a UDP client never starts it). The UDP stream stays with
+  its holder (a new sender takes over only after 3 s of holder silence),
+  and the flight view is genuinely live: AttitudeState at 25 Hz,
+  ManualControlCommand at 4 Hz
 - GCS connects are cheap: metaobjects fetch lazily on first use instead of
   at connect (157 -> 46 objects), and a SettingsGeneration token lets
   reconnects skip refetching unchanged settings entirely (down to ~11)
@@ -206,5 +215,5 @@ lockup, which is a classic source of intermittent sensor faults on airframes.
    (`tools/rc_check.py`, `tools/rc_calibrate.py`, `tools/rc_monitor.py`)
 5. Arm from the transmitter; motors on the QuadX mixer with props off
    (`tools/motor_watch.py` shows commanded vs actual per channel)
-6. Motor idle points captured over RF (switch-wiggle calibration), saved
+6. Motor idle points set with the wizard's output calibration over WiFi
 7. WiFi telemetry on; 60 s characterization with the full stack live

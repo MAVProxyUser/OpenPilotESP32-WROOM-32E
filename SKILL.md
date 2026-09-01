@@ -107,8 +107,14 @@ on UDP :9999 every 2 s until a client connects. UART0 goes quiet — one
 telemetry port at a time. Prefer UDP (GCS: Options -> IP connections,
 uncheck "Use TCP"): a connected TCP client arms lwIP's 250 ms tcp fast
 timer, which is this platform's residual scheduler-stall source. A UDP
-peer claims the stream with its first datagram and releases it after 10 s
-of silence. Passwords with shell-special characters: let the getpass
+peer claims the stream with its first datagram, KEEPS it until 3 s of
+silence (later senders cannot steal an active stream — their requests
+are processed but replies go to the holder), and releases fully after
+10 s. Diagnostic scripts that need their own stream while a GCS is
+connected should use TCP — knowing a TCP session preempts the UDP
+telemetry for its duration and knocks the GCS into a brief reconnect.
+The GCS Firmware-tab reboot and the wizard's post-save reboot work: the
+firmware honors the IAP command sequence with a clean restart. Passwords with shell-special characters: let the getpass
 prompt take them; quoting on the command line has already stored a literal
 backslash once.
 
@@ -125,11 +131,13 @@ python3 tools/motor_watch.py       # commanded vs actual PWM while you arm and s
 python3 tools/setup_wizard.py      # orientation / level / USB-free config steps
 ```
 
-RF motor calibration needs no computer at all: wiggle the calibration
-switch (full travel, three times) with throttle at rest, then follow the
-LED blink counts — one blink per motor number, move the stick until that
-motor just spins, center the switch to capture. Values save to NVS. Done
-state is a repeating double pulse.
+Motor idle points are set from the GCS wizard's output-calibration page
+over WiFi, on battery power with USB out. For true ESC range calibration
+use the BOARD_ESC_CAL boot mode: flash it over USB with no battery,
+unplug USB, connect the battery — the board boots straight into
+max-for-6s-then-min inside the ESCs' calibration window. (The old RF
+switch-wiggle calibration was retired once the wizard path existed; it
+lives in git history if ever needed.)
 
 ## Run the GCS against the board
 
