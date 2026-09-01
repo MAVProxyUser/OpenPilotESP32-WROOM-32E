@@ -37,6 +37,7 @@
 #include <actuatorsettings.h>
 #include <firmwareiapobj.h>
 #include "fw_version_info.h"
+#include "esp_timer.h"
 #include <flightstatus.h>
 #include <systemalarms.h>
 #include "driver/gpio.h"
@@ -315,6 +316,39 @@ static void board_apply_default_airframe(void)
  * correct thing to accept: the LED reports state, it is not state.
  */
 #define BOARD_UX_PRIORITY   (tskIDLE_PRIORITY + 1)
+
+static void board_iap_restart(__attribute__((unused)) void *arg)
+{
+    esp_restart();
+}
+
+static void board_iap_updated_cb(UAVObjEvent *ev)
+{
+    static uint16_t iap_last;
+
+    if (!ev || ev->event != EV_UNPACKED) {
+        return;
+    }
+    FirmwareIAPObjData iap;
+    FirmwareIAPObjGet(&iap);
+    if (iap.Command == 1122) {
+        iap_last = 1122;
+    } else if (iap.Command == 2233 && iap_last == 1122) {
+        iap_last = 2233;
+    } else if (iap.Command == 3344 && iap_last == 2233) {
+        iap_last = 0;
+        const esp_timer_create_args_t targs = {
+            .callback = board_iap_restart,
+            .name     = "iap_restart",
+        };
+        esp_timer_handle_t t;
+        if (esp_timer_create(&targs, &t) == ESP_OK) {
+            esp_timer_start_once(t, 800 * 1000);
+        }
+    } else {
+        iap_last = 0;
+    }
+}
 
 static void board_ux_task(__attribute__((unused)) void *arg)
 {
@@ -804,6 +838,15 @@ void PIOS_Board_Init(void)
         strncpy((char *)&iap.Description[14], FW_VERSION_FWTAG, 25);
         memcpy(&iap.Description[60], fw_version_uavo_sha1, 20);
         FirmwareIAPObjSet(&iap);
+
+        /* Honor the GCS's IAP reset sequence (Command 1122 -> 2233 ->
+         * 3344). On STM32 that jumps to the serial bootloader; here it
+         * is a plain restart -- which is all the GCS's reboot flow needs
+         * once its ESP32 branch stops expecting a DFU device. The
+         * restart is deferred through a one-shot timer so the write's
+         * ACK and the telemetry buffers get out first. */
+        UAVObjConnectCallback(FirmwareIAPObjHandle(), board_iap_updated_cb,
+                              EV_UNPACKED);
     }
 
     /* No settings filesystem on this target yet (see pios_config.h), so
