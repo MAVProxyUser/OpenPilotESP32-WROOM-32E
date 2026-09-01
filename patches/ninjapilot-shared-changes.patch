@@ -1800,6 +1800,32 @@ index d927b78b6..b5d759329 100644
  
      def send(self, data):
          self.ser.write(data)
+diff --git a/shared/uavobjectdefinition/attitudestate.xml b/shared/uavobjectdefinition/attitudestate.xml
+index 0d5dc0c08..70d908dfc 100644
+--- a/shared/uavobjectdefinition/attitudestate.xml
++++ b/shared/uavobjectdefinition/attitudestate.xml
+@@ -10,7 +10,7 @@
+         <field name="Yaw" units="degrees" type="float" elements="1"/>
+         <access gcs="readwrite" flight="readwrite"/>
+         <telemetrygcs acked="false" updatemode="manual" period="0"/>
+-        <telemetryflight acked="false" updatemode="periodic" period="130"/>
++        <telemetryflight acked="false" updatemode="periodic" period="40"/>
+         <logging updatemode="manual" period="0"/>
+     </object>
+ </xml>
+diff --git a/shared/uavobjectdefinition/manualcontrolcommand.xml b/shared/uavobjectdefinition/manualcontrolcommand.xml
+index 139a0dc0a..e6ec7e68b 100644
+--- a/shared/uavobjectdefinition/manualcontrolcommand.xml
++++ b/shared/uavobjectdefinition/manualcontrolcommand.xml
+@@ -12,7 +12,7 @@
+ 	<field name="FlightModeSwitchPosition" units="" type="uint8" elements="1" defaultvalue="0"/>
+         <access gcs="readwrite" flight="readwrite"/>
+         <telemetrygcs acked="false" updatemode="manual" period="0"/>
+-        <telemetryflight acked="false" updatemode="periodic" period="2000"/>
++        <telemetryflight acked="false" updatemode="periodic" period="250"/>
+         <logging updatemode="manual" period="0"/>
+     </object>
+ </xml>
 diff --git a/shared/uavobjectdefinition/settingsgeneration.xml b/shared/uavobjectdefinition/settingsgeneration.xml
 new file mode 100644
 index 000000000..f4a6c33c3

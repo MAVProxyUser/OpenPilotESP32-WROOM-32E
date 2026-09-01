@@ -182,9 +182,28 @@ static void wifi_server_task(__attribute__((unused)) void *arg)
             int n = recvfrom(wifi.udp, buf, sizeof(buf), MSG_DONTWAIT,
                              (struct sockaddr *)&from, &fromlen);
             if (n > 0) {
-                wifi.udp_peer    = from;
-                wifi.udp_last_rx = xTaskGetTickCount();
-                wifi.udp_active  = true;
+                /* Stable peer: the stream belongs to whoever holds it, not
+                 * to whoever spoke last. Flipping the latch on every
+                 * datagram let a single diagnostic probe steal the
+                 * telemetry stream from the GCS mid-flight of use -- the
+                 * artificial horizon froze until the GCS's next sparse
+                 * heartbeat won it back. A new sender only takes over
+                 * after the holder has been silent for 3 s (bytes from
+                 * interlopers are still processed; their replies go to
+                 * the holder -- diagnostics that need their own stream
+                 * should use TCP or wait). */
+                bool same = wifi.udp_active &&
+                            from.sin_addr.s_addr == wifi.udp_peer.sin_addr.s_addr &&
+                            from.sin_port == wifi.udp_peer.sin_port;
+                TickType_t now = xTaskGetTickCount();
+                if (same) {
+                    wifi.udp_last_rx = now;
+                } else if (!wifi.udp_active ||
+                           (now - wifi.udp_last_rx) > pdMS_TO_TICKS(3000)) {
+                    wifi.udp_peer    = from;
+                    wifi.udp_last_rx = now;
+                    wifi.udp_active  = true;
+                }
                 if (wifi.rx_in_cb) {
                     uint16_t off = 0;
                     for (int spins = 0; off < (uint16_t)n && spins < 200; spins++) {
