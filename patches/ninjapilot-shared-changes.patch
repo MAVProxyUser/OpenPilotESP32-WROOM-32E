@@ -2935,6 +2935,261 @@ index 139a0dc0a..e6ec7e68b 100644
          <logging updatemode="manual" period="0"/>
      </object>
  </xml>
+diff --git a/flight/modules/Flip/flip.c b/flight/modules/Flip/flip.c
+new file mode 100644
+index 000000000..24b35079c
+--- /dev/null
++++ b/flight/modules/Flip/flip.c
+@@ -0,0 +1,229 @@
++/**
++ ******************************************************************************
++ * @addtogroup OpenPilotModules OpenPilot Modules
++ * @{
++ * @addtogroup FlipModule Flip Module
++ * @brief Onboard backflip sequencer, ArduCopter-flip.pde style
++ * @{
++ *
++ * @file       flip.c
++ * @author     NinjaPilot, 2026
++ *
++ * The ground side (GCS, bridge, or later a transmitter switch) writes
++ * FlipStatus.Command = Flip; everything after that happens HERE, at task
++ * rate against loop-fresh attitude and gyro data. The ground-piloted
++ * version of this maneuver (wroom_pilot.py) fought a ~0.25s stick
++ * transport lag at every step - at 460 deg/s that is 115 degrees of
++ * rotation the endgame had to predict across, and every drift outlier
++ * traced to that prediction being wrong. Onboard there is nothing to
++ * predict: the taper reads the integrated gyro angle directly and lands
++ * the rotation ON level.
++ *
++ * Ownership: while State is Punch/Rotate/Catch, stabilizedhandler.c
++ * defers (it checks FlipStatus), so this module is the sole writer of
++ * StabilizationDesired - same single-owner discipline as ArduCopter's
++ * mode takeover. Disarming, leaving Stabilized1/2, or the sequence
++ * timeout releases ownership immediately.
++ *
++ * The sequence and its constants are the ones proven in ~60 simulated
++ * flips of the piloted version: near-max punch while level (level
++ * flight needs no differential headroom), thrust profiled by the tilt
++ * through the rotation (torque scales with collective; inverted thrust
++ * is wasted), and a fixed-collective dead-stick catch (every clever
++ * catch - tilt-gated throttle, brake tilt, level-seek - measured worse).
++ *
++ * @see        The GNU Public License (GPL) Version 3
++ *****************************************************************************/
++
++#include "openpilot.h"
++#include "inc/flip.h"
++
++#include <attitudestate.h>
++#include <gyrostate.h>
++#include <flightstatus.h>
++#include <flipstatus.h>
++#include <stabilizationdesired.h>
++
++#include <mathmisc.h>
++#include <math.h>
++
++// Task
++#define STACK_SIZE_BYTES  1024
++#define TASK_PRIORITY     (tskIDLE_PRIORITY + 2)
++#define LOOP_MS           10     // 100 Hz sequencing against 500 Hz-fresh data
++
++// Maneuver constants (from the piloted tune; see wroom_pilot.py history)
++#define FLIP_PUNCH_THRUST 0.95f
++#define FLIP_PUNCH_MS     900
++#define FLIP_RATE_MAX     460.0f  // deg/s; must be inside the bank's ManualRate/MaximumRate
++#define FLIP_TAPER_GAIN   3.5f    // deg/s of command per deg remaining
++#define FLIP_THR_UP       0.60f   // collective while thrust points up-ish (cos > 0.35)
++#define FLIP_THR_INV      0.10f   // collective while inverted
++#define FLIP_ROTATE_MS_MAX 2500
++#define FLIP_EXIT_DEG     355.0f  // land just shy of level; Attitude catch closes the rest
++#define FLIP_CATCH_THRUST 0.90f   // NOT higher: full collective leaves the mixer no differential
++#define FLIP_CATCH_MS     1200
++#define FLIP_LEVEL_DEG    25.0f   // required entry attitude
++
++static xTaskHandle taskHandle;
++static bool flipEnabled;
++
++static void FlipTask(void *parameters);
++
++int32_t FlipInitialize(void)
++{
++    FlipStatusInitialize();
++    flipEnabled = true;
++    return 0;
++}
++
++int32_t FlipStart(void)
++{
++    if (flipEnabled) {
++        xTaskCreate(FlipTask, "Flip", STACK_SIZE_BYTES / 4, NULL, TASK_PRIORITY, &taskHandle);
++    }
++    return 0;
++}
++MODULE_INITCALL(FlipInitialize, FlipStart);
++
++static void set_state(FlipStatusData *st, FlipStatusStateOptions state)
++{
++    st->State = state;
++    FlipStatusSet(st);
++}
++
++static bool flying_stabilized(void)
++{
++    FlightStatusData fs;
++
++    FlightStatusGet(&fs);
++    return fs.Armed == FLIGHTSTATUS_ARMED_ARMED &&
++           (fs.FlightMode == FLIGHTSTATUS_FLIGHTMODE_STABILIZED1 ||
++            fs.FlightMode == FLIGHTSTATUS_FLIGHTMODE_STABILIZED2);
++}
++
++static void sd_write(FlipStatusStateOptions phase, float pitch_rate_dps, float thrust)
++{
++    StabilizationDesiredData sd;
++
++    StabilizationDesiredGet(&sd);
++    if (phase == FLIPSTATUS_STATE_ROTATE) {
++        sd.StabilizationMode.Roll   = STABILIZATIONDESIRED_STABILIZATIONMODE_RATE;
++        sd.StabilizationMode.Pitch  = STABILIZATIONDESIRED_STABILIZATIONMODE_RATE;
++        sd.StabilizationMode.Yaw    = STABILIZATIONDESIRED_STABILIZATIONMODE_RATE;
++        sd.Roll   = 0.0f;
++        sd.Pitch  = pitch_rate_dps;
++        sd.Yaw    = 0.0f;
++    } else {
++        sd.StabilizationMode.Roll   = STABILIZATIONDESIRED_STABILIZATIONMODE_ATTITUDE;
++        sd.StabilizationMode.Pitch  = STABILIZATIONDESIRED_STABILIZATIONMODE_ATTITUDE;
++        sd.StabilizationMode.Yaw    = STABILIZATIONDESIRED_STABILIZATIONMODE_AXISLOCK;
++        sd.Roll   = 0.0f;
++        sd.Pitch  = 0.0f;
++        sd.Yaw    = 0.0f;
++    }
++    sd.StabilizationMode.Thrust = STABILIZATIONDESIRED_STABILIZATIONMODE_MANUAL;
++    sd.Thrust = thrust;
++    StabilizationDesiredSet(&sd);
++}
++
++static void FlipTask(__attribute__((unused)) void *parameters)
++{
++    portTickType lastSysTime = xTaskGetTickCount();
++    FlipStatusData st;
++    uint32_t phase_ms = 0;
++    float angle_deg   = 0.0f;
++    uint16_t done_ms  = 0;
++
++    while (1) {
++        vTaskDelayUntil(&lastSysTime, LOOP_MS / portTICK_RATE_MS);
++        FlipStatusGet(&st);
++
++        // Loss of the right flight state releases ownership instantly,
++        // from any phase.
++        bool active = (st.State == FLIPSTATUS_STATE_PUNCH ||
++                       st.State == FLIPSTATUS_STATE_ROTATE ||
++                       st.State == FLIPSTATUS_STATE_CATCH);
++        if (active && !flying_stabilized()) {
++            st.Command = FLIPSTATUS_COMMAND_NONE;
++            set_state(&st, FLIPSTATUS_STATE_ABORT);
++            continue;
++        }
++
++        switch (st.State) {
++        case FLIPSTATUS_STATE_IDLE:
++            if (st.Command == FLIPSTATUS_COMMAND_FLIP) {
++                st.Command = FLIPSTATUS_COMMAND_NONE;
++                AttitudeStateData att0;
++                AttitudeStateGet(&att0);
++                if (flying_stabilized() &&
++                    fabsf(att0.Roll) < FLIP_LEVEL_DEG && fabsf(att0.Pitch) < FLIP_LEVEL_DEG) {
++                    phase_ms  = 0;
++                    angle_deg = 0.0f;
++                    set_state(&st, FLIPSTATUS_STATE_PUNCH);
++                } else {
++                    set_state(&st, FLIPSTATUS_STATE_ABORT);
++                }
++            }
++            break;
++
++        case FLIPSTATUS_STATE_PUNCH:
++            sd_write(FLIPSTATUS_STATE_PUNCH, 0.0f, FLIP_PUNCH_THRUST);
++            phase_ms += LOOP_MS;
++            if (phase_ms >= FLIP_PUNCH_MS) {
++                phase_ms = 0;
++                set_state(&st, FLIPSTATUS_STATE_ROTATE);
++            }
++            break;
++
++        case FLIPSTATUS_STATE_ROTATE:
++        {
++            // Rotation angle straight from the gyro integral: no euler
++            // wrap gymnastics, no telemetry lag, exact by construction.
++            GyroStateData gyro;
++            GyroStateGet(&gyro);
++            angle_deg += gyro.y * ((float)LOOP_MS / 1000.0f);
++
++            float remaining = FLIP_EXIT_DEG - angle_deg;
++            float rate = boundf(FLIP_TAPER_GAIN * remaining, 0.0f, FLIP_RATE_MAX);
++            float z    = cosf(DEG2RAD(angle_deg));
++            sd_write(FLIPSTATUS_STATE_ROTATE, rate,
++                     (z > 0.35f) ? FLIP_THR_UP : FLIP_THR_INV);
++            phase_ms += LOOP_MS;
++            if (angle_deg >= FLIP_EXIT_DEG || phase_ms >= FLIP_ROTATE_MS_MAX) {
++                st.LastAngle = angle_deg;
++                phase_ms     = 0;
++                set_state(&st, FLIPSTATUS_STATE_CATCH);
++            }
++            break;
++        }
++
++        case FLIPSTATUS_STATE_CATCH:
++            sd_write(FLIPSTATUS_STATE_CATCH, 0.0f, FLIP_CATCH_THRUST);
++            phase_ms += LOOP_MS;
++            if (phase_ms >= FLIP_CATCH_MS) {
++                st.Flips++;
++                phase_ms = 0;
++                done_ms  = 0;
++                set_state(&st, FLIPSTATUS_STATE_DONE);
++            }
++            break;
++
++        case FLIPSTATUS_STATE_DONE:
++        case FLIPSTATUS_STATE_ABORT:
++            // ownership already released (handler resumes on these states);
++            // linger briefly so the ground side can see the terminal state
++            done_ms += LOOP_MS;
++            if (done_ms >= 500) {
++                done_ms = 0;
++                set_state(&st, FLIPSTATUS_STATE_IDLE);
++            }
++            break;
++        }
++    }
++}
++
++/**
++ * @}
++ * @}
++ */
+diff --git a/flight/modules/Flip/inc/flip.h b/flight/modules/Flip/inc/flip.h
+new file mode 100644
+index 000000000..4fcc86b40
+--- /dev/null
++++ b/flight/modules/Flip/inc/flip.h
+@@ -0,0 +1,14 @@
++/**
++ ******************************************************************************
++ * @file       flip.h
++ * @author     NinjaPilot, 2026
++ * @brief      Onboard flip sequencer, ArduCopter-flip.pde style.
++ * @see        The GNU Public License (GPL) Version 3
++ *****************************************************************************/
++#ifndef FLIP_H
++#define FLIP_H
++
++int32_t FlipInitialize(void);
++int32_t FlipStart(void);
++
++#endif /* FLIP_H */
 diff --git a/flight/pios/posix/inc/pios_icm20602.h b/flight/pios/posix/inc/pios_icm20602.h
 new file mode 100644
 index 000000000..c40a69dee
@@ -5941,6 +6196,25 @@ index 000000000..13445c3f1
 +              % (tn, te, math.hypot(tn, te)), flush=True)
 +    _finish(pilot, "PASS - returned home and landed %.2fm from the pad" % math.hypot(tn, te)
 +            if (ok and landed) else "FAIL - %s" % (pilot.fail_reason or "did not complete"))
+diff --git a/shared/uavobjectdefinition/flipstatus.xml b/shared/uavobjectdefinition/flipstatus.xml
+new file mode 100644
+index 000000000..3e1cc48fb
+--- /dev/null
++++ b/shared/uavobjectdefinition/flipstatus.xml
+@@ -0,0 +1,13 @@
++<xml>
++    <object name="FlipStatus" singleinstance="true" settings="false" category="Control">
++        <description>Command and state of the onboard flip sequencer (Flip module): the ground side writes Command, the board owns the whole maneuver at loop rate.</description>
++        <field name="Command" units="" type="enum" elements="1" options="None,Flip" defaultvalue="None"/>
++        <field name="State" units="" type="enum" elements="1" options="Idle,Punch,Rotate,Catch,Done,Abort" defaultvalue="Idle"/>
++        <field name="Flips" units="count" type="uint16" elements="1" defaultvalue="0"/>
++        <field name="LastAngle" units="deg" type="float" elements="1" defaultvalue="0"/>
++        <access gcs="readwrite" flight="readwrite"/>
++        <telemetrygcs acked="false" updatemode="onchange" period="0"/>
++        <telemetryflight acked="false" updatemode="onchange" period="0"/>
++        <logging updatemode="manual" period="0"/>
++    </object>
++</xml>
 diff --git a/shared/uavobjectdefinition/settingsgeneration.xml b/shared/uavobjectdefinition/settingsgeneration.xml
 new file mode 100644
 index 000000000..f4a6c33c3
