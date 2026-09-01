@@ -839,7 +839,7 @@ index e67e684e4..16b62103e 100644
      uint8_t rxbyte = rxbuffer[(*position)++];
  
 diff --git a/ground/gazebo_bridge/gazebo_bridge.py b/ground/gazebo_bridge/gazebo_bridge.py
-index e965b652a..94dad0f9b 100644
+index e965b652a..714953a64 100644
 --- a/ground/gazebo_bridge/gazebo_bridge.py
 +++ b/ground/gazebo_bridge/gazebo_bridge.py
 @@ -66,6 +66,31 @@ def print(*args, **kwargs):  # noqa: A001 - deliberate module-wide shadow
@@ -967,7 +967,7 @@ index e965b652a..94dad0f9b 100644
          }
          send_reliable("StabilizationSettings", bov.resolve_enum_values(db["StabilizationSettings"], stab_settings))
          time.sleep(0.2)
-@@ -4222,17 +4267,40 @@ def uavtalk_thread():
+@@ -4222,17 +4267,50 @@ def uavtalk_thread():
          send_reliable("StabilizationSettingsBank1", bov.resolve_enum_values(db["StabilizationSettingsBank1"], stab_bank))
          send_reliable("StabilizationBank", bov.resolve_enum_values(db["StabilizationBank"], stab_bank))
          time.sleep(0.2)
@@ -980,8 +980,18 @@ index e965b652a..94dad0f9b 100644
 +            # raised to match so nothing clips it. Hover never sees these -
 +            # it flies Bank1.
 +            flip_bank = dict(stab_bank)
-+            flip_bank["ManualRate"] = [500, 540, 175]
-+            flip_bank["MaximumRate"] = [560, 560, 175]
++            # 460, down from 540: at the ~0.25s command lag, rate*lag is the
++            # angle the endgame must predict across - 540 made it 135 deg
++            # and the exit-angle variance behind every drift outlier; 460
++            # trims that to 115 for ~0.15s of extra rotation time.
++            flip_bank["ManualRate"] = [460, 460, 175]
++            flip_bank["MaximumRate"] = [500, 500, 175]
++            # MEASURED AND REVERTED (cr09): raising rate Kd here as a
++            # feed-forward (pid_apply_setpoint's D acts on gamma*setpoint -
++            # gyro, gamma=1, so Kd kicks on setpoint changes) made the tail
++            # WORSE (worst drift 12.6 vs 4.8, lows 3.3 vs 7.8) - the same
++            # kick that would brake the taper also spikes on the full-stick
++            # slam at flip entry. Do not re-try without separating the two.
 +            send_reliable("StabilizationSettingsBank2", bov.resolve_enum_values(db["StabilizationSettingsBank2"], flip_bank))
 +            time.sleep(0.2)
  
@@ -1014,7 +1024,7 @@ index e965b652a..94dad0f9b 100644
  
          def run_with_fc_logging():
              # Runs in its own thread while client.run() keeps pumping packets
-@@ -4427,7 +4495,7 @@ def uavtalk_thread():
+@@ -4427,7 +4505,7 @@ def uavtalk_thread():
          while True:
              if configured["done"] and client.connected:
                  if control.armed != last_arm_state["armed"]:
@@ -1023,7 +1033,7 @@ index e965b652a..94dad0f9b 100644
                      # The arming toggle re-sends the WHOLE FlightModeSettings
                      # (UAVTalk writes are whole-object) - without honoring
                      # this override it silently stomps any custom switch
-@@ -4640,12 +4708,16 @@ _accel_send_count = [0, 0.0]  # [total sends, last debug print time]
+@@ -4640,12 +4718,16 @@ _accel_send_count = [0, 0.0]  # [total sends, last debug print time]
  # send_config()'s wait_for_mag/HomeLocation.Be step already blocks briefly
  # at startup for the same reason.
  def publish_baro(client):
@@ -1266,7 +1276,7 @@ index f1906f04b..30b7b9776 100755
          print("[chase] image subscribe failed", flush=True)
          sys.exit(1)
 diff --git a/ground/gazebo_bridge/wroom_pilot.py b/ground/gazebo_bridge/wroom_pilot.py
-index 13445c3f1..10f09f6ba 100644
+index 13445c3f1..be7000093 100644
 --- a/ground/gazebo_bridge/wroom_pilot.py
 +++ b/ground/gazebo_bridge/wroom_pilot.py
 @@ -63,6 +63,19 @@ def truth_ned():
@@ -1307,7 +1317,42 @@ index 13445c3f1..10f09f6ba 100644
              self.fail_reason = "tilt-over roll=%.0f pitch=%.0f" % (roll, pitch)
          if self.fail_reason:
              print("[wroom] SAFETY: %s - cutting throttle, disarming" % self.fail_reason, flush=True)
-@@ -223,6 +238,32 @@ class Pilot(object):
+@@ -183,13 +198,15 @@ class Pilot(object):
+         return (max(-1.0, min(1.0, roll_stick)), max(-1.0, min(1.0, pitch_stick)))
+ 
+     # one control tick -----------------------------------------------------
+-    def tick(self, target_alt, tgt_n=None, tgt_e=None, dt=0.05, sticks=None):
++    def tick(self, target_alt, tgt_n=None, tgt_e=None, dt=0.05, sticks=None, vel=None):
+         ok, n, e, alt, vn, ve, climb = self.nav()
+         if not ok:
+             return False
+         gb.control.throttle = self.vertical(target_alt, alt, climb, dt)
+         if sticks is not None:
+             gb.control.roll, gb.control.pitch = sticks
++        elif vel is not None:
++            gb.control.roll, gb.control.pitch = self.velocity(vel[0], vel[1], vn, ve)
+         elif tgt_n is not None:
+             gb.control.roll, gb.control.pitch = self.horizontal(tgt_n, tgt_e, n, e, vn, ve)
+         else:
+@@ -198,7 +215,7 @@ class Pilot(object):
+         return self.check_safety()
+ 
+     def fly_until(self, seconds, target_alt, tgt_n=None, tgt_e=None, label=None,
+-                  done=None, sticks=None):
++                  done=None, sticks=None, vel=None):
+         """Run the pilot loop at 20 Hz until `seconds` pass or done() says so.
+         Returns True unless safety tripped."""
+         if label:
+@@ -210,7 +227,7 @@ class Pilot(object):
+             now = time.time()
+             dt = min(0.2, now - last)
+             last = now
+-            if not self.tick(target_alt, tgt_n, tgt_e, dt, sticks=sticks):
++            if not self.tick(target_alt, tgt_n, tgt_e, dt, sticks=sticks, vel=vel):
+                 return False
+             if done is not None and done():
+                 return True
+@@ -223,6 +240,32 @@ class Pilot(object):
              time.sleep(0.05)
          return True
  
@@ -1340,7 +1385,7 @@ index 13445c3f1..10f09f6ba 100644
      # composite maneuvers --------------------------------------------------
      def takeoff(self, target_alt, timeout=25.0):
          self.phase = "takeoff"
-@@ -276,6 +317,7 @@ class Pilot(object):
+@@ -276,6 +319,7 @@ class Pilot(object):
  class Recorder(object):
      COLS = ["t", "phase", "nav_n", "nav_e", "nav_alt", "nav_vn", "nav_ve", "nav_climb",
              "truth_n", "truth_e", "truth_alt", "fc_roll", "fc_pitch", "fc_yaw",
@@ -1348,7 +1393,7 @@ index 13445c3f1..10f09f6ba 100644
              "stick_thr", "stick_roll", "stick_pitch", "stick_yaw"]
  
      def __init__(self, mode):
-@@ -292,11 +334,13 @@ class Recorder(object):
+@@ -292,11 +336,13 @@ class Recorder(object):
      def row(self, phase, n, e, alt, vn, ve, climb):
          _h, tn, te, talt = truth_ned()
          _ha, roll, pitch, _hacc, _acc = gb.fc_state.snapshot()
@@ -1362,7 +1407,7 @@ index 13445c3f1..10f09f6ba 100644
                           "%.3f" % gb.control.throttle, "%.3f" % gb.control.roll,
                           "%.3f" % gb.control.pitch, "%.3f" % gb.control.yaw])
  
-@@ -438,3 +482,223 @@ def rth_test():
+@@ -438,3 +484,281 @@ def rth_test():
                % (tn, te, math.hypot(tn, te)), flush=True)
      _finish(pilot, "PASS - returned home and landed %.2fm from the pad" % math.hypot(tn, te)
              if (ok and landed) else "FAIL - %s" % (pilot.fail_reason or "did not complete"))
@@ -1386,7 +1431,11 @@ index 13445c3f1..10f09f6ba 100644
 +# budget. Rotation is torque-limited at ~320 deg/s (raising ManualRate
 +# 450->540 changed nothing), and differential torque scales with
 +# collective - hence thrust DURING the flip, not a pure chop.
-+PERCH_ALT = 13.0
++PERCH_ALT = 11.0   # lows run entry-minus-3-to-5m; 11m keeps >4m over the floor
++# The flip throws the vehicle ~4-6m SOUTH (thrust sweeps backward through
++# the first half of the rotation). Perching 2.5m NORTH of the pad centers
++# that arc on the pad instead of hanging it all off one side.
++PERCH_N = 2.5
 +
 +
 +def _do_flip(pilot, idx):
@@ -1399,6 +1448,12 @@ index 13445c3f1..10f09f6ba 100644
 +    PUNCH_THR, PUNCH_S = 0.95, 0.9
 +    FLIP_STICK = 1.0         # +pitch rate = nose up and over backward
 +    FLOOR_M = 1.5            # truth-checked abort floor
++    # NO runup pre-drift: tried (cr01-cr05) and retired on measurement.
++    # Entering with +2 m/s north does cancel the flip's southward fling at
++    # the catch, but the carried velocity rides THROUGH the maneuver and
++    # relocates the same excursion instead of removing it - and the extra
++    # phase time deepened the lows. The flip's throw is dealt with where
++    # it is cheap: a gentle velocity-null in the brakeout stage.
 +    ok0, _n0, _e0, alt0, _v0, _v1, _c0 = pilot.nav()
 +    print("[wroom] flip %d: punch (alt %.1fm)" % (idx, alt0), flush=True)
 +    pilot.tilt_check = False
@@ -1479,8 +1534,14 @@ index 13445c3f1..10f09f6ba 100644
 +        return 0.60 if z > 0.35 else 0.10
 +
 +    def rotation_done():
-+        # hand over to the Attitude catch one command-flight-time early
-+        return seen_inv[0] and phi_predicted() > 335.0
++        # Hand over EARLY (predicted 322, not 335): the exit prediction
++        # carries variance, and its two error signs are NOT symmetric. An
++        # under-rotated stop parks nose-DOWN, where the catch collective
++        # pushes north+up - against the flip's southward drift, benign. An
++        # over-rotated stop parks nose-UP and thrusts south while falling:
++        # that is the 12-16m outlier (cr07-cr09). Biasing the exit early
++        # makes every stop land on the benign side of level.
++        return seen_inv[0] and phi_predicted() > 322.0
 +    r = pilot.raw(3.0, flip_thr, 0.0, rot_cmd, "flip%d" % idx,
 +                  until=rotation_done, floor=FLOOR_M)
 +    flip_s = time.time() - t_flip
@@ -1493,7 +1554,6 @@ index 13445c3f1..10f09f6ba 100644
 +    # Not higher than 0.90: wf03 arrested at 0.97 and TUMBLED - at full
 +    # collective the mixer has no differential left and the attitude
 +    # loop is a passenger.
-+    gb.control.mode_position = 0
 +    caught = [False]
 +
 +    def arrested():
@@ -1504,18 +1564,60 @@ index 13445c3f1..10f09f6ba 100644
 +        # sticks used to be pure horizontal COASTING - the flip flings the
 +        # vehicle sideways at several m/s, and vid04 measured it carried
 +        # up to 32m off-station during catches that only watched vertical.
-+        if z > 0.85 and climb > -1.5:
++        if z > 0.85 and climb > -1.2:
 +            caught[0] = True
 +        return caught[0]
 +
++    # Stage 0 - SPIN-KILL, still in the flip slot: the rotation exit is a
++    # lag-PREDICTION, and when it is wrong the vehicle crosses level still
++    # rotating hundreds of deg/s. The gyro-rate inner loop (stick zero)
++    # kills residual spin in a fraction of a second at any collective;
++    # Attitude mode at arrest collective cannot (cr04 flips 1 and 3 fell
++    # 13m half-caught, drifting 16-20m, and only the sport recovery saved
++    # them at 1-2m).
++    # Rate-zero beat, 0.3s fixed - the cr06 recipe. Two smarter versions
++    # were measured and retired: an adaptive hold-until-still never fired
++    # inside its cap (cr08/09), and a level-seeking P-law oscillated at
++    # the stability edge of the ~0.25s command lag (K*delay ~ 0.6, cr10
++    # put one flip on the floor). The residual stopping-angle variance is
++    # handled where it is harmless: the catch throttle below is
++    # TILT-GATED, so a tilted stop no longer becomes a horizontal
++    # thruster.
++    pilot.raw(0.3, 0.70, 0.0, 0.0, "spinkill%d" % idx, floor=FLOOR_M)
++    gb.control.mode_position = 0
++
++    # Stage A - PURE VERTICAL arrest, sticks dead level. Commanding brake
++    # tilt during the arrest porpoised (+/-40 deg pitch swings at 0.90
++    # collective through laggy GPS velocity - cr03 fell to 2.06m without
++    # ever arresting). One demand at a time, the same law the flip
++    # recovery already learned. The runup pre-compensation means there is
++    # barely any slide left to brake anyway.
++    partial = [False]
++
++    def part_arrested():
++        z, _r, _p = _zdot()
++        _ok, _n, _e, _alt, _vn, _ve, climb = pilot.nav()
++        if z > 0.88 and climb > -2.5:
++            partial[0] = True
++        return partial[0]
++    # (a tilt-gated arrest throttle was tried here and FLOORED a flip in
++    # one run - easing collective while tilted starves the arrest, and
++    # the energy budget has no room for that. Fixed 0.90.)
++    r3 = pilot.raw(3.0, 0.90, 0.0, 0.0, "catch%d" % idx, until=part_arrested, floor=1.0)
++    if r3 != "until" or not partial[0]:
++        # a TIMED-OUT arrest is a failure, not a success - cr04 fell
++        # through this as "done" and proceeded half-caught
++        pilot.tilt_check = True
++        return False, pilot.min_alt_seen, 0.0, flip_s
++    # Stage B - finish the arrest while gently (12 deg cap) nulling any
++    # residual slide, at a collective that leaves attitude headroom.
++
 +    def brake_sticks():
-+        # a pilot doesn't just level after a flip - they pull against the
-+        # slide. Velocity-null the horizontal drift while arresting.
 +        _ok, _n, _e, _alt, vn, ve, _c = pilot.nav()
 +        return pilot.velocity(0.0, 0.0, vn, ve)
-+    r3 = pilot.raw(3.5, 0.90, lambda: brake_sticks()[0], lambda: brake_sticks()[1],
-+                   "catch%d" % idx, until=arrested, floor=1.0)
-+    if r3 not in ("until", "done"):
++    r3b = pilot.raw(2.0, 0.85, lambda: brake_sticks()[0], lambda: brake_sticks()[1],
++                    "brakeout%d" % idx, until=arrested, floor=1.0)
++    if r3b not in ("until", "done"):
 +        pilot.tilt_check = True
 +        return False, pilot.min_alt_seen, 0.0, flip_s
 +
@@ -1537,7 +1639,7 @@ index 13445c3f1..10f09f6ba 100644
 +        # BOTH axes, or the next flip launches from wherever this one
 +        # slid to - vid04's flip 3 punched from 14m off-station because
 +        # this gate only watched altitude.
-+        if okp and alt > PERCH_ALT - 0.5 and abs(climb) < 0.4 and math.hypot(n, e) < 2.0:
++        if okp and alt > PERCH_ALT - 0.6 and abs(climb) < 0.6 and math.hypot(n - PERCH_N, e) < 2.5:
 +            at_perch[0] = True
 +        return at_perch[0]
 +    # sport caps for the comeback: the hover numbers are derated for calm
@@ -1545,7 +1647,7 @@ index 13445c3f1..10f09f6ba 100644
 +    # to make up and the video reads every extra second as a struggle.
 +    pilot.MAX_CLIMB, pilot.HVEL_MAX, pilot.THR_MAX = 2.0, 2.5, 0.85
 +    try:
-+        ok = pilot.fly_until(20.0, PERCH_ALT, tgt_n=0.0, tgt_e=0.0,
++        ok = pilot.fly_until(20.0, PERCH_ALT, tgt_n=PERCH_N, tgt_e=0.0,
 +                             label="recover%d" % idx, done=perched)
 +    finally:
 +        pilot.MAX_CLIMB, pilot.HVEL_MAX, pilot.THR_MAX = Pilot.MAX_CLIMB, Pilot.HVEL_MAX, Pilot.THR_MAX
@@ -1570,8 +1672,9 @@ index 13445c3f1..10f09f6ba 100644
 +    ok = pilot.takeoff(PERCH_ALT)
 +    if ok:
 +        # settle long enough for the throttle trim to learn the true hover
-+        # point - the punch/catch math leans on it
-+        ok = pilot.fly_until(8.0, PERCH_ALT, tgt_n=0.0, tgt_e=0.0, label="settle")
++        # point - the punch/catch math leans on it - while sliding to the
++        # racetrack's south perch
++        ok = pilot.fly_until(8.0, PERCH_ALT, tgt_n=PERCH_N, tgt_e=0.0, label="settle")
 +    results = []
 +    if ok:
 +        for i in range(1, n_flips + 1):
