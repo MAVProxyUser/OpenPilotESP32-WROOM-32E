@@ -625,7 +625,7 @@ index e304689f5..5d962ac73 100644
  QMAKE_EXTRA_TARGETS += submiteditorwidget_moc
  PRE_TARGETDEPS += submiteditorwidget.moc
 diff --git a/ground/openpilotgcs/src/plugins/config/cfg_vehicletypes/vehicleconfig.cpp b/ground/openpilotgcs/src/plugins/config/cfg_vehicletypes/vehicleconfig.cpp
-index faf9c19ad..ba191d553 100644
+index faf9c19ad..8819526e1 100644
 --- a/ground/openpilotgcs/src/plugins/config/cfg_vehicletypes/vehicleconfig.cpp
 +++ b/ground/openpilotgcs/src/plugins/config/cfg_vehicletypes/vehicleconfig.cpp
 @@ -168,12 +168,25 @@ void VehicleConfig::updateChannelNames()
@@ -637,10 +637,10 @@ index faf9c19ad..ba191d553 100644
 +     * the README use. Quad X order: M1 front-left, M2 front-right,
 +     * M3 rear-right, M4 rear-left. */
 +    QStringList esp32Pins;
-+    esp32Pins << "GPIO15 - ADC2_3/TOUCH3/MTDO (M1 front-left)"
-+              << "GPIO33 - ADC1_5/TOUCH8/32K_XN (M2 front-right)"
-+              << "GPIO27 - ADC2_7/TOUCH7 (M3 rear-right)"
-+              << "GPIO12 - ADC2_5/TOUCH5/MTDI (M4 rear-left)";
++    esp32Pins << "GPIO15 - ADC2_3/TOUCH3/MTDO"
++              << "GPIO33 - ADC1_5/TOUCH8/32K_XN"
++              << "GPIO27 - ADC2_7/TOUCH7"
++              << "GPIO12 - ADC2_5/TOUCH5/MTDI";
 +
      bool isRealposix = false;
 +    bool isEsp32     = false;
