@@ -106,7 +106,13 @@ Every power-up of the cal build recalibrates — never leave it flashed.
 python3 tools/flight_monitor.py            # board at 192.168.0.45:9000
 ```
 
-Close/disconnect the GCS first (one UAVTalk client at a time). 1Hz status
+Close/disconnect the GCS first (one UAVTalk client at a time). On connect
+it runs a PREFLIGHT: reads the board's actual configuration over UAVTalk
+and prints a GO/NO-GO checklist - firmware currency (is the 41Hz DLPF fix
+on the board, proven by build stamp or UAVO-set hash), board identity,
+QuadX mixer table, throttle curve, neutral symmetry, spin-while-armed,
+Stabilized1-3 mode arrays, Bank1 gain sanity, receiver mapping, board
+rotation, airframe type. A FAIL means do not fly. Then the 1Hz status
 line: arm state, mode, attitude, throttle, all four motor PWMs, alarms,
 packet rate; instant events for arming, mode and alarm transitions, and
 STALL warnings on >1s telemetry gaps. Everything received is recorded to

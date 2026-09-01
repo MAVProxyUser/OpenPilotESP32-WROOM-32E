@@ -61,6 +61,176 @@ ALARM_NAMES = ["SystemConfiguration", "BootFault", "OutOfMemory", "StackOverflow
                "I2C", "GPS"]
 ALARM_RANK = {"OK": 0, "Uninitialised": 0, "Warning": 1, "Error": 2, "Critical": 3}
 
+# ---------------------------------------------------------------------------
+# Preflight: confirm the board is configured the way the 2026-09-01
+# investigation says it must be, BEFORE takeoff. Every check encodes a
+# lesson that was paid for in a crash or a debugging afternoon.
+# ---------------------------------------------------------------------------
+
+PREFLIGHT_OBJECTS = ["FirmwareIAPObj", "MixerSettings", "ActuatorSettings",
+                     "FlightModeSettings", "StabilizationSettingsBank1",
+                     "ManualControlSettings", "SystemSettings", "AttitudeSettings"]
+
+# Build time of the firmware that first carried the 41Hz gyro-DLPF fix -
+# the fix for the vibration-corrupted attitude estimate that caused both
+# real-flight flips. A board built before this is running the 176Hz filter.
+DLPF_FIX_BUILD_UNIX = 1788044400  # 2026-09-01 ~17:00 local
+
+QUADX_MIXER = {1: [64, 64, -64], 2: [-64, 64, 64], 3: [-64, -64, -64], 4: [64, -64, 64]}
+
+
+def _local_uavo_sha():
+    """sha1 over the XML dir, byte-identical to make/scripts/version-info.py's
+    get_hash_of_dirs (sorted walk, file bytes only)."""
+    import hashlib
+    d = os.path.join(NINJAPILOT_ROOT, "shared", "uavobjectdefinition")
+    if not os.path.isdir(d):
+        return None
+    h = hashlib.sha1()
+    for root, dirs, files in os.walk(d):
+        files.sort()
+        for name in files:
+            try:
+                fh = hashlib.sha1()
+                with open(os.path.join(root, name), "rb") as f:
+                    while True:
+                        buf = f.read(4096)
+                        if not buf:
+                            break
+                        fh.update(buf)
+                # the original folds each file's HEX digest into the
+                # cumulative hash, not the file bytes - match it exactly
+                h.update(fh.hexdigest().encode("utf-8"))
+            except OSError:
+                return None
+    return h.hexdigest()
+
+
+def run_preflight(cfg):
+    """cfg: dict name->decoded object. Returns list of (level, name, detail);
+    level in OK/WARN/FAIL."""
+    import struct as _struct
+    out = []
+
+    def add(level, name, detail):
+        out.append((level, name, detail))
+
+    fw = cfg.get("FirmwareIAPObj")
+    if fw:
+        ok_id = fw.get("BoardType") == 18 and fw.get("BoardRevision") == 2
+        add("OK" if ok_id else "FAIL", "board identity",
+            "type 0x%02X rev %d (ESP32 Thing Plus)" % (fw.get("BoardType", 0), fw.get("BoardRevision", 0)))
+        desc = bytes(bytearray(int(b) & 0xFF for b in fw.get("Description", [])[:100]))
+        if desc[:4] == b"OpFw":
+            btime = _struct.unpack_from("<I", desc, 8)[0]
+            when = time.strftime("%Y-%m-%d %H:%M", time.localtime(btime))
+            board_uavo = desc[60:80].hex()
+            local_uavo = _local_uavo_sha()
+            # Two independent proofs of currency: a build stamp after the
+            # DLPF fix landed, OR a UAVO-set hash matching this tree (any
+            # firmware built from the current tree carries today's XML
+            # changes, which postdate the fix). The posix sim stamps
+            # commit-time rather than build-time, so it needs the second.
+            if btime >= DLPF_FIX_BUILD_UNIX or (local_uavo and board_uavo == local_uavo):
+                add("OK", "firmware age", "built %s (has the 41Hz DLPF vibration fix)" % when)
+            else:
+                add("FAIL", "firmware age",
+                    "built %s, UAVO set %s... != tree %s... - PREDATES the 41Hz DLPF fix; "
+                    "this is the firmware that flips. Flash firmware_normal_41hz.bin"
+                    % (when, board_uavo[:8], (local_uavo or "?")[:8]))
+        else:
+            add("WARN", "firmware age", "no OpFw description blob - cannot date the firmware")
+    else:
+        add("WARN", "board identity", "FirmwareIAPObj not received")
+
+    mix = cfg.get("MixerSettings")
+    if mix:
+        bad = []
+        for m, want in QUADX_MIXER.items():
+            if mix.get("Mixer%dType" % m) != "Motor":
+                bad.append("Mixer%d not Motor" % m)
+            vec = mix.get("Mixer%dVector" % m, [])
+            if list(vec[2:5]) != want:
+                bad.append("Mixer%d vector %s != %s" % (m, list(vec[2:5]), want))
+        add("FAIL" if bad else "OK", "QuadX mixer table",
+            "; ".join(bad) if bad else "all four motors, stock geometry")
+        curve = mix.get("ThrottleCurve1", [])
+        if not any(float(c) > 0 for c in curve):
+            add("FAIL", "throttle curve", "ThrottleCurve1 is all zeros - motors will never spin")
+        elif list(curve) != sorted(curve):
+            add("WARN", "throttle curve", "not monotonic: %s" % [round(float(c), 2) for c in curve])
+        else:
+            add("OK", "throttle curve", "%s" % [round(float(c), 2) for c in curve])
+    else:
+        add("FAIL", "QuadX mixer table", "MixerSettings not received")
+
+    act = cfg.get("ActuatorSettings")
+    if act:
+        neut = [int(n) for n in act.get("ChannelNeutral", [])[:4]]
+        spread = max(neut) - min(neut) if neut else 999
+        if spread <= 10:
+            add("OK", "neutral symmetry", "%s (spread %dus)" % (neut, spread))
+        else:
+            add("WARN", "neutral symmetry",
+                "%s - spread %dus. Unequal spool points made one corner weak at idle; after ESC cal set all four EQUAL" % (neut, spread))
+        spin = act.get("MotorsSpinWhileArmed")
+        add("OK" if spin == "TRUE" else "WARN", "spin while armed",
+            str(spin) + ("" if spin == "TRUE" else " - recommended TRUE: symmetric idle floor keeps the couple two-sided from arming"))
+    else:
+        add("FAIL", "neutral symmetry", "ActuatorSettings not received")
+
+    fms = cfg.get("FlightModeSettings")
+    if fms:
+        for slot in (1, 2, 3):
+            modes = fms.get("Stabilization%dSettings" % slot, [])
+            if len(modes) >= 4:
+                r, p_, y, t = modes[0], modes[1], modes[2], modes[3]
+                if r != "Attitude" or p_ != "Attitude":
+                    add("FAIL" if slot == 3 else "WARN", "Stabilized%d" % slot,
+                        "%s/%s/%s/%s - roll/pitch not self-leveling (Rate here is the original tumble config)" % (r, p_, y, t))
+                elif y == "AxisLock":
+                    add("WARN", "Stabilized%d" % slot,
+                        "%s/%s/%s/%s - AxisLock yaw winds up during the arming gesture; Rate recommended" % (r, p_, y, t))
+                else:
+                    add("OK", "Stabilized%d" % slot, "%s/%s/%s/%s" % (r, p_, y, t))
+    else:
+        add("FAIL", "flight modes", "FlightModeSettings not received")
+
+    bank = cfg.get("StabilizationSettingsBank1")
+    if bank:
+        rp = [float(x) for x in bank.get("RollRatePID", [0] * 4)]
+        ap = [float(x) for x in bank.get("RollPI", [0] * 3)]
+        sane = 0.001 <= rp[0] <= 0.01 and 1.0 <= ap[0] <= 6.0
+        add("OK" if sane else "WARN", "Bank1 gains",
+            "rate Kp/Ki/Kd %.4f/%.4f/%.5f, attitude Kp %.1f%s"
+            % (rp[0], rp[1], rp[2], ap[0],
+               "" if sane else " - outside sane range for this class"))
+    else:
+        add("WARN", "Bank1 gains", "StabilizationSettingsBank1 not received")
+
+    mcs = cfg.get("ManualControlSettings")
+    if mcs:
+        groups = mcs.get("ChannelGroups", [])[:4]
+        unmapped = [i for i, g in enumerate(groups) if g in ("None", None)]
+        add("FAIL" if unmapped else "OK", "receiver mapping",
+            ("Thr/Roll/Pitch/Yaw groups: %s" % groups) + (" - UNMAPPED axes!" if unmapped else ""))
+    else:
+        add("FAIL", "receiver mapping", "ManualControlSettings not received")
+
+    att = cfg.get("AttitudeSettings")
+    if att:
+        rot = att.get("BoardRotation", [0, 0, 0])
+        level = att.get("BoardLevelTrim", [0, 0])
+        if any(abs(float(r)) > 0.5 for r in rot):
+            add("WARN", "board rotation", "BoardRotation %s - nonzero; confirm deliberate" % rot)
+        else:
+            add("OK", "board rotation", "zero (IMU frame = body frame)")
+    sysx = cfg.get("SystemSettings")
+    if sysx:
+        af = sysx.get("AirframeType")
+        add("OK" if af == "QuadX" else "WARN", "airframe type", str(af))
+    return out
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -91,6 +261,7 @@ def main():
         "last_att": None, "att": (0.0, 0.0, 0.0), "thr": None, "pwm": None,
         "armed": None, "mode": None, "alarms": None,
         "stall_open": None,
+        "pf_cfg": {}, "pf_req_i": 0, "pf_last_req": 0.0, "pf_done": False, "pf_deadline": None,
     }
     events = []          # (wall, kind, text)
     stalls = []          # (start, end)
@@ -116,8 +287,35 @@ def main():
             if now - state["last_handshake"] > 1.0:
                 state["last_handshake"] = now
                 send_gcs(state["gcs"])
+            # PREFLIGHT phase: request each settings object (one frame per
+            # gap, never back-to-back), evaluate when all are in or 8s pass
+            if state["gcs"] == GCS_CONNECTED and not state["pf_done"]:
+                if state["pf_deadline"] is None:
+                    state["pf_deadline"] = now + 8.0
+                    print("\n--- preflight: reading board configuration ---", flush=True)
+                if now - state["pf_last_req"] > POLL_GAP:
+                    state["pf_last_req"] = now
+                    missing = [n for n in PREFLIGHT_OBJECTS if n not in state["pf_cfg"]]
+                    if missing:
+                        o = db[missing[state["pf_req_i"] % len(missing)]]
+                        state["pf_req_i"] += 1
+                        sock.sendto(uavtalk.build_packet(uavtalk.TYPE_OBJ_REQ, o.obj_id, 0), addr)
+                if not [n for n in PREFLIGHT_OBJECTS if n not in state["pf_cfg"]] or now > state["pf_deadline"]:
+                    state["pf_done"] = True
+                    results = run_preflight(state["pf_cfg"])
+                    n_fail = sum(1 for l, _, _ in results if l == "FAIL")
+                    n_warn = sum(1 for l, _, _ in results if l == "WARN")
+                    mark = {"OK": " ok ", "WARN": "WARN", "FAIL": "FAIL"}
+                    for level, name, detail in results:
+                        print("  [%s] %-18s %s" % (mark[level], name, detail), flush=True)
+                    if n_fail:
+                        print("--- preflight: NO-GO (%d FAIL, %d WARN) - fix before flying ---\n" % (n_fail, n_warn), flush=True)
+                    elif n_warn:
+                        print("--- preflight: GO with %d warning(s) ---\n" % n_warn, flush=True)
+                    else:
+                        print("--- preflight: GO - board configured as expected ---\n", flush=True)
             # round-robin poll, one frame at a time
-            if state["gcs"] == GCS_CONNECTED and now - state["last_poll"] > POLL_GAP:
+            if state["gcs"] == GCS_CONNECTED and state["pf_done"] and now - state["last_poll"] > POLL_GAP:
                 state["last_poll"] = now
                 name = POLL_OBJECTS[state["poll_i"] % len(POLL_OBJECTS)]
                 state["poll_i"] += 1
@@ -151,6 +349,9 @@ def main():
                 state["n_rx"] += 1
                 state["n_rx_win"] += 1
                 record(o.name, iid, d, now)
+
+                if not state["pf_done"] and o.name in PREFLIGHT_OBJECTS:
+                    state["pf_cfg"][o.name] = d
 
                 if o.name == "FlightTelemetryStats":
                     fl = d.get("Status")
