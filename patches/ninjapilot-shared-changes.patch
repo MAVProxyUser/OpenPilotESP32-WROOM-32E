@@ -464,6 +464,23 @@ index 99607a487..835e96964 100644
  UAVOBJSRCFILENAMES += magsensor
  UAVOBJSRCFILENAMES += auxmagsensor
  UAVOBJSRCFILENAMES += auxmagsettings
+diff --git a/flight/targets/boards/simwroom/firmware/Makefile b/flight/targets/boards/simwroom/firmware/Makefile
+index de36b5fd6..d91381ab5 100644
+--- a/flight/targets/boards/simwroom/firmware/Makefile
++++ b/flight/targets/boards/simwroom/firmware/Makefile
+@@ -57,6 +57,12 @@ MODULES = ManualControl Stabilization Attitude
+ MODULES += Telemetry
+ MODULES += Actuator
+ MODULES += Receiver
++# Logging is a SIM-ONLY deviation from the hardware module set: the ESP32
++# board carries no onboard flight recorder, but the whole point of the twin
++# is diagnosis, and the FC's own DebugLog (pulled by the bridge after every
++# flight, slots also land as host files) is how the last several real bugs
++# were found. Documented here so nobody mistakes it for a hardware feature.
++MODULES += Logging
+ 
+ SRC += $(FLIGHTLIB)/notification.c
+ 
 diff --git a/flight/uavobjects/inc/uavobjectprivate.h b/flight/uavobjects/inc/uavobjectprivate.h
 index 614d96867..c45624709 100644
 --- a/flight/uavobjects/inc/uavobjectprivate.h
@@ -821,6 +838,162 @@ index e67e684e4..16b62103e 100644
      // Check the CRC byte
      uint8_t rxbyte = rxbuffer[(*position)++];
  
+diff --git a/ground/gazebo_bridge/gazebo_bridge.py b/ground/gazebo_bridge/gazebo_bridge.py
+index e965b652a..39080220f 100644
+--- a/ground/gazebo_bridge/gazebo_bridge.py
++++ b/ground/gazebo_bridge/gazebo_bridge.py
+@@ -66,6 +66,18 @@ def print(*args, **kwargs):  # noqa: A001 - deliberate module-wide shadow
+ # state estimator/hold-mode logic work", since the latter was found to be
+ # broken independent of which vertical-channel filter algorithm is used).
+ TEST_MODE = os.environ.get("NINJAPILOT_TEST_MODE", "scripted")
++# NINJAPILOT_TARGET=wroom drives the SIM_WROOM twin of the ESP32 Thing Plus
++# instead of simposix: no StateEstimation/PathFollower/PathPlanner on that
++# stack, so the Revo-specific config writes are skipped, baro/mag are not
++# published (the twin is a GPS-only experiment by design), and flying is
++# done pilot-style through the sticks (see wroom_pilot.py).
++WROOM = os.environ.get("NINJAPILOT_TARGET", "") == "wroom"
++
++
++def _stab1_modes():
++    # Wroom flies the board's own Stabilized1 default (Attitude/Attitude/
++    # AxisLock) - twin fidelity; simposix keeps its yaw-Attitude convention.
++    return ["Attitude", "Attitude", "AxisLock"] if WROOM else ["Attitude", "Attitude", "Attitude"]
+ # NINJAPILOT_MISSION=star flies ONLY the 5-point star at 8m + land -
+ # a ~90s iteration loop for corner/yaw tuning instead of the 4.5min
+ # full star/octagon/KF mission.
+@@ -616,12 +628,19 @@ class ControlState(object):
+         # RevoSettings.FusionAlgorithm value CHANGE (while disarmed) does,
+         # confirmed by reading stateestimation.c's own reinit gate.
+         self.request_estimator_reset = False
++        # Attitude sticks (-1..1), used by the wroom pilot modes; the
++        # simposix modes leave them at neutral and fly via hold modes.
++        self.roll = 0.0
++        self.pitch = 0.0
++        self.yaw = 0.0
+ 
+     def gcs_channels(self):
+         throttle_us = int(round(1000 + self.throttle * 1000))
+         return [
+             throttle_us,
+-            1500, 1500, 1500,                      # Roll/Pitch/Yaw sticks - neutral
++            bov.slider_channel(self.roll),
++            bov.slider_channel(self.pitch),
++            bov.slider_channel(self.yaw),
+             bov.flight_mode_channel(self.mode_position),
+             1500, 1500, 1500,                      # unused disturbance channels
+         ]
+@@ -3730,10 +3749,14 @@ def uavtalk_thread():
+                       f"{home['Be'][0]:.4f} {home['Be'][1]:.4f} {home['Be'][2]:.4f}", flush=True)
+                 break
+             time.sleep(0.1)
+-        send_reliable("RevoSettings", bov.resolve_enum_values(db["RevoSettings"], bov.REVOSETTINGS_DEFAULTS))
+-        time.sleep(0.2)
+-        send_reliable("HomeLocation", bov.resolve_enum_values(db["HomeLocation"], home))
+-        time.sleep(0.2)
++        # The wroom twin has no StateEstimation/filter chain - RevoSettings,
++        # HomeLocation and AltitudeFilterSettings would land on objects
++        # nothing reads. Skipped so the config story matches the board.
++        if not WROOM:
++            send_reliable("RevoSettings", bov.resolve_enum_values(db["RevoSettings"], bov.REVOSETTINGS_DEFAULTS))
++            time.sleep(0.2)
++            send_reliable("HomeLocation", bov.resolve_enum_values(db["HomeLocation"], home))
++            time.sleep(0.2)
+         send_reliable("MixerSettings", bov.resolve_enum_values(db["MixerSettings"], bov.mixer_settings()))
+         time.sleep(0.2)
+         # STOCK values, deliberately. An earlier session set
+@@ -3750,11 +3773,12 @@ def uavtalk_thread():
+         # The stock slow rate is slow BY DESIGN: real accel bias drifts
+         # over minutes, and everything faster than that is real motion the
+         # integrator needs to see.
+-        send_reliable("AltitudeFilterSettings", {
+-            "AccelLowPassKp": 0.04, "AccelDriftKi": 0.0005,
+-            "InitializationAccelDriftKi": 0.2, "BaroKp": 0.04,
+-        })
+-        time.sleep(0.2)
++        if not WROOM:
++            send_reliable("AltitudeFilterSettings", {
++                "AccelLowPassKp": 0.04, "AccelDriftKi": 0.0005,
++                "InitializationAccelDriftKi": 0.2, "BaroKp": 0.04,
++            })
++            time.sleep(0.2)
+         # Without this, the flight side has no idea GCSReceiver's channels
+         # are meant to be Throttle/Roll/Pitch/Yaw/FlightMode - nothing ever
+         # reaches ManualControlCommand/StabilizationDesired at all.
+@@ -3769,7 +3793,7 @@ def uavtalk_thread():
+             "FailsafeChannel": [-1, 0, 0, 0, 0, 0, 0, 0],
+         })
+         time.sleep(0.2)
+-        fms = bov.flight_mode_settings(control.armed, ["Attitude", "Attitude", "Attitude"])
++        fms = bov.flight_mode_settings(control.armed, _stab1_modes())
+         send_reliable("FlightModeSettings", bov.resolve_enum_values(db["FlightModeSettings"], fms))
+         time.sleep(0.2)
+         # This bridge exists to unit-test real flight-code changes, so it
+@@ -4004,8 +4028,9 @@ def uavtalk_thread():
+             "LandVerticalVelPID": [0.35, 3.0, 0.05, 0.9],
+         }
+         _vtol_pf_values[0] = bov.resolve_enum_values(db["VtolPathFollowerSettings"], vtol_pf)
+-        send_reliable("VtolPathFollowerSettings", _vtol_pf_values[0])
+-        time.sleep(0.2)
++        if not WROOM:  # no PathFollower on the wroom twin
++            send_reliable("VtolPathFollowerSettings", _vtol_pf_values[0])
++            time.sleep(0.2)
+         # Note: VtolPathFollowerSettings.YawControl="manual" (set above)
+         # makes vtolflycontroller.cpp's UpdateStabilizationDesired() take
+         # the yaw_attitude=false branch (flight/modules/PathFollower/
+@@ -4227,12 +4252,21 @@ def uavtalk_thread():
+         send_config()
+         configured["done"] = True
+         _mission_client[0] = client
+-        target = {"manual_hover": manual_hover_test,
+-                  "poshold": poshold_test,
+-                  "mission": mission_test,
+-                  "pull_logs": pull_logs_only,
+-                  "autotune": autotune_test,
+-                  "intercept": intercept_test}.get(TEST_MODE, run_test_sequence)
++        modes = {"manual_hover": manual_hover_test,
++                 "poshold": poshold_test,
++                 "mission": mission_test,
++                 "pull_logs": pull_logs_only,
++                 "autotune": autotune_test,
++                 "intercept": intercept_test}
++        if WROOM:
++            # Pilot-in-the-loop modes for the ESP32 twin (no hold modes,
++            # no missions - the stack under test cannot fly those).
++            import wroom_pilot
++            wroom_pilot.bind(sys.modules[__name__])
++            modes.update({"wroom_hover": wroom_pilot.hover_test,
++                          "wroom_sticks": wroom_pilot.sticks_test,
++                          "wroom_rth": wroom_pilot.rth_test})
++        target = modes.get(TEST_MODE, run_test_sequence)
+ 
+         def run_with_fc_logging():
+             # Runs in its own thread while client.run() keeps pumping packets
+@@ -4427,7 +4461,7 @@ def uavtalk_thread():
+         while True:
+             if configured["done"] and client.connected:
+                 if control.armed != last_arm_state["armed"]:
+-                    fms = bov.flight_mode_settings(control.armed, ["Attitude", "Attitude", "Attitude"])
++                    fms = bov.flight_mode_settings(control.armed, _stab1_modes())
+                     # The arming toggle re-sends the WHOLE FlightModeSettings
+                     # (UAVTalk writes are whole-object) - without honoring
+                     # this override it silently stomps any custom switch
+@@ -4640,12 +4674,16 @@ _accel_send_count = [0, 0.0]  # [total sends, last debug print time]
+ # send_config()'s wait_for_mag/HomeLocation.Be step already blocks briefly
+ # at startup for the same reason.
+ def publish_baro(client):
++    if WROOM:
++        return  # GPS-only twin: the board has no baro
+     have_baro, baro_alt = state.baro_snapshot()
+     if have_baro:
+         client.send_object("BaroSensor", {"Altitude": baro_alt, "Temperature": 25.0, "Pressure": 101.3})
+ 
+ 
+ def publish_mag(client):
++    if WROOM:
++        return  # GPS-only twin: no mag consumer on this stack
+     have_mag, mag_body = state.mag_snapshot()
+     if have_mag:
+         client.send_object("MagSensor", {"x": mag_body[0], "y": mag_body[1], "z": mag_body[2], "temperature": 25.0})
 diff --git a/ground/openpilotgcs/src/libs/utils/logfile.h b/ground/openpilotgcs/src/libs/utils/logfile.h
 index 7fbf676bc..c51c168f7 100644
 --- a/ground/openpilotgcs/src/libs/utils/logfile.h
@@ -2003,6 +2176,9 @@ index 16639ee7d..d3a3c7a05 100644
      ResultEventLoop eventLoop;
  
      connect(this, SIGNAL(bootloaderSuccess()), &eventLoop, SLOT(success()));
+diff --git a/ground/pyuavtalk/__pycache__/uavtalk_client.cpython-313.pyc b/ground/pyuavtalk/__pycache__/uavtalk_client.cpython-313.pyc
+index 18b03aa14..8764fe98e 100644
+Binary files a/ground/pyuavtalk/__pycache__/uavtalk_client.cpython-313.pyc and b/ground/pyuavtalk/__pycache__/uavtalk_client.cpython-313.pyc differ
 diff --git a/ground/pyuavtalk/uavtalk_client.py b/ground/pyuavtalk/uavtalk_client.py
 index d927b78b6..b5d759329 100644
 --- a/ground/pyuavtalk/uavtalk_client.py
@@ -4215,6 +4391,627 @@ index 000000000..79a8f3896
 + * @}
 + * @}
 + */
+diff --git a/ground/gazebo_bridge/run_wroom.sh b/ground/gazebo_bridge/run_wroom.sh
+new file mode 100755
+index 000000000..b7a3a6295
+--- /dev/null
++++ b/ground/gazebo_bridge/run_wroom.sh
+@@ -0,0 +1,76 @@
++#!/usr/bin/env bash
++# One wroom-twin run, end to end: purge, reset, fly, report.
++#
++# Flies the SIM_WROOM target (the posix twin of the ESP32 Thing Plus) with
++# the pilot-in-the-loop modes from wroom_pilot.py. Same discipline as
++# run_star.sh: kill and WAIT, purge the slot files, reset the scene, fly,
++# then put the picture in front of the user. Gazebo server+GUI must already
++# be running (start once with run_gazebo_bridge.sh's gz lines or reuse a
++# star session's instance).
++#
++#   usage: ./run_wroom.sh <label> [hover|sticks|rth]
++set -u
++HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++LABEL="${1:?usage: run_wroom.sh <label> [hover|sticks|rth]}"
++MODE="${2:-hover}"
++SCRATCH="${TMPDIR:-/tmp}"
++FCWD="$SCRATCH/wroom_fcwd"
++ELF="${NINJAPILOT_WROOM_ELF:-/tmp/njp/build/fw_simwroom/fw_simwroom.elf}"
++LOG="$SCRATCH/wroom_${LABEL}.log"
++
++if [ ! -x "$ELF" ]; then
++    echo "error: $ELF not found - build with: cd /tmp/njp && make ROOT_DIR=\$PWD fw_simwroom" >&2
++    exit 1
++fi
++
++# 1. Stop anything still running and WAIT for it - a firmware process that
++#    outlives the purge writes fresh slots into the directory just cleaned,
++#    and a leftover bridge steals UAVTalk packets from the new one.
++pkill -f gazebo_bridge.py >/dev/null 2>&1 || true
++pkill -f fw_simwroom.elf  >/dev/null 2>&1 || true
++pkill -f fw_simposix.elf  >/dev/null 2>&1 || true
++for _ in $(seq 1 20); do
++    pgrep -f 'fw_sim(wroom|posix)\.elf' >/dev/null 2>&1 || break
++    sleep 0.5
++done
++if pgrep -f 'fw_sim(wroom|posix)\.elf' >/dev/null 2>&1; then
++    echo "error: previous firmware process will not exit - refusing to run" >&2
++    exit 1
++fi
++
++# 2. Purge the previous flight's slots, and verify.
++mkdir -p "$FCWD"
++rm -f "$FCWD"/233CDC*.o* 2>/dev/null || true
++left=$(ls "$FCWD"/233CDC*.o* 2>/dev/null | wc -l | tr -d ' ')
++if [ "$left" != "0" ]; then
++    echo "error: $left stale slot files remain in $FCWD" >&2
++    exit 1
++fi
++
++# 3. Reset the scene rather than relaunching Gazebo.
++"$HERE/venv/bin/python3" "$HERE/tools/reset_world.py" >/dev/null || true
++
++# 4. Fly.
++( cd "$FCWD" && "$ELF" > "$SCRATCH/fw_wroom_${LABEL}.txt" 2>&1 & )
++sleep 3
++( cd "$HERE" && NINJAPILOT_BRIDGE_LOG="$LOG" NINJAPILOT_RUN_LABEL="$LABEL" \
++    TMPDIR="$SCRATCH" NINJAPILOT_TARGET=wroom NINJAPILOT_TEST_MODE="wroom_${MODE}" \
++    "$HERE/venv/bin/python3" -u gazebo_bridge.py > "$LOG" 2>&1 & )
++
++# 5. Bounded wait for the run to complete.
++for _ in $(seq 1 80); do
++    grep -q "run complete" "$LOG" 2>/dev/null && break
++    sleep 3
++done
++grep -q "run complete" "$LOG" 2>/dev/null || echo "!!! TIMEOUT after ~240s - run did not finish"
++pkill -f gazebo_bridge.py >/dev/null 2>&1 || true
++pkill -f fw_simwroom.elf  >/dev/null 2>&1 || true
++
++# 6. Report: pilot track -> picture, plus the wroom lines from the log.
++grep "\[wroom\]" "$LOG" | tail -30
++CSV=$(ls -t "$HERE"/logs/wroom_${LABEL}_*.csv 2>/dev/null | head -1)
++if [ -n "${CSV:-}" ]; then
++    "$HERE/venv/bin/python3" "$HERE/tools/wroom_report.py" "$CSV" "$SCRATCH/wroom_${LABEL}.png" \
++        && echo "wrote $SCRATCH/wroom_${LABEL}.png"
++fi
++rm -f "$FCWD"/233CDC*.o* 2>/dev/null || true
+diff --git a/ground/gazebo_bridge/tools/wroom_report.py b/ground/gazebo_bridge/tools/wroom_report.py
+new file mode 100755
+index 000000000..fa5d01225
+--- /dev/null
++++ b/ground/gazebo_bridge/tools/wroom_report.py
+@@ -0,0 +1,87 @@
++#!/usr/bin/env python3
++"""Turn a wroom pilot track CSV into the planned-vs-flown picture:
++top-down GPS vs truth, altitude profile, attitude + sticks timeline.
++
++  usage: wroom_report.py <track.csv> <out.png>
++"""
++import csv
++import sys
++
++import matplotlib
++matplotlib.use("Agg")
++import matplotlib.pyplot as plt
++
++
++def main():
++    path, out = sys.argv[1], sys.argv[2]
++    rows = list(csv.DictReader(open(path)))
++    if not rows:
++        print("empty track", file=sys.stderr)
++        return 1
++    t = [float(r["t"]) for r in rows]
++    gn = [float(r["nav_n"]) for r in rows]
++    ge = [float(r["nav_e"]) for r in rows]
++    ga = [float(r["nav_alt"]) for r in rows]
++    tn = [float(r["truth_n"]) for r in rows]
++    te = [float(r["truth_e"]) for r in rows]
++    ta = [float(r["truth_alt"]) for r in rows]
++    roll = [float(r["fc_roll"]) for r in rows]
++    pitch = [float(r["fc_pitch"]) for r in rows]
++    thr = [float(r["stick_thr"]) for r in rows]
++    sroll = [float(r["stick_roll"]) for r in rows]
++    spitch = [float(r["stick_pitch"]) for r in rows]
++
++    # phase-change markers
++    phases = []
++    for i, r in enumerate(rows):
++        if i == 0 or r["phase"] != rows[i - 1]["phase"]:
++            phases.append((t[i], r["phase"]))
++
++    fig, axes = plt.subplots(1, 3, figsize=(16, 5))
++    ax = axes[0]
++    ax.plot(te, tn, color="c", lw=1.5, label="truth")
++    ax.plot(ge, gn, color="orange", lw=1.0, alpha=0.8, label="GPS (nav feed)")
++    ax.plot([0], [0], "k^", ms=10, label="home")
++    ax.set_xlabel("East (m)")
++    ax.set_ylabel("North (m)")
++    ax.set_title("top-down")
++    ax.axis("equal")
++    ax.grid(True, alpha=0.3)
++    ax.legend(fontsize=8)
++
++    ax = axes[1]
++    ax.plot(t, ta, color="c", lw=1.5, label="truth alt")
++    ax.plot(t, ga, color="orange", lw=1.0, alpha=0.8, label="GPS alt")
++    for tx, name in phases:
++        ax.axvline(tx, color="gray", alpha=0.3, lw=0.7)
++        ax.text(tx, ax.get_ylim()[1] * 0.02, name, rotation=90, fontsize=6, va="bottom")
++    ax.set_xlabel("t (s)")
++    ax.set_ylabel("altitude (m)")
++    ax.set_title("altitude profile")
++    ax.grid(True, alpha=0.3)
++    ax.legend(fontsize=8)
++
++    ax = axes[2]
++    ax.plot(t, roll, "r", lw=0.8, label="FC roll")
++    ax.plot(t, pitch, "b", lw=0.8, label="FC pitch")
++    ax.plot(t, [s * 42 for s in sroll], "r--", lw=0.8, alpha=0.6, label="cmd roll")
++    ax.plot(t, [s * 42 for s in spitch], "b--", lw=0.8, alpha=0.6, label="cmd pitch")
++    ax2 = ax.twinx()
++    ax2.plot(t, thr, "g", lw=0.8, alpha=0.5, label="throttle")
++    ax2.set_ylabel("throttle", color="g")
++    ax2.set_ylim(0, 1)
++    ax.set_xlabel("t (s)")
++    ax.set_ylabel("deg")
++    ax.set_title("attitude vs command")
++    ax.grid(True, alpha=0.3)
++    ax.legend(fontsize=7, loc="upper left")
++
++    fig.suptitle(path.split("/")[-1])
++    fig.tight_layout()
++    fig.savefig(out, dpi=110)
++    print("report: %s" % out)
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/ground/gazebo_bridge/wroom_pilot.py b/ground/gazebo_bridge/wroom_pilot.py
+new file mode 100644
+index 000000000..13445c3f1
+--- /dev/null
++++ b/ground/gazebo_bridge/wroom_pilot.py
+@@ -0,0 +1,440 @@
++"""Pilot-in-the-loop test modes for the SIM_WROOM target (the posix twin of
++the ESP32 Thing Plus, board id 0x1202).
++
++The wroom stack has NO StateEstimation, NO PathFollower, NO PathPlanner --
++the flight controller only stabilizes attitude (CC-style Attitude module)
++and passes manual thrust through. Everything a Revo would do with position
++is therefore done HERE, the way a human pilot would do it: reading the GPS
++and moving the sticks. That is the point -- these modes answer "what can
++THIS board's stack actually fly", not "what can a Revo fly".
++
++Feedback source is GPS BY DEFAULT (NINJAPILOT_WROOM_FEEDBACK=truth for the
++ground-truth escape hatch): the user's question is precisely whether hover
++and RTH work on GPS only. GPS here is the same gz navsat feed the bridge
++publishes to the FC as GPSPositionSensor/GPSVelocitySensor -- 10 Hz, which
++is exactly the latency a real GPS-only pilot loop would fight. The bridge's
++own history warns that navsat-rate feedback destabilized the (much hotter)
++manual-hover vertical loop; the gains here are derated for 10 Hz from the
++start, and the run report shows what that costs.
++
++Modes (NINJAPILOT_TEST_MODE=):
++  wroom_hover   arm, take off to 4m, hold 30s on GPS feedback, land.
++  wroom_sticks  hover at 3.5m, scripted roll/pitch/yaw stick pokes,
++                verify the FC's attitude tracks the commanded angles.
++  wroom_rth     hover, fly out ~15m, then return-to-home on GPS only:
++                climb to 8m, fly home, descend, touch down, disarm.
++                Structurally a single-waypoint mission, flown by the pilot.
++
++A controlled backflip (Rate-mode parlor trick) is deliberately NOT here
++yet: it needs a Rate/Rate/Rate bank on a second flight-mode position and
++belongs after hover is trusted.
++
++Every mode records a CSV track (logs/wroom_<label>_<ts>.csv) that
++tools/wroom_report.py turns into the planned-vs-flown picture.
++"""
++import csv
++import math
++import os
++import time
++
++gb = None  # the live gazebo_bridge module, injected via bind()
++
++
++def bind(bridge_module):
++    global gb
++    gb = bridge_module
++
++
++# --- geometry -------------------------------------------------------------
++
++M_PER_DEG_LAT = 111320.0
++
++
++def gps_ned():
++    """(have, n, e, alt_rel_up, vel_ned) from the GPS feed ONLY."""
++    have, lat, lon, alt, vel = gb.state.gps_snapshot()
++    n = (lat - gb.HOME_LATITUDE) * M_PER_DEG_LAT
++    e = (lon - gb.HOME_LONGITUDE) * M_PER_DEG_LAT * math.cos(math.radians(gb.HOME_LATITUDE))
++    return have, n, e, alt - gb.HOME_ALTITUDE, vel
++
++
++def truth_ned():
++    have, pos, _q, _gv, _a, _g = gb.state.snapshot()
++    return have, pos[0], pos[1], -pos[2]
++
++
++# --- the pilot ------------------------------------------------------------
++
++class Pilot(object):
++    """Closes altitude and position loops through the sticks, like a human.
++
++    Vertical: cascaded (alt error -> desired climb rate -> throttle about
++    hover), the structure manual_hover_test settled on after its flat PID
++    bang-banged -- but derated for 10 Hz GPS feedback and with a throttle
++    slew limit, because a hot gain into 100ms-stale rate feedback is the
++    documented yo-yo failure.
++
++    Horizontal: position error -> velocity command -> tilt command ->
++    roll/pitch stick, rotated into the body frame by the FC's OWN yaw
++    (the pilot's OSD heading, not ground truth).
++    """
++
++    RATE_KP = 0.35          # (m/s) desired climb per m of altitude error
++    MAX_CLIMB = 1.2
++    MAX_DESCENT = 0.6
++    THR_PER_MPS = 0.10      # throttle per m/s of climb-rate error
++    THR_MIN, THR_MAX = 0.45, 0.80
++    THR_SLEW = 0.6          # throttle units per second, max
++    CLIMB_LPF = 0.5         # extra low-pass on the GPS climb rate
++
++    POS_KP = 0.4            # (m/s) per m of horizontal error
++    HVEL_MAX = 1.5
++    TILT_PER_MPS = 6.0      # deg of tilt per m/s of velocity error
++    TILT_MAX = 12.0         # deg
++    STICK_FULL_DEG = 42.0   # RollMax/PitchMax in the stab bank
++
++    # Sign conventions (verified live by wroom_sticks): positive roll stick
++    # = bank right = +East at yaw 0; positive pitch stick = nose UP = -N,
++    # so forward flight needs a NEGATIVE pitch stick.
++    ROLL_SIGN = +1.0
++    PITCH_SIGN = -1.0
++
++    CEILING_M = 20.0        # truth-checked hard ceiling (safety, not control)
++    TILT_OVER_DEG = 65.0
++
++    TRIM_KI = 0.05          # throttle trim per (m/s of standing rate error) per s
++    TRIM_MAX = 0.08
++
++    def __init__(self, feedback, rec):
++        self.feedback = feedback
++        self.rec = rec
++        self.climb_f = 0.0
++        self.last_thr = 0.0
++        self.trim = 0.0     # slow hover-thrust trim, the pilot's throttle trim:
++                            # first flight hovered at 0.702 against the assumed
++                            # 0.68 and parked 0.64m below target - exactly the
++                            # standing error a P-only cascade leaves for a
++                            # hover-point bias. The trim integrates it away.
++        self.phase = "init"
++        self.fail_reason = None
++
++    # feedback selection ---------------------------------------------------
++    def nav(self):
++        """(ok, n, e, alt_up, vn, ve, climb_up) from the selected source."""
++        if self.feedback == "truth":
++            have, n, e, alt = truth_ned()
++            havep, _alt2, climb = gb.state.pose_alt_climb()
++            _hg, _n2, _e2, _a2, gvel = gb.state.gps_snapshot()
++            return have and havep, n, e, alt, gvel[0], gvel[1], climb
++        have, n, e, alt, vel = gps_ned()
++        return have, n, e, alt, vel[0], vel[1], -vel[2]
++
++    # safety ---------------------------------------------------------------
++    def check_safety(self):
++        _h, _n, _e, alt_truth = truth_ned()
++        if alt_truth > self.CEILING_M:
++            self.fail_reason = "hard ceiling %.0fm exceeded (truth %.1fm)" % (self.CEILING_M, alt_truth)
++        have_att, roll, pitch, _ha, _acc = gb.fc_state.snapshot()
++        if have_att and (abs(roll) > self.TILT_OVER_DEG or abs(pitch) > self.TILT_OVER_DEG):
++            self.fail_reason = "tilt-over roll=%.0f pitch=%.0f" % (roll, pitch)
++        if self.fail_reason:
++            print("[wroom] SAFETY: %s - cutting throttle, disarming" % self.fail_reason, flush=True)
++            gb.control.throttle = 0.0
++            gb.control.roll = gb.control.pitch = gb.control.yaw = 0.0
++            gb.control.armed = False
++            return False
++        return True
++
++    # control laws ---------------------------------------------------------
++    def vertical(self, target_alt, alt, climb, dt):
++        self.climb_f += self.CLIMB_LPF * (climb - self.climb_f)
++        desired = max(-self.MAX_DESCENT, min(self.MAX_CLIMB, self.RATE_KP * (target_alt - alt)))
++        rate_err = desired - self.climb_f
++        thr = gb.HOVER_THRUST + self.trim + self.THR_PER_MPS * rate_err
++        if self.THR_MIN < thr < self.THR_MAX:  # anti-windup: trim only unsaturated
++            self.trim = max(-self.TRIM_MAX, min(self.TRIM_MAX, self.trim + self.TRIM_KI * rate_err * dt))
++        thr = max(self.THR_MIN, min(self.THR_MAX, thr))
++        step = self.THR_SLEW * dt
++        thr = max(self.last_thr - step, min(self.last_thr + step, thr))
++        self.last_thr = thr
++        return thr
++
++    def horizontal(self, tgt_n, tgt_e, n, e, vn, ve, vmax=None):
++        vmax = vmax or self.HVEL_MAX
++        cn = self.POS_KP * (tgt_n - n)
++        ce = self.POS_KP * (tgt_e - e)
++        mag = math.hypot(cn, ce)
++        if mag > vmax:
++            cn, ce = cn * vmax / mag, ce * vmax / mag
++        return self.velocity(cn, ce, vn, ve)
++
++    def velocity(self, cmd_n, cmd_e, vn, ve):
++        """Velocity command -> roll/pitch sticks (body frame via FC yaw)."""
++        tn = self.TILT_PER_MPS * (cmd_n - vn)
++        te = self.TILT_PER_MPS * (cmd_e - ve)
++        mag = math.hypot(tn, te)
++        if mag > self.TILT_MAX:
++            tn, te = tn * self.TILT_MAX / mag, te * self.TILT_MAX / mag
++        yaw = math.radians(gb.fc_state.yaw)
++        fwd = math.cos(yaw) * tn + math.sin(yaw) * te      # tilt toward +body-x
++        right = -math.sin(yaw) * tn + math.cos(yaw) * te   # tilt toward +body-y
++        pitch_stick = self.PITCH_SIGN * fwd / self.STICK_FULL_DEG
++        roll_stick = self.ROLL_SIGN * right / self.STICK_FULL_DEG
++        return (max(-1.0, min(1.0, roll_stick)), max(-1.0, min(1.0, pitch_stick)))
++
++    # one control tick -----------------------------------------------------
++    def tick(self, target_alt, tgt_n=None, tgt_e=None, dt=0.05, sticks=None):
++        ok, n, e, alt, vn, ve, climb = self.nav()
++        if not ok:
++            return False
++        gb.control.throttle = self.vertical(target_alt, alt, climb, dt)
++        if sticks is not None:
++            gb.control.roll, gb.control.pitch = sticks
++        elif tgt_n is not None:
++            gb.control.roll, gb.control.pitch = self.horizontal(tgt_n, tgt_e, n, e, vn, ve)
++        else:
++            gb.control.roll = gb.control.pitch = 0.0
++        self.rec.row(self.phase, n, e, alt, vn, ve, climb)
++        return self.check_safety()
++
++    def fly_until(self, seconds, target_alt, tgt_n=None, tgt_e=None, label=None,
++                  done=None, sticks=None):
++        """Run the pilot loop at 20 Hz until `seconds` pass or done() says so.
++        Returns True unless safety tripped."""
++        if label:
++            self.phase = label
++        t0 = time.time()
++        last = t0
++        last_log = 0.0
++        while time.time() - t0 < seconds:
++            now = time.time()
++            dt = min(0.2, now - last)
++            last = now
++            if not self.tick(target_alt, tgt_n, tgt_e, dt, sticks=sticks):
++                return False
++            if done is not None and done():
++                return True
++            if now - last_log > 2.0:
++                last_log = now
++                ok, n, e, alt, vn, ve, climb = self.nav()
++                print("[wroom] %-10s alt=%5.2f pos=(%6.2f,%6.2f) climb=%5.2f thr=%.3f sticks=(%+.2f,%+.2f)"
++                      % (self.phase, alt, n, e, climb, gb.control.throttle,
++                         gb.control.roll, gb.control.pitch), flush=True)
++            time.sleep(0.05)
++        return True
++
++    # composite maneuvers --------------------------------------------------
++    def takeoff(self, target_alt, timeout=25.0):
++        self.phase = "takeoff"
++        print("[wroom] takeoff to %.1fm (%s feedback)" % (target_alt, self.feedback), flush=True)
++        reached = {"ok": False}
++
++        def arrived():
++            ok, _n, _e, alt, _vn, _ve, _c = self.nav()
++            if ok and abs(alt - target_alt) < 0.6:
++                reached["ok"] = True
++                return True
++            return False
++        if not self.fly_until(timeout, target_alt, tgt_n=0.0, tgt_e=0.0, done=arrived):
++            return False
++        if not reached["ok"]:
++            self.fail_reason = "takeoff never reached %.1fm" % target_alt
++            print("[wroom] FAIL: %s" % self.fail_reason, flush=True)
++            gb.control.throttle = 0.0
++            gb.control.armed = False
++            return False
++        return True
++
++    def descend_and_land(self, tgt_n=0.0, tgt_e=0.0):
++        self.phase = "land"
++        print("[wroom] descending to touchdown", flush=True)
++        down_since = [None]
++
++        def touched():
++            ok, _n, _e, alt, _vn, _ve, climb = self.nav()
++            if ok and alt < 0.35 and abs(climb) < 0.25:
++                if down_since[0] is None:
++                    down_since[0] = time.time()
++                elif time.time() - down_since[0] > 0.8:
++                    return True
++            else:
++                down_since[0] = None
++            return False
++        # target altitude 0.5m below ground: keeps a steady descent command on
++        ok = self.fly_until(40.0, -0.5, tgt_n=tgt_n, tgt_e=tgt_e, done=touched)
++        gb.control.throttle = 0.0
++        gb.control.roll = gb.control.pitch = 0.0
++        time.sleep(0.5)
++        gb.control.armed = False
++        if ok and down_since[0]:
++            print("[wroom] touchdown - disarmed", flush=True)
++        return ok and down_since[0] is not None
++
++
++# --- recording ------------------------------------------------------------
++
++class Recorder(object):
++    COLS = ["t", "phase", "nav_n", "nav_e", "nav_alt", "nav_vn", "nav_ve", "nav_climb",
++            "truth_n", "truth_e", "truth_alt", "fc_roll", "fc_pitch", "fc_yaw",
++            "stick_thr", "stick_roll", "stick_pitch", "stick_yaw"]
++
++    def __init__(self, mode):
++        label = os.environ.get("NINJAPILOT_RUN_LABEL", mode)
++        ts = time.strftime("%Y%m%d_%H%M%S")
++        d = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
++        os.makedirs(d, exist_ok=True)
++        self.path = os.path.join(d, "wroom_%s_%s.csv" % (label, ts))
++        self.f = open(self.path, "w", newline="")
++        self.w = csv.writer(self.f)
++        self.w.writerow(self.COLS)
++        self.t0 = time.time()
++
++    def row(self, phase, n, e, alt, vn, ve, climb):
++        _h, tn, te, talt = truth_ned()
++        _ha, roll, pitch, _hacc, _acc = gb.fc_state.snapshot()
++        self.w.writerow(["%.3f" % (time.time() - self.t0), phase,
++                         "%.3f" % n, "%.3f" % e, "%.3f" % alt,
++                         "%.3f" % vn, "%.3f" % ve, "%.3f" % climb,
++                         "%.3f" % tn, "%.3f" % te, "%.3f" % talt,
++                         "%.2f" % roll, "%.2f" % pitch, "%.2f" % gb.fc_state.yaw,
++                         "%.3f" % gb.control.throttle, "%.3f" % gb.control.roll,
++                         "%.3f" % gb.control.pitch, "%.3f" % gb.control.yaw])
++
++    def close(self):
++        self.f.flush()
++        self.f.close()
++        print("[wroom] track written: %s" % self.path, flush=True)
++
++
++# --- mode entry points ----------------------------------------------------
++
++def _start(mode):
++    feedback = os.environ.get("NINJAPILOT_WROOM_FEEDBACK", "gps")
++    print("[wroom] %s starting (feedback=%s)" % (mode, feedback), flush=True)
++    time.sleep(3.0)  # let config land
++    if not gb.wait_for_attitude_ok():
++        return None
++    rec = Recorder(mode)
++    pilot = Pilot(feedback, rec)
++    gb.control.mode_position = 0   # Stabilized1: Attitude/Attitude/AxisLock/Manual
++    gb.control.throttle = 0.0
++    gb.control.roll = gb.control.pitch = gb.control.yaw = 0.0
++    gb.control.armed = True
++    time.sleep(2.0)
++    return pilot
++
++
++def _finish(pilot, verdict):
++    gb.control.throttle = 0.0
++    gb.control.armed = False
++    pilot.rec.close()
++    print("[wroom] VERDICT: %s" % verdict, flush=True)
++    print("[wroom] run complete", flush=True)
++
++
++def hover_test():
++    pilot = _start("wroom_hover")
++    if pilot is None:
++        return
++    ok = pilot.takeoff(4.0)
++    stats = {"n": 0, "alt_err2": 0.0, "drift_max": 0.0, "alt_min": 99.0, "alt_max": -99.0}
++    if ok:
++        def sample():
++            okn, n, e, alt, _vn, _ve, _c = pilot.nav()
++            if okn:
++                stats["n"] += 1
++                stats["alt_err2"] += (alt - 4.0) ** 2
++                stats["alt_min"] = min(stats["alt_min"], alt)
++                stats["alt_max"] = max(stats["alt_max"], alt)
++                stats["drift_max"] = max(stats["drift_max"], math.hypot(n, e))
++            return False
++        ok = pilot.fly_until(30.0, 4.0, tgt_n=0.0, tgt_e=0.0, label="hold", done=sample)
++    landed = pilot.descend_and_land() if ok else False
++    if stats["n"]:
++        rms = math.sqrt(stats["alt_err2"] / stats["n"])
++        print("[wroom] hold stats: alt rms %.2fm band [%.2f, %.2f], max horiz drift %.2fm"
++              % (rms, stats["alt_min"], stats["alt_max"], stats["drift_max"]), flush=True)
++    _finish(pilot, "PASS - hover held and landed" if (ok and landed)
++            else "FAIL - %s" % (pilot.fail_reason or "landing did not confirm"))
++
++
++def sticks_test():
++    pilot = _start("wroom_sticks")
++    if pilot is None:
++        return
++    ok = pilot.takeoff(3.5)
++    results = []
++    POKES = [("roll", +0.30, 0), ("roll", -0.30, 0), ("pitch", +0.30, 1), ("pitch", -0.30, 1)]
++    if ok:
++        for axis, mag, idx in POKES:
++            peak = {"v": 0.0}
++
++            def watch():
++                _h, r, p, _ha, _a = gb.fc_state.snapshot()
++                v = (r, p)[idx]
++                if abs(v) > abs(peak["v"]):
++                    peak["v"] = v
++                return False
++            sticks = (mag, 0.0) if axis == "roll" else (0.0, mag)
++            ok = pilot.fly_until(1.5, 3.5, label="poke_%s%+.1f" % (axis, mag),
++                                 sticks=sticks, done=watch)
++            expected = mag * Pilot.STICK_FULL_DEG
++            results.append((axis, mag, expected, peak["v"]))
++            print("[wroom] poke %s %+0.2f: expected %+0.1f deg, FC reported peak %+0.1f deg"
++                  % (axis, mag, expected, peak["v"]), flush=True)
++            if not ok:
++                break
++            # recover position before the next poke
++            ok = pilot.fly_until(4.0, 3.5, tgt_n=0.0, tgt_e=0.0, label="recover")
++            if not ok:
++                break
++    landed = pilot.descend_and_land() if ok else False
++    good = all(abs(got) > 0.5 * abs(exp) and (got * exp) > 0 for _a, _m, exp, got in results) if results else False
++    _finish(pilot, "PASS - attitude tracks the sticks" if (ok and landed and good)
++            else "FAIL - %s" % (pilot.fail_reason or "tracking off (see poke lines)"))
++
++
++def rth_test():
++    pilot = _start("wroom_rth")
++    if pilot is None:
++        return
++    RTH_ALT = 8.0
++    OUT_N, OUT_E = 15.0, 0.0
++    ok = pilot.takeoff(4.0)
++    if ok:
++        ok = pilot.fly_until(4.0, 4.0, tgt_n=0.0, tgt_e=0.0, label="settle")
++    if ok:
++        print("[wroom] flying out to (%.0f, %.0f)" % (OUT_N, OUT_E), flush=True)
++        arrived = {"ok": False}
++
++        def out_done():
++            okn, n, e, _alt, _vn, _ve, _c = pilot.nav()
++            if okn and math.hypot(n - OUT_N, e - OUT_E) < 1.5:
++                arrived["ok"] = True
++                return True
++            return False
++        ok = pilot.fly_until(30.0, 4.0, tgt_n=OUT_N, tgt_e=OUT_E, label="flyout", done=out_done)
++        ok = ok and arrived["ok"]
++        if ok and not arrived["ok"]:
++            pilot.fail_reason = "never reached the flyout point"
++    if ok:
++        print("[wroom] RTH engaged: climb to %.0fm, return, land - GPS only" % RTH_ALT, flush=True)
++        ok = pilot.fly_until(12.0, RTH_ALT, tgt_n=OUT_N, tgt_e=OUT_E, label="rth_climb",
++                             done=lambda: pilot.nav()[3] > RTH_ALT - 0.6)
++    home = {"ok": False}
++    if ok:
++        def home_done():
++            okn, n, e, _alt, _vn, _ve, _c = pilot.nav()
++            if okn and math.hypot(n, e) < 1.5:
++                home["ok"] = True
++                return True
++            return False
++        ok = pilot.fly_until(40.0, RTH_ALT, tgt_n=0.0, tgt_e=0.0, label="rth_home", done=home_done)
++        ok = ok and home["ok"]
++    landed = pilot.descend_and_land() if ok else False
++    _h, tn, te, _ta = truth_ned()
++    if landed:
++        print("[wroom] touchdown at truth (%.2f, %.2f) - %.2fm from the pad"
++              % (tn, te, math.hypot(tn, te)), flush=True)
++    _finish(pilot, "PASS - returned home and landed %.2fm from the pad" % math.hypot(tn, te)
++            if (ok and landed) else "FAIL - %s" % (pilot.fail_reason or "did not complete"))
 diff --git a/shared/uavobjectdefinition/settingsgeneration.xml b/shared/uavobjectdefinition/settingsgeneration.xml
 new file mode 100644
 index 000000000..f4a6c33c3

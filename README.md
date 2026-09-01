@@ -161,10 +161,33 @@ blob, streams AttitudeState at 25 Hz, and integrates streamed GyroSensor
 data through the complementary filter (a 20 deg/s roll feed rolls the
 attitude, accel pulls it level again — the filter behaving as on hardware).
 
-Not wired up yet: the Gazebo bridge itself is Revo-flavored (RevoSettings,
-PathFollower missions); flying the twin in Gazebo needs a stabilized-flight
-harness mode that speaks only what this board has. That is the next step,
-not a limitation of the target.
+**Flying it in Gazebo** (`NINJAPILOT_TARGET=wroom`): the bridge grew
+pilot-in-the-loop modes (`wroom_pilot.py`) because this stack has no
+PathFollower -- the FC only stabilizes attitude, so the harness flies it
+the way a human would, sticks over GCSReceiver, guidance reading the GPS
+objects ONLY (the board's real sensor situation). One command per run:
+
+```bash
+ground/gazebo_bridge/run_wroom.sh <label> [hover|sticks|rth]
+```
+
+First-day results (2026-09-01, all GPS-only feedback at 10 Hz):
+
+- `hover` -- takeoff to 4m, 30s hold: altitude rms 0.15m, max horizontal
+  drift 0.29m, clean touchdown. Needed a slow throttle-trim integrator
+  (the X3 hovers at 0.702, not the assumed 0.68 -- a P-only cascade
+  parks 0.64m low on exactly that bias).
+- `sticks` -- scripted pokes: FC attitude tracks commanded angles within
+  ~2 deg, and the sign conventions verified themselves (+roll stick =
+  bank right = drift East).
+- `rth` -- fly out 15m, climb to 8m, return, land: touchdown 0.40m from
+  the pad, first attempt. So yes: THIS stack can fly a GPS-only RTH --
+  with the guidance loop outside the firmware. (Caveat: gz navsat is
+  ublox-grade clean; real GPS noise will widen that number.)
+
+A controlled backflip (Rate-mode parlor trick) is deliberately deferred
+until hover is trusted on the real board; it needs a Rate/Rate/Rate bank
+on a second flight-mode position.
 
 ## Hardware
 

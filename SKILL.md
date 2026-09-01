@@ -160,6 +160,25 @@ without a feeder the attitude sits level and the Attitude alarm complains,
 which is correct. Stdout is block-buffered when redirected — an empty log
 from a killed process is buffering, not silence.
 
+To FLY it in Gazebo (server must already be running; start it with the
+`gz sim -s -r --headless-rendering worlds/quadcopter_ninjapilot.sdf` line
+from run_gazebo_bridge.sh plus `gz sim -g` for the window):
+
+```bash
+cd /path/to/NinjaPilot-15.02.ninja/ground/gazebo_bridge
+./run_wroom.sh <label> hover     # GPS-only hover, 4m / 30s
+./run_wroom.sh <label> sticks    # scripted stick pokes, attitude tracking
+./run_wroom.sh <label> rth       # 15m flyout, GPS-only return-to-home
+```
+
+Each run purges slots, resets the scene, flies, pulls the FC's own
+DebugLog (the twin compiles the Logging module as a documented sim-only
+deviation), writes a pilot track CSV to logs/, and renders the
+planned-vs-flown picture. NINJAPILOT_WROOM_FEEDBACK=truth switches the
+pilot loops to ground-truth feedback; the default is gps because that is
+the question being asked. One UAVTalk client at a time, as always — no
+GCS attached during a bridge flight.
+
 ## Run the GCS against the board
 
 The GCS prefers UDP by default (that is the OSD32MP1 workflow). Override it:
