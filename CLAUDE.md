@@ -2,6 +2,47 @@
 
 Rules and traps for this port. Every entry below cost real bench time to find.
 
+## HARD RULE: flight battery and USB are mutually exclusive
+
+On the Thing Plus the ESC/BEC 5 V line feeds VUSB. Never design, suggest or
+run a procedure that has both connected. Anything needing powered motors
+(RF motor calibration, wizard ESC/output calibration) runs on battery with
+the GCS over WiFi; anything on USB runs with motors unpowered. The GCS
+wizard enforces this by skipping the battery-powered pages whenever its own
+link is USB serial.
+
+## RULE: the serial port belongs to one process, and opening it reboots the board
+
+`/dev/cu.usbserial-210` — one holder at a time; a second opener sees "no
+link" and blames the tool. Every classic open toggles DTR/RTS and resets
+the chip, and for ~2.5 s after boot CPUOverload/Actuator alarms sit
+Critical and block arming. Coordinate before touching the port; values read
+in the first seconds after connect are early-boot state, not steady state.
+
+## The xTaskCreate shim: stack words x4, pinned to core 1
+
+`pios/esp32/pios_esp32.h` converts every shared-module `xTaskCreate()` from
+FreeRTOS stack WORDS to IDF's bytes with an explicit `* 4` — NOT
+`sizeof(StackType_t)`, which is 1 on this Xtensa port and turns the fix
+into a silent no-op — and pins the task to core 1, so flight code and the
+WiFi/lwIP stack (core 0) are separated by silicon. Code that genuinely
+wants core 0, byte-sized stacks, or no pinning calls
+`(xTaskCreatePinnedToCore)(...)` with parentheses to bypass the macro.
+
+## SMP timing: ~4 ms whole-scheduler stalls are characterized — and bisects here LIE
+
+lwIP timer work on core 0 meets flight tasks through the SMP global kernel
+lock: ~2 stalls/s idle, ~4/s with a TCP telemetry client, each ~3.6 ms.
+Tolerated by design (sensor queue + a 5-period attitude timeout), not
+eliminated. If you chase timing on this platform: binary layout and AP
+radio conditions are hidden variables strong enough to flip a bisect
+verdict on EQUIVALENT code — verified-clean and verified-dirty runs of the
+same logic both happened in one session. Re-verify any verdict across
+reboots AND rebuilds, measure via a UDP side-channel so the flight stack
+can be stripped, and remember the GPIO ISR service lands on core 0 no
+matter which core installs it (the driver IPCs the install to the core
+that first configured a pin).
+
 ## RULE: do not modify the NinjaPilot tree in place
 
 This project is deliberately separate. It consumes the NinjaPilot flight code
@@ -113,23 +154,21 @@ It needs `linux/can.h` and `sys/prctl.h` — SocketCAN, Linux-only by design.
 That is why `make gcs` cannot work on macOS (it depends on OPFW_RESOURCE, which
 builds all firmware). See SKILL.md for the way around it.
 
-## Open: HwSettings requests get a NACK
+## SETTLED: the HwSettings NACK was the linker-section object registry
 
-Every other settings object answers a `TYPE_OBJ_REQ` normally;
-`HwSettings` returns `NACK` with an empty payload. A NACK from uavtalk.c means
-`UAVObjGetByID()` returned NULL — the object manager does not have it.
+`UAVObjGetByID()` returned NULL for a compiled, linked, correctly-initialised
+object because the linker-section iteration the object manager relies on is
+not dependable under this toolchain. The flight patch gives the object
+manager an explicit `USE_ESP32` registration array instead, plus NULL guards
+in the Get/Set entry points. If an object ever NACKs again, suspect a
+missing `UAVOBJ_INIT_<name>` define first (see the list in
+`esp-idf/main/CMakeLists.txt`) — an uninitialised object produces exactly
+the same symptom.
 
-Already ruled out, with evidence:
+## Board identity for the GCS is set in pios_board.c, not a module
 
-- object ID matches the GCS's exactly (`0xA65C5CD0` both sides)
-- `hwsettings.c` is compiled, linked, and present in `_uavo_handles`
-- `UAVOBJ_INIT_hwsettings=1` is defined, and `pios_board.c` also calls
-  `HwSettingsInitialize()` explicitly
-- its generated `Initialize()` is structurally identical to
-  `StabilizationSettingsBank1Initialize()`, which works
-- the handle table does not overlap the heap
-  (`__stop__uavo_handles == _heap_start`)
-
-Next step is to instrument the return value of `HwSettingsInitialize()` /
-`UAVObjRegister()` on hardware. Do not write this off as cosmetic — an object
-the GCS cannot read is an object the user cannot configure.
+The Setup Wizard identifies the board through `FirmwareIAPObj`
+(type 0x12 << 8 | rev 0x02 = model 0x1202). The stock FirmwareIAP module is
+bootloader plumbing this target has no use for, so `pios_board.c` populates
+the identity fields directly after object init. Remove that and the wizard
+shows "<Unknown>" and refuses to advance on every transport.

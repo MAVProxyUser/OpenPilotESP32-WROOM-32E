@@ -671,10 +671,46 @@ index 1933be3e8..a1d780856 100644
              prefix = "nano-";
              break;
 diff --git a/ground/openpilotgcs/src/plugins/setupwizard/pages/controllerpage.cpp b/ground/openpilotgcs/src/plugins/setupwizard/pages/controllerpage.cpp
-index 910306889..67269dd41 100644
+index 910306889..2866fe21e 100644
 --- a/ground/openpilotgcs/src/plugins/setupwizard/pages/controllerpage.cpp
 +++ b/ground/openpilotgcs/src/plugins/setupwizard/pages/controllerpage.cpp
-@@ -118,6 +118,9 @@ SetupWizard::CONTROLLER_TYPE ControllerPage::getControllerType()
+@@ -31,6 +31,7 @@
+ 
+ #include <extensionsystem/pluginmanager.h>
+ #include <uavobjectutil/uavobjectutilmanager.h>
++#include "actuatorsettings.h"
+ 
+ ControllerPage::ControllerPage(SetupWizard *wizard, QWidget *parent) :
+     AbstractWizardPage(wizard, parent),
+@@ -85,6 +86,27 @@ bool ControllerPage::isComplete() const
+ bool ControllerPage::validatePage()
+ {
+     getWizard()->setControllerType((SetupWizard::CONTROLLER_TYPE)ui->boardTypeCombo->itemData(ui->boardTypeCombo->currentIndex()).toInt());
++    if (getWizard()->getControllerType() == SetupWizard::CONTROLLER_ESP32) {
++        /* Seed the wizard's actuator endpoints from the live board. The
++         * Thing Plus keeps its motor endpoints in the firmware's RF
++         * calibration; if the output calibration pages run (network
++         * telemetry flow) the user updates these, and if they are skipped
++         * (USB flow) the wizard writes back exactly what the board already
++         * had. Either way nothing calibrated is lost to page defaults. */
++        ExtensionSystem::PluginManager *pm = ExtensionSystem::PluginManager::instance();
++        UAVObjectManager *uavoManager     = pm->getObject<UAVObjectManager>();
++        ActuatorSettings *act = ActuatorSettings::GetInstance(uavoManager);
++        if (act) {
++            ActuatorSettings::DataFields d = act->getData();
++            QList<actuatorChannelSettings> list = getWizard()->getActuatorSettings();
++            for (int i = 0; i < list.count() && i < (int)ActuatorSettings::CHANNELMAX_NUMELEM; i++) {
++                list[i].channelMin     = d.ChannelMin[i];
++                list[i].channelNeutral = d.ChannelNeutral[i];
++                list[i].channelMax     = d.ChannelMax[i];
++            }
++            getWizard()->setActuatorSettings(list);
++        }
++    }
+     if (getWizard()->getControllerType() == SetupWizard::CONTROLLER_CC || getWizard()->getControllerType() == SetupWizard::CONTROLLER_CC3D) {
+         getWizard()->setGpsType(SetupWizard::GPS_DISABLED);
+     }
+@@ -118,6 +140,9 @@ SetupWizard::CONTROLLER_TYPE ControllerPage::getControllerType()
      case 0x1101:
          return SetupWizard::CONTROLLER_REALPOSIX;
  
@@ -684,13 +720,27 @@ index 910306889..67269dd41 100644
      case 0x0904:
          return SetupWizard::CONTROLLER_DISCOVERYF4;
  
-@@ -141,6 +144,7 @@ void ControllerPage::setupBoardTypes()
+@@ -141,6 +166,7 @@ void ControllerPage::setupBoardTypes()
      ui->boardTypeCombo->addItem(tr("OpenPilot CopterControl 3D"), SetupWizard::CONTROLLER_CC3D);
      ui->boardTypeCombo->addItem(tr("OpenPilot Revolution"), SetupWizard::CONTROLLER_REVO);
      ui->boardTypeCombo->addItem(tr("NinjaPilot RealPosix (OSD32MP1)"), SetupWizard::CONTROLLER_REALPOSIX);
 +    ui->boardTypeCombo->addItem(tr("NinjaPilot ESP32 Thing Plus"), SetupWizard::CONTROLLER_ESP32);
      ui->boardTypeCombo->addItem(tr("OpenPilot OPLink Radio Modem"), SetupWizard::CONTROLLER_OPLINK);
      ui->boardTypeCombo->addItem(tr("OpenPilot DiscoveryF4"), SetupWizard::CONTROLLER_DISCOVERYF4);
+ }
+diff --git a/ground/openpilotgcs/src/plugins/setupwizard/pages/esccalibrationpage.cpp b/ground/openpilotgcs/src/plugins/setupwizard/pages/esccalibrationpage.cpp
+index 720103151..43790bdb9 100644
+--- a/ground/openpilotgcs/src/plugins/setupwizard/pages/esccalibrationpage.cpp
++++ b/ground/openpilotgcs/src/plugins/setupwizard/pages/esccalibrationpage.cpp
+@@ -184,5 +184,9 @@ void EscCalibrationPage::securityCheckBoxesToggled()
+ 
+ void EscCalibrationPage::initializePage()
+ {
++    if (getWizard()->getControllerType() == SetupWizard::CONTROLLER_ESP32 &&
++        !ui->label->text().contains(tr("THING PLUS POWER NOTE"))) {
++        ui->label->setText(tr("<p><b><font color='red'>THING PLUS POWER NOTE:</font> remove USB from the flight controller before attaching the flight battery. The ESC/BEC 5V rail is tied to VUSB, so the board must only ever see one power source at a time. Keep the GCS connected over WiFi telemetry for this procedure.</b></p>") + ui->label->text());
++    }
+     resetAllSecurityCheckboxes();
  }
 diff --git a/ground/openpilotgcs/src/plugins/setupwizard/pages/inputpage.cpp b/ground/openpilotgcs/src/plugins/setupwizard/pages/inputpage.cpp
 index e1b443706..133719c72 100644
@@ -747,6 +797,21 @@ index 7b0221527..a06bb14f6 100644
  
  private:
      bool restartNeeded(VehicleConfigurationSource::INPUT_TYPE selectedType);
+diff --git a/ground/openpilotgcs/src/plugins/setupwizard/pages/outputcalibrationpage.cpp b/ground/openpilotgcs/src/plugins/setupwizard/pages/outputcalibrationpage.cpp
+index 7b90c8d0c..46839b27e 100644
+--- a/ground/openpilotgcs/src/plugins/setupwizard/pages/outputcalibrationpage.cpp
++++ b/ground/openpilotgcs/src/plugins/setupwizard/pages/outputcalibrationpage.cpp
+@@ -456,6 +456,10 @@ void OutputCalibrationPage::setWizardPage()
+ 
+ void OutputCalibrationPage::initializePage()
+ {
++    if (getWizard()->getControllerType() == SetupWizard::CONTROLLER_ESP32 &&
++        !ui->label_2->text().contains(tr("THING PLUS POWER NOTE"))) {
++        ui->label_2->setText(tr("<p><b><font color='red'>THING PLUS POWER NOTE:</font> remove USB from the flight controller before attaching the flight battery. The ESC/BEC 5V rail is tied to VUSB, so the board must only ever see one power source at a time. Keep the GCS connected over WiFi telemetry for this procedure.</b></p>") + ui->label_2->text());
++    }
+     if (m_vehicleScene) {
+         setupVehicle();
+         startWizard();
 diff --git a/ground/openpilotgcs/src/plugins/setupwizard/resources/connection-diagrams.svg b/ground/openpilotgcs/src/plugins/setupwizard/resources/connection-diagrams.svg
 index eef9bb92b..d06e92899 100644
 --- a/ground/openpilotgcs/src/plugins/setupwizard/resources/connection-diagrams.svg
@@ -900,7 +965,7 @@ index eef9bb92b..d06e92899 100644
 +</g>
  </svg>
 diff --git a/ground/openpilotgcs/src/plugins/setupwizard/setupwizard.cpp b/ground/openpilotgcs/src/plugins/setupwizard/setupwizard.cpp
-index e9b0a0e4d..39676ca7a 100644
+index e9b0a0e4d..a83685751 100644
 --- a/ground/openpilotgcs/src/plugins/setupwizard/setupwizard.cpp
 +++ b/ground/openpilotgcs/src/plugins/setupwizard/setupwizard.cpp
 @@ -98,6 +98,7 @@ int SetupWizard::nextId() const
@@ -921,27 +986,32 @@ index e9b0a0e4d..39676ca7a 100644
              saveHardwareSettings();
              reboot();
          }
-@@ -181,6 +183,19 @@ int SetupWizard::nextId() const
+@@ -181,6 +183,24 @@ int SetupWizard::nextId() const
      }
  
      case PAGE_BIAS_CALIBRATION:
-+        /* ESP32 Thing Plus: both the ESC calibration page and the output
-+         * calibration page are skipped, deliberately. On this board the
-+         * ESC/BEC 5V line feeds VUSB, so any procedure that wants the
-+         * flight battery connected while USB is attached can destroy the
-+         * board -- and the stock ESC calibration flow is exactly that.
-+         * Motor endpoints come from the firmware's RF calibration instead
-+         * (the transmitter switch-wiggle procedure), which runs on battery
-+         * power alone with no ground station attached. Overwriting its
-+         * stored values from here would undo a calibration the wizard
-+         * cannot safely repeat. */
++        /* ESP32 Thing Plus: the ESC/BEC 5V line feeds VUSB, so the flight
++         * battery and USB must never be connected at the same time. When
++         * the calibration pages are skipped, the firmware's RF calibration
++         * (transmitter switch-wiggle) keeps owning the motor endpoints. */
 +        if (getControllerType() == CONTROLLER_ESP32) {
-+            return PAGE_AIRFRAME_INITIAL_TUNING;
++            /* Amended: skip only when the GCS link itself proves USB is
++             * attached. Over network telemetry (WiFi) the board runs on
++             * the flight battery with no USB required, so the stock
++             * battery-powered procedures are fine -- the pages carry an
++             * explicit unplug-USB checkpoint for the case where USB was
++             * left in just for power. */
++            QString connName = Core::ICore::instance()->connectionManager()->getCurrentDevice().getConName();
++            bool usbAttached = connName.startsWith("USB:", Qt::CaseInsensitive) ||
++                               connName.startsWith("Serial:", Qt::CaseInsensitive);
++            if (usbAttached) {
++                return PAGE_AIRFRAME_INITIAL_TUNING;
++            }
 +        }
          if (getVehicleType() == VEHICLE_MULTI) {
              return PAGE_ESC_CALIBRATION;
          } else {
-@@ -218,6 +233,7 @@ int SetupWizard::nextId() const
+@@ -218,6 +238,7 @@ int SetupWizard::nextId() const
          case CONTROLLER_CC3D:
          case CONTROLLER_REVO:
          case CONTROLLER_REALPOSIX:
@@ -949,7 +1019,7 @@ index e9b0a0e4d..39676ca7a 100644
          case CONTROLLER_NANO:
          case CONTROLLER_DISCOVERYF4:
              switch (getVehicleType()) {
-@@ -260,6 +276,9 @@ QString SetupWizard::getSummaryText()
+@@ -260,6 +281,9 @@ QString SetupWizard::getSummaryText()
      case CONTROLLER_REALPOSIX:
          summary.append(tr("NinjaPilot RealPosix (OSD32MP1)"));
          break;
@@ -960,7 +1030,7 @@ index e9b0a0e4d..39676ca7a 100644
          summary.append(tr("OpenPilot Nano"));
          break;
 diff --git a/ground/openpilotgcs/src/plugins/setupwizard/vehicleconfigurationhelper.cpp b/ground/openpilotgcs/src/plugins/setupwizard/vehicleconfigurationhelper.cpp
-index f10c62ff2..7254b0cb4 100644
+index f10c62ff2..6ce01b74b 100644
 --- a/ground/openpilotgcs/src/plugins/setupwizard/vehicleconfigurationhelper.cpp
 +++ b/ground/openpilotgcs/src/plugins/setupwizard/vehicleconfigurationhelper.cpp
 @@ -178,6 +178,12 @@ void VehicleConfigurationHelper::applyHardwareConfiguration()
@@ -976,7 +1046,7 @@ index f10c62ff2..7254b0cb4 100644
      case VehicleConfigurationSource::CONTROLLER_REVO:
      case VehicleConfigurationSource::CONTROLLER_REALPOSIX:
      case VehicleConfigurationSource::CONTROLLER_NANO:
-@@ -423,13 +429,32 @@ void VehicleConfigurationHelper::applyActuatorConfiguration()
+@@ -423,15 +429,30 @@ void VehicleConfigurationHelper::applyActuatorConfiguration()
      {
          ActuatorSettings::DataFields data = actSettings->getData();
  
@@ -986,22 +1056,15 @@ index f10c62ff2..7254b0cb4 100644
          for (quint16 i = 0; i < ActuatorSettings::CHANNELMAX_NUMELEM; i++) {
              data.ChannelType[i]    = ActuatorSettings::CHANNELTYPE_PWM;
              data.ChannelAddr[i]    = i;
--            data.ChannelMin[i]     = actuatorSettings[i].channelMin;
--            data.ChannelNeutral[i] = actuatorSettings[i].channelNeutral;
--            data.ChannelMax[i]     = actuatorSettings[i].channelMax;
-+            /* On the ESP32 Thing Plus the wizard never ran the output
-+             * calibration pages (see the PAGE_BIAS_CALIBRATION comment in
-+             * setupwizard.cpp), so the wizard-side endpoint values are
-+             * untouched defaults. The real endpoints come from the
-+             * firmware's RF calibration and are already on the board --
-+             * leave them alone. */
-+            if (!esp32) {
-+                data.ChannelMin[i]     = actuatorSettings[i].channelMin;
-+                data.ChannelNeutral[i] = actuatorSettings[i].channelNeutral;
-+                data.ChannelMax[i]     = actuatorSettings[i].channelMax;
-+            }
-+        }
-+
++            /* On the ESP32 Thing Plus these were seeded from the live
++             * board when the controller was selected (controllerpage.cpp),
++             * so writing them back is lossless whether or not the output
++             * calibration pages ran. */
+             data.ChannelMin[i]     = actuatorSettings[i].channelMin;
+             data.ChannelNeutral[i] = actuatorSettings[i].channelNeutral;
+             data.ChannelMax[i]     = actuatorSettings[i].channelMax;
+         }
+ 
 +        if (esp32 && (bankMode == ActuatorSettings::BANKMODE_ONESHOT125 ||
 +                      bankMode == ActuatorSettings::BANKMODE_PWMSYNC)) {
 +            /* The MCPWM output driver speaks plain PWM only; OneShot and
@@ -1009,10 +1072,12 @@ index f10c62ff2..7254b0cb4 100644
 +             * produces. Fall back to the fast PWM rate. */
 +            bankMode     = ActuatorSettings::BANKMODE_PWM;
 +            escFrequence = RAPID_ESC_FREQUENCY;
-         }
- 
++        }
++
          data.MotorsSpinWhileArmed = ActuatorSettings::MOTORSSPINWHILEARMED_FALSE;
-@@ -841,7 +866,14 @@ void VehicleConfigurationHelper::applyManualControlDefaults()
+ 
+         for (quint16 i = 0; i < ActuatorSettings::BANKUPDATEFREQ_NUMELEM; i++) {
+@@ -841,7 +862,14 @@ void VehicleConfigurationHelper::applyManualControlDefaults()
  
      ManualControlSettings::ChannelGroupsOptions channelType = ManualControlSettings::CHANNELGROUPS_PWM;
  

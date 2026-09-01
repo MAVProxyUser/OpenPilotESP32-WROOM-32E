@@ -90,6 +90,43 @@ ser.rts = False
 
 `uavtalk_client.py`'s `SerialTransport` already does this.
 
+## WiFi telemetry
+
+Provision credentials offline (board unplugged from everything else; this
+uses esptool through the serial port and reboots the chip):
+
+```bash
+python3 tools/wifi_setup.py set --ssid YourNetwork        # prompts for the password
+python3 tools/wifi_setup.py check                          # waits for the discovery beacon
+python3 tools/wifi_setup.py erase                          # before flying
+```
+
+On boot with stored credentials the board joins the network, moves UAVTalk
+to a TCP server on port 9000, and broadcasts `NINJAPILOT <ip> 9000` on UDP
+:9999 every 2 s until a client connects. UART0 goes quiet — one telemetry
+port at a time. Passwords with shell-special characters: let the getpass
+prompt take them; quoting on the command line has already stored a literal
+backslash once.
+
+## RC and motor bring-up tools
+
+All of these speak UAVTalk over serial or TCP and hold the port while
+running (see the port rule in CLAUDE.md):
+
+```bash
+python3 tools/rc_monitor.py        # live channels, arming verdicts, alarm edges
+python3 tools/rc_check.py --apply  # per-axis direction check, writes reversals
+python3 tools/rc_calibrate.py      # endpoints + throttle neutral (min + 5%)
+python3 tools/motor_watch.py       # commanded vs actual PWM while you arm and stick
+python3 tools/setup_wizard.py      # orientation / level / USB-free config steps
+```
+
+RF motor calibration needs no computer at all: wiggle the calibration
+switch (full travel, three times) with throttle at rest, then follow the
+LED blink counts — one blink per motor number, move the stick until that
+motor just spins, center the switch to capture. Values save to NVS. Done
+state is a repeating double pulse.
+
 ## Run the GCS against the board
 
 The GCS prefers UDP by default (that is the OSD32MP1 workflow). Override it:
@@ -100,6 +137,14 @@ NINJAPILOT_GCS_AUTOMATION=1 NINJAPILOT_GCS_PREFER="Serial: cu.usbserial-210" DYL
 
 Success looks like `Serial telemetry running at "57600"`, no `failed CRC check`
 lines, and NO LINK clearing in the System Health panel.
+
+Over WiFi instead: configure the IP connection (TCP, the board's IP, port
+9000) in Options -> IP connections, pick `TCP: <ip>` in the Connections
+dropdown, Connect. The Setup Wizard (Tools -> Vehicle Setup Wizard) detects
+the board and adapts: input locked to the Spektrum satellite, Thing Plus
+artwork in the connection diagram, and the battery-powered ESC/output
+calibration pages offered only on a network link (with an unplug-USB
+checkpoint), never over USB serial.
 
 Drive it headlessly with `ground/pyuavtalk/gcs_client.py` (JSON on port 17654):
 `ping`, `workspaces`, `find`, `get`, `do`, `menu`.
