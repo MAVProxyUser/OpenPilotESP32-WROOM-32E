@@ -1294,7 +1294,7 @@ index 606271360..df68132a5 100644
         id="quad-p-frame"
         transform="matrix(1,0,0,-1,0,2768.49)"><g
 diff --git a/ground/openpilotgcs/src/plugins/setupwizard/setupwizard.cpp b/ground/openpilotgcs/src/plugins/setupwizard/setupwizard.cpp
-index e9b0a0e4d..a83685751 100644
+index e9b0a0e4d..f9e8f57fa 100644
 --- a/ground/openpilotgcs/src/plugins/setupwizard/setupwizard.cpp
 +++ b/ground/openpilotgcs/src/plugins/setupwizard/setupwizard.cpp
 @@ -98,6 +98,7 @@ int SetupWizard::nextId() const
@@ -1315,7 +1315,7 @@ index e9b0a0e4d..a83685751 100644
              saveHardwareSettings();
              reboot();
          }
-@@ -181,6 +183,24 @@ int SetupWizard::nextId() const
+@@ -181,6 +183,29 @@ int SetupWizard::nextId() const
      }
  
      case PAGE_BIAS_CALIBRATION:
@@ -1324,23 +1324,28 @@ index e9b0a0e4d..a83685751 100644
 +         * the calibration pages are skipped, the firmware's RF calibration
 +         * (transmitter switch-wiggle) keeps owning the motor endpoints. */
 +        if (getControllerType() == CONTROLLER_ESP32) {
-+            /* Amended: skip only when the GCS link itself proves USB is
-+             * attached. Over network telemetry (WiFi) the board runs on
-+             * the flight battery with no USB required, so the stock
-+             * battery-powered procedures are fine -- the pages carry an
-+             * explicit unplug-USB checkpoint for the case where USB was
-+             * left in just for power. */
 +            QString connName = Core::ICore::instance()->connectionManager()->getCurrentDevice().getConName();
 +            bool usbAttached = connName.startsWith("USB:", Qt::CaseInsensitive) ||
 +                               connName.startsWith("Serial:", Qt::CaseInsensitive);
 +            if (usbAttached) {
 +                return PAGE_AIRFRAME_INITIAL_TUNING;
 +            }
++            /* Network link: output calibration (sliders against a running
++             * board) is fine on battery power. ESC RANGE calibration is
++             * not offered at all -- it needs the controller alive and
++             * holding max throttle BEFORE the ESCs first see power, and
++             * on this single-rail board the controller and the ESCs power
++             * up together (the BEC feeds VUSB). The stock page's flow
++             * would demand exactly the battery-plus-USB state this board
++             * cannot survive. True range calibration is the BOARD_ESC_CAL
++             * boot mode (see the port's README); idle points come from
++             * the RF switch-wiggle calibration. */
++            return PAGE_OUTPUT_CALIBRATION;
 +        }
          if (getVehicleType() == VEHICLE_MULTI) {
              return PAGE_ESC_CALIBRATION;
          } else {
-@@ -218,6 +238,7 @@ int SetupWizard::nextId() const
+@@ -218,6 +243,7 @@ int SetupWizard::nextId() const
          case CONTROLLER_CC3D:
          case CONTROLLER_REVO:
          case CONTROLLER_REALPOSIX:
@@ -1348,7 +1353,7 @@ index e9b0a0e4d..a83685751 100644
          case CONTROLLER_NANO:
          case CONTROLLER_DISCOVERYF4:
              switch (getVehicleType()) {
-@@ -260,6 +281,9 @@ QString SetupWizard::getSummaryText()
+@@ -260,6 +286,9 @@ QString SetupWizard::getSummaryText()
      case CONTROLLER_REALPOSIX:
          summary.append(tr("NinjaPilot RealPosix (OSD32MP1)"));
          break;
