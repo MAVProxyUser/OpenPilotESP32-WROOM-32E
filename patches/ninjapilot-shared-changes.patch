@@ -940,6 +940,90 @@ index 1a68bc29f..c58bb5f9b 100644
                      QString devName = m_availableDevList->itemData(i, Qt::ToolTipRole).toString();
                      foreach(DevListItem d, m_devList) {
                          if (d.getConName() == devName) {
+diff --git a/ground/openpilotgcs/src/plugins/logging/loggingplugin.cpp b/ground/openpilotgcs/src/plugins/logging/loggingplugin.cpp
+index 13856a92a..c893c209e 100644
+--- a/ground/openpilotgcs/src/plugins/logging/loggingplugin.cpp
++++ b/ground/openpilotgcs/src/plugins/logging/loggingplugin.cpp
+@@ -34,6 +34,9 @@
+ #include <QThread>
+ #include <QStringList>
+ #include <QDir>
++#include "uavtalk/telemetrymanager.h"
++#include <coreplugin/icore.h>
++#include <coreplugin/connectionmanager.h>
+ #include <QFileDialog>
+ #include <QList>
+ #include <QErrorMessage>
+@@ -439,6 +442,52 @@ void LoggingPlugin::replayStarted()
+ void LoggingPlugin::extensionsInitialized()
+ {
+     addAutoReleasedObject(logConnection);
++
++    /* Log every session without being asked. The first real flight of
++     * the ESP32 board ended in an unexplained tumble with no record of
++     * it -- an anomaly is only diagnosable if the tape was already
++     * rolling. Files land in ~/NinjaPilot-logs, timestamped, one per
++     * telemetry session; replay connections are excluded. */
++    ExtensionSystem::PluginManager *pm = ExtensionSystem::PluginManager::instance();
++    TelemetryManager *tm = pm->getObject<TelemetryManager>();
++    qDebug() << "LoggingPlugin: auto-log hookup, TelemetryManager =" << tm;
++    if (tm) {
++        bool a = connect(tm, SIGNAL(connected()), this, SLOT(autoStartLogging()));
++        bool b = connect(tm, SIGNAL(disconnected()), this, SLOT(autoStopLogging()));
++        qDebug() << "LoggingPlugin: auto-log connects" << a << b;
++    }
++}
++
++void LoggingPlugin::autoStartLogging()
++{
++    qDebug() << "LoggingPlugin: autoStartLogging, state =" << state;
++    if (state != IDLE) {
++        return;
++    }
++    QString connName = Core::ICore::instance()->connectionManager()->getCurrentDevice().getConName();
++    if (connName.startsWith("Logfile", Qt::CaseInsensitive)) {
++        return; // replaying a log; do not re-log it
++    }
++    QDir dir(QDir::homePath() + "/NinjaPilot-logs");
++    if (!dir.exists()) {
++        dir.mkpath(".");
++    }
++    QString fileName = dir.filePath(
++        QString("NP-%1.opl").arg(QDateTime::currentDateTime().toString("yyyy-MM-dd_hh-mm-ss")));
++    startLogging(fileName);
++    if (cmd) {
++        cmd->action()->setText(tr("Stop logging"));
++    }
++}
++
++void LoggingPlugin::autoStopLogging()
++{
++    if (state == LOGGING) {
++        stopLogging();
++        if (cmd) {
++            cmd->action()->setText(tr("Start logging..."));
++        }
++    }
+ }
+ 
+ void LoggingPlugin::shutdown()
+diff --git a/ground/openpilotgcs/src/plugins/logging/loggingplugin.h b/ground/openpilotgcs/src/plugins/logging/loggingplugin.h
+index 7c2ed7406..779ba8e0e 100644
+--- a/ground/openpilotgcs/src/plugins/logging/loggingplugin.h
++++ b/ground/openpilotgcs/src/plugins/logging/loggingplugin.h
+@@ -128,6 +128,12 @@ public:
+     bool initialize(const QStringList & arguments, QString *errorString);
+     void shutdown();
+ 
++private slots:
++    void autoStartLogging();
++    void autoStopLogging();
++
++public:
++
+     LoggingConnection *getLogConnection()
+     {
+         return logConnection;
 diff --git a/ground/openpilotgcs/src/plugins/serialconnection/serialplugin.cpp b/ground/openpilotgcs/src/plugins/serialconnection/serialplugin.cpp
 index f5aee9206..544412934 100644
 --- a/ground/openpilotgcs/src/plugins/serialconnection/serialplugin.cpp
