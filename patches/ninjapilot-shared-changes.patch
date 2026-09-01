@@ -890,7 +890,7 @@ index e67e684e4..16b62103e 100644
      uint8_t rxbyte = rxbuffer[(*position)++];
  
 diff --git a/ground/gazebo_bridge/gazebo_bridge.py b/ground/gazebo_bridge/gazebo_bridge.py
-index e965b652a..05e8595b0 100644
+index e965b652a..5fe13c228 100644
 --- a/ground/gazebo_bridge/gazebo_bridge.py
 +++ b/ground/gazebo_bridge/gazebo_bridge.py
 @@ -66,6 +66,38 @@ def print(*args, **kwargs):  # noqa: A001 - deliberate module-wide shadow
@@ -1043,7 +1043,7 @@ index e965b652a..05e8595b0 100644
          }
          send_reliable("StabilizationSettings", bov.resolve_enum_values(db["StabilizationSettings"], stab_settings))
          time.sleep(0.2)
-@@ -4222,17 +4278,51 @@ def uavtalk_thread():
+@@ -4222,17 +4278,52 @@ def uavtalk_thread():
          send_reliable("StabilizationSettingsBank1", bov.resolve_enum_values(db["StabilizationSettingsBank1"], stab_bank))
          send_reliable("StabilizationBank", bov.resolve_enum_values(db["StabilizationBank"], stab_bank))
          time.sleep(0.2)
@@ -1096,12 +1096,13 @@ index e965b652a..05e8595b0 100644
 +                          "wroom_sticks": wroom_pilot.sticks_test,
 +                          "wroom_rth": wroom_pilot.rth_test,
 +                          "wroom_flip": wroom_pilot.flip_test,
-+                          "wroom_oflip": wroom_pilot.onboard_flip_test})
++                          "wroom_oflip": wroom_pilot.onboard_flip_test,
++                          "wroom_creep": wroom_pilot.creep_test})
 +        target = modes.get(TEST_MODE, run_test_sequence)
  
          def run_with_fc_logging():
              # Runs in its own thread while client.run() keeps pumping packets
-@@ -4244,7 +4334,16 @@ def uavtalk_thread():
+@@ -4244,7 +4335,16 @@ def uavtalk_thread():
                                   else (FC_LOG_OBJECTS_MISSION + (
                                       FC_LOG_OBJECTS_DEEP
                                       if os.environ.get("NINJAPILOT_DEEP_LOG") == "1" else [])
@@ -1119,7 +1120,7 @@ index e965b652a..05e8595b0 100644
                  time.sleep(1.0)  # let metadata writes land before arming
              target()
              if TEST_MODE != "pull_logs":
-@@ -4312,6 +4411,8 @@ def uavtalk_thread():
+@@ -4312,6 +4412,8 @@ def uavtalk_thread():
              _last_log_status[0] = decoded
          elif objdef.name == "RelayTuning":
              _last_relay[0] = decoded
@@ -1128,7 +1129,7 @@ index e965b652a..05e8595b0 100644
          elif objdef.name == "StabilizationSettingsBank1":
              _last_bank1[0] = decoded
          elif objdef.name == "DebugLogEntry":
-@@ -4427,7 +4528,7 @@ def uavtalk_thread():
+@@ -4427,7 +4529,7 @@ def uavtalk_thread():
          while True:
              if configured["done"] and client.connected:
                  if control.armed != last_arm_state["armed"]:
@@ -1137,7 +1138,7 @@ index e965b652a..05e8595b0 100644
                      # The arming toggle re-sends the WHOLE FlightModeSettings
                      # (UAVTalk writes are whole-object) - without honoring
                      # this override it silently stomps any custom switch
-@@ -4640,12 +4741,16 @@ _accel_send_count = [0, 0.0]  # [total sends, last debug print time]
+@@ -4640,12 +4742,16 @@ _accel_send_count = [0, 0.0]  # [total sends, last debug print time]
  # send_config()'s wait_for_mag/HomeLocation.Be step already blocks briefly
  # at startup for the same reason.
  def publish_baro(client):
@@ -1154,7 +1155,7 @@ index e965b652a..05e8595b0 100644
      have_mag, mag_body = state.mag_snapshot()
      if have_mag:
          client.send_object("MagSensor", {"x": mag_body[0], "y": mag_body[1], "z": mag_body[2], "temperature": 25.0})
-@@ -4737,6 +4842,13 @@ gz_motor_pub = None
+@@ -4737,8 +4843,34 @@ gz_motor_pub = None
  # lands on the wrong physical motor and fights itself. Matching each mixer
  # motor to the rotor that's actually in its assumed slot gives a complete,
  # unambiguous remap: M1->rotor_2, M2->rotor_0, M3->rotor_3, M4->rotor_1.
@@ -1167,7 +1168,40 @@ index e965b652a..05e8595b0 100644
 +# sim and on the real board alike.
  CHANNEL_TO_ROTOR = [2, 0, 3, 1]
  
++# NINJAPILOT_MOTOR_EFF="1.0,0.9,1.0,1.0": per-CHANNEL thrust efficiency,
++# for reproducing real-airframe asymmetries in the sim. The sim's default
++# motors are mathematically identical - which is precisely why the sim
++# never reproduced the 2026-09-01 forward-flip: there was no weak corner
++# to lean on. Efficiency scales THRUST (omega scales by sqrt).
++MOTOR_EFF = [float(x) for x in os.environ.get("NINJAPILOT_MOTOR_EFF", "1,1,1,1").split(",")]
++# NINJAPILOT_MOTOR_BOOST: omega multiplier (capped at max) - emulates a
++# punchier airframe. The X3 hovers at 68% PWM (TWR 1.47); a 4-inch quad
++# hovers around 20-30% - a regime the stock model physically cannot reach.
++MOTOR_BOOST = float(os.environ.get("NINJAPILOT_MOTOR_BOOST", "1.0"))
++# NINJAPILOT_MOTOR_FLOOR="1168,1161,1168,1166": per-channel PWM floor,
++# emulating raised ActuatorSettings neutrals (motor never drops below its
++# spool point while armed) without touching the firmware's settings.
++MOTOR_FLOOR = [float(x) for x in os.environ.get("NINJAPILOT_MOTOR_FLOOR", "1000,1000,1000,1000").split(",")]
++# NINJAPILOT_MOTOR_DEADBAND="0,120,0,0": per-channel us of ESC deadband -
++# the motor produces nothing until PWM exceeds 1000+deadband, the classic
++# uncalibrated-ESC asymmetry that by-ear neutral tuning hides.
++MOTOR_DEADBAND = [float(x) for x in os.environ.get("NINJAPILOT_MOTOR_DEADBAND", "0,0,0,0").split(",")]
++
  
+ def publish_motor_speeds(channels):
+     if gz_motor_pub is None:
+@@ -4758,8 +4890,9 @@ def publish_motor_speeds(channels):
+     # mixer's linear addition actually assumes.
+     speeds = [0.0, 0.0, 0.0, 0.0]
+     for ch_idx, rotor_idx in enumerate(CHANNEL_TO_ROTOR):
+-        frac = max(0.0, min(1.0, (channels[ch_idx] - 1000) / 1000.0))
+-        speeds[rotor_idx] = math.sqrt(frac) * MOTOR_MAX_RAD_S
++        pwm = max(channels[ch_idx], MOTOR_FLOOR[ch_idx])
++        frac = max(0.0, min(1.0, (pwm - 1000.0 - MOTOR_DEADBAND[ch_idx]) / 1000.0))
++        speeds[rotor_idx] = min(1.0, math.sqrt(frac * MOTOR_EFF[ch_idx]) * MOTOR_BOOST) * MOTOR_MAX_RAD_S
+     msg = Actuators()
+     msg.velocity.extend(speeds)
+     gz_motor_pub.publish(msg)
 diff --git a/ground/gazebo_bridge/run_wroom.sh b/ground/gazebo_bridge/run_wroom.sh
 index b7a3a6295..dada6a668 100755
 --- a/ground/gazebo_bridge/run_wroom.sh
@@ -1394,7 +1428,7 @@ index f1906f04b..30b7b9776 100755
          print("[chase] image subscribe failed", flush=True)
          sys.exit(1)
 diff --git a/ground/gazebo_bridge/wroom_pilot.py b/ground/gazebo_bridge/wroom_pilot.py
-index 13445c3f1..07587cbc6 100644
+index 13445c3f1..2b027c688 100644
 --- a/ground/gazebo_bridge/wroom_pilot.py
 +++ b/ground/gazebo_bridge/wroom_pilot.py
 @@ -63,6 +63,19 @@ def truth_ned():
@@ -1525,7 +1559,7 @@ index 13445c3f1..07587cbc6 100644
                           "%.3f" % gb.control.throttle, "%.3f" % gb.control.roll,
                           "%.3f" % gb.control.pitch, "%.3f" % gb.control.yaw])
  
-@@ -438,3 +484,372 @@ def rth_test():
+@@ -438,3 +484,409 @@ def rth_test():
                % (tn, te, math.hypot(tn, te)), flush=True)
      _finish(pilot, "PASS - returned home and landed %.2fm from the pad" % math.hypot(tn, te)
              if (ok and landed) else "FAIL - %s" % (pilot.fail_reason or "did not complete"))
@@ -1898,6 +1932,43 @@ index 13445c3f1..07587cbc6 100644
 +    _finish(pilot, "PASS - %d/%d ONBOARD backflips completed, landed" % (n_ok, len(results))
 +            if (landed and n_ok == len(results) and n_ok == n_flips)
 +            else "FAIL - %d/%d onboard flips" % (n_ok, len(results)))
++
++
++def creep_test():
++    """Replicate the 2026-09-01 real-flight profile: arm, then CREEP the
++    collective to ~8% over ten seconds with sticks dead neutral, exactly
++    the working-up-to-hover regime the crash lived in. With ideal motors
++    the sim should sit level; with NINJAPILOT_MOTOR_EFF simulating the
++    real quad's weak corner it should reproduce the lean-and-tip."""
++    pilot = _start("wroom_creep")
++    if pilot is None:
++        return
++    pilot.tilt_check = False
++    t0 = time.time()
++    tipped = [False]
++
++    def watch():
++        troll, tpitch, _ty = truth_rpy()
++        if abs(troll) > 30.0 or abs(tpitch) > 30.0:
++            tipped[0] = True
++            return True
++        return False
++
++    def creep_thr():
++        # ramp to just past light-on-legs: the regime that matters is
++        # thrust ~ weight, not any particular stick percentage - the
++        # first version crept to 8.5% and proved only that a quad
++        # pressed into the ground by 60% of its weight cannot tip
++        cap = float(os.environ.get("NINJAPILOT_CREEP_MAX", "0.74"))
++        return min(cap, cap * (time.time() - t0) / 12.0)
++    pilot.raw(16.0, creep_thr, 0.0, 0.0, "creep", until=watch)
++    troll, tpitch, _ty = truth_rpy()
++    gb.control.throttle = 0.0
++    gb.control.armed = False
++    pilot.rec.close()
++    print("[wroom] VERDICT: %s - final truth attitude roll %.1f pitch %.1f"
++          % ("TIPPED OVER" if tipped[0] else "stayed level", troll, tpitch), flush=True)
++    print("[wroom] run complete", flush=True)
 diff --git a/ground/openpilotgcs/src/libs/utils/logfile.h b/ground/openpilotgcs/src/libs/utils/logfile.h
 index 7fbf676bc..c51c168f7 100644
 --- a/ground/openpilotgcs/src/libs/utils/logfile.h
