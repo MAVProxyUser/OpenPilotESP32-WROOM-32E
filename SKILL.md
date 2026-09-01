@@ -101,10 +101,14 @@ python3 tools/wifi_setup.py check                          # waits for the disco
 python3 tools/wifi_setup.py erase                          # before flying
 ```
 
-On boot with stored credentials the board joins the network, moves UAVTalk
-to a TCP server on port 9000, and broadcasts `NINJAPILOT <ip> 9000` on UDP
-:9999 every 2 s until a client connects. UART0 goes quiet — one telemetry
-port at a time. Passwords with shell-special characters: let the getpass
+On boot with stored credentials the board joins the network, serves UAVTalk
+on port 9000 over BOTH TCP and UDP, and broadcasts `NINJAPILOT <ip> 9000`
+on UDP :9999 every 2 s until a client connects. UART0 goes quiet — one
+telemetry port at a time. Prefer UDP (GCS: Options -> IP connections,
+uncheck "Use TCP"): a connected TCP client arms lwIP's 250 ms tcp fast
+timer, which is this platform's residual scheduler-stall source. A UDP
+peer claims the stream with its first datagram and releases it after 10 s
+of silence. Passwords with shell-special characters: let the getpass
 prompt take them; quoting on the command line has already stored a literal
 backslash once.
 

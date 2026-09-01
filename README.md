@@ -31,7 +31,13 @@ stay on core 0.
 - The NinjaPilot GCS Setup Wizard recognises the board (0x1202), locks input
   to the Spektrum satellite, draws the Thing Plus in its connection diagram,
   and skips the battery-powered calibration pages whenever the GCS link is
-  USB serial (see Power, below)
+  USB serial (see Power, below). The vehicle page and wizard label motors by
+  silkscreen pin (15/33/27/12) instead of generic channel numbers, and the
+  firmware reports a full version blob (git hash, date, UAVO-set sha1) so
+  the GCS version-mismatch check compares real values
+- Telemetry serves TCP and UDP on port 9000; UDP is preferred (a connected
+  TCP client arms lwIP's 250 ms tcp fast timer -- the residual scheduler
+  stall source; a UDP client never starts it)
 - 60 s characterization with WiFi telemetry active, full flight stack:
   0 Attitude alarm events, 7 Stabilization warnings/min, CPU 34 %
 
