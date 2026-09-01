@@ -38,6 +38,21 @@ was blank -- each discovered one user complaint at a time until a full
 grep of getBoardModel() closed the rest. If a board id ever changes or a
 new target appears, audit every call site in one pass instead.
 
+## RULE: on any real-flight attitude anomaly, check estimate-vs-accel FIRST
+
+The 2026-09-01 flips were called wrong three times (flight mode, mixer
+geometry, prop strike) before the one-line check that settled it: plot
+AttitudeState pitch against the pitch implied by AccelState's gravity
+vector, through the event. They disagreed by 9 degrees and DIVERGED - the
+estimate was integrating vibration-rectified gyro phantoms (176Hz DLPF on
+a 4-inch frame's 200-500Hz spectrum) while the accelerometer told the
+truth. When the estimator contradicts its own sensor input, no amount of
+control-side analysis (PIDs, mixer, authority budgets) can be conclusive.
+The GCS auto-log carries both objects for every flight; the check costs
+minutes. Corollary: the sim exonerates only the CONTROL code - its
+sensors are synthetic and clean, so sensor-path defects (DLPF, aliasing,
+vibration, driver axis maps) are invisible to it by construction.
+
 ## ESC range calibration cannot exist on this board -- do not reintroduce it
 
 The procedure requires the controller alive and holding max throttle

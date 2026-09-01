@@ -59,6 +59,34 @@ stay on core 0.
 **Not yet done:** no baro / mag / GPS (rate and attitude flight only), no
 DShot, no flight testing off the bench.
 
+## The 2026-09-01 flip: root cause and fix
+
+Two real flights ended in a flip at first liftoff thrust. The GCS auto-log
+plus five sim falsification experiments exonerated, in order: the Stab3
+flight-mode config, the mixer table, the motor order, the PIDs, and the
+controller itself (which commanded the correct recovery to saturation both
+times). The AccelState trace then convicted the sensor path: during
+spool-up the attitude estimate drifted nose-DOWN while its own
+accelerometer read nose-UP - 9 degrees apart - with |accel| thrashing
+7.6-13.4 m/s^2. Motor vibration (200-500Hz on a 4-inch frame) was walking
+through the gyro's 176Hz DLPF and rectifying into phantom rates; the FC
+tipped a LEVEL vehicle chasing them. A CC3D flying the same frame never
+cared because the MPU6000's internal ODR is 8kHz; the ICM-20602 at any
+DLPF>bypass runs 1kHz. Fix: gyro+accel DLPF now 41Hz
+(`board_hw_defs.c`), ~6ms of group delay for ~20dB+ of vibration
+rejection.
+
+Prebuilt images in the repo root, from this exact tree:
+
+- `firmware_normal_41hz.bin` - the flight build: 41Hz DLPF, self-leveling
+  Stabilized3 defaults, Rate-yaw default (no AxisLock arming-gesture
+  windup), MotorsSpinWhileArmed default TRUE, onboard Flip module.
+- `firmware_esc_cal.bin` - the BOARD_ESC_CAL power-up calibration variant.
+  Flash, unplug USB, battery on, listen for the tones, reflash normal.
+  Never fly this build.
+
+Flash recipes and the full ESC-calibration ritual: SKILL.md.
+
 ## Why this is worth doing
 
 CopterControl runs the same flight code at `PIOS_SENSOR_RATE 500.0f` on an

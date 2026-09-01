@@ -64,6 +64,56 @@ cd targets/esp32wroom/esp-idf/build && . ~/esp/esp-idf/export.sh && python -m es
 460800 is unreliable on this adapter — it fails with "Invalid head of packet".
 115200 takes about 16 seconds for the app.
 
+App-only flash of the PREBUILT images in the repo root (bootloader and
+partition table already on the board):
+
+```bash
+. ~/esp/esp-idf/export.sh
+python -m esptool --chip esp32 --port /dev/cu.usbserial-210 -b 115200     --before default_reset --after hard_reset write_flash 0x10000 firmware_normal_41hz.bin
+```
+
+`firmware_normal_41hz.bin` is the flight build (41Hz DLPF vibration fix +
+all 2026-09-01 defaults); `firmware_esc_cal.bin` is the ESC-calibration
+power-up variant — see the ESC calibration section below, and never fly it.
+
+## ESC calibration (USB-free — the only way on this board)
+
+ESCs enter calibration only if they see max throttle at THEIR power-on.
+On this airframe ESC power IS board power (BEC 5V feeds VUSB, battery and
+USB must never be connected together), and WiFi takes 3-8s to associate —
+far longer than the ESC listening window. So no wizard page, no serial
+tool, no WiFi-commanded calibration can ever work here; the firmware does
+the ritual itself at boot. PROPS OFF THROUGHOUT.
+
+1. Battery disconnected, USB in — flash `firmware_esc_cal.bin` (recipe
+   above, same command with the other filename).
+2. UNPLUG USB. Connect battery. Board and ESCs power up together with all
+   four outputs already at MAX — every ESC enters calibration and sings
+   the high tone. After 6 seconds the outputs drop to MIN; the ESCs chirp
+   the confirm and store the range. LED: solid during MAX, fast blink
+   during MIN.
+3. Battery off. USB back in — flash `firmware_normal_41hz.bin`.
+4. In the GCS: set all four ActuatorSettings.ChannelNeutral values EQUAL
+   (one just-above-spool number now fits all four — the by-ear per-channel
+   spread this replaces is what left one corner weak at idle), confirm
+   MotorsSpinWhileArmed=TRUE and Yaw=Rate on the flight slot, save.
+
+Every power-up of the cal build recalibrates — never leave it flashed.
+
+## Monitor a real flight
+
+```bash
+python3 tools/flight_monitor.py            # board at 192.168.0.45:9000
+```
+
+Close/disconnect the GCS first (one UAVTalk client at a time). 1Hz status
+line: arm state, mode, attitude, throttle, all four motor PWMs, alarms,
+packet rate; instant events for arming, mode and alarm transitions, and
+STALL warnings on >1s telemetry gaps. Everything received is recorded to
+`~/NinjaPilot-logs/flightmon_*.jsonl` (wall-stamped) for post-flight
+forensics. Fly, land, Ctrl+C for the summary. It listens far more than it
+sends (~7 single-frame polls/s, never back-to-back).
+
 ## Talk to the board
 
 ```bash
