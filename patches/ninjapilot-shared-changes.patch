@@ -159,6 +159,45 @@ index 57c978da2..6c2d6bdb7 100644
          accel_bias.X  = accelGyroSettings.accel_bias.X;
          accel_bias.Y  = accelGyroSettings.accel_bias.Y;
          accel_bias.Z  = accelGyroSettings.accel_bias.Z;
+diff --git a/flight/modules/Sensors/simulated/Sensors/sensors.c b/flight/modules/Sensors/simulated/Sensors/sensors.c
+index 0faa36f93..457dd8ac4 100644
+--- a/flight/modules/Sensors/simulated/Sensors/sensors.c
++++ b/flight/modules/Sensors/simulated/Sensors/sensors.c
+@@ -47,6 +47,7 @@
+  */
+ 
+ #include <openpilot.h>
++#include <pios_shmlog.h>
+ 
+ #include "attitudestate.h"
+ #include "accelsensor.h"
+@@ -213,6 +214,7 @@ static struct {
+     bool  baroTempEnabled;
+ } scal;
+ 
++#ifdef PIOS_INCLUDE_SENSORS_HUB
+ static void sensorHubSettingsUpdatedCb(__attribute__((unused)) UAVObjEvent *ev)
+ {
+     SensorHubSettingsData shs;
+@@ -224,6 +226,7 @@ static void sensorHubSettingsUpdatedCb(__attribute__((unused)) UAVObjEvent *ev)
+                        (unsigned)shs.CanImuRateHz, (unsigned)shs.CanAk8975RateHz,
+                        (unsigned)shs.CanBaroRateHz, (unsigned)shs.CanMagRateHz);
+ }
++#endif /* PIOS_INCLUDE_SENSORS_HUB */
+ 
+ static void sensorCalUpdatedCb(__attribute__((unused)) UAVObjEvent *ev)
+ {
+@@ -392,8 +395,10 @@ int32_t SensorsInitialize(void)
+     RevoCalibrationConnectCallback(&sensorCalUpdatedCb);
+     AttitudeSettingsConnectCallback(&sensorCalUpdatedCb);
+     RevoSettingsConnectCallback(&sensorCalUpdatedCb);
++#ifdef PIOS_INCLUDE_SENSORS_HUB
+     SensorHubSettingsConnectCallback(&sensorHubSettingsUpdatedCb);
+     sensorHubSettingsUpdatedCb(NULL);
++#endif
+ 
+     return 0;
+ }
 diff --git a/flight/modules/Stabilization/innerloop.c b/flight/modules/Stabilization/innerloop.c
 index c983e8a07..341abcb71 100644
 --- a/flight/modules/Stabilization/innerloop.c
@@ -343,6 +382,35 @@ index d21ee36f8..98f846111 100644
  
  
  #ifdef __cplusplus
+diff --git a/flight/pios/posix/pios_sys.c b/flight/pios/posix/pios_sys.c
+index 35e941221..a7c2036c8 100644
+--- a/flight/pios/posix/pios_sys.c
++++ b/flight/pios/posix/pios_sys.c
+@@ -29,6 +29,7 @@
+ 
+ /* Project Includes */
+ #include <pios.h>
++#include <ctype.h>
+ 
+ #if defined(PIOS_INCLUDE_SYS)
+ 
+diff --git a/flight/targets/boards/simposix/firmware/UAVObjects.inc b/flight/targets/boards/simposix/firmware/UAVObjects.inc
+index 99607a487..835e96964 100644
+--- a/flight/targets/boards/simposix/firmware/UAVObjects.inc
++++ b/flight/targets/boards/simposix/firmware/UAVObjects.inc
+@@ -40,6 +40,12 @@ UAVOBJSRCFILENAMES += gyrosensor
+ UAVOBJSRCFILENAMES += accelstate
+ UAVOBJSRCFILENAMES += accelsensor
+ UAVOBJSRCFILENAMES += accelgyrosettings
++UAVOBJSRCFILENAMES += ak8975sensor
++UAVOBJSRCFILENAMES += i2cbusscan
++UAVOBJSRCFILENAMES += missionprogress
++UAVOBJSRCFILENAMES += missionrecoverysettings
++UAVOBJSRCFILENAMES += sensorhubsettings
++UAVOBJSRCFILENAMES += settingsgeneration
+ UAVOBJSRCFILENAMES += magsensor
+ UAVOBJSRCFILENAMES += auxmagsensor
+ UAVOBJSRCFILENAMES += auxmagsettings
 diff --git a/flight/uavobjects/inc/uavobjectprivate.h b/flight/uavobjects/inc/uavobjectprivate.h
 index 614d96867..c45624709 100644
 --- a/flight/uavobjects/inc/uavobjectprivate.h
