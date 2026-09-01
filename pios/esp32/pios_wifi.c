@@ -67,6 +67,10 @@ static struct {
     pios_com_callback tx_out_cb;
     uint32_t tx_out_context;
     volatile int client;        /* -1 = nobody connected */
+    int udp;                    /* datagram telemetry socket, same port */
+    struct sockaddr_in udp_peer;
+    volatile bool udp_active;
+    volatile TickType_t udp_last_rx;
     esp_ip4_addr_t ip;
     EventGroupHandle_t events;
     bool up;
@@ -99,6 +103,15 @@ static void wifi_server_task(__attribute__((unused)) void *arg)
     bind(listener, (struct sockaddr *)&addr, sizeof(addr));
     listen(listener, 1);
 
+    /* Same port, datagram flavor. UDP is the lighter transport on this
+     * chip in a way that goes beyond header overhead: a connected TCP
+     * client is what arms lwIP's 250ms tcp fast timer, whose periodic
+     * work on core 0 is this platform's residual scheduler-stall source.
+     * A UDP client never starts that timer. First datagram from a peer
+     * claims the telemetry stream; silence for 10s releases it. */
+    wifi.udp = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
+    bind(wifi.udp, (struct sockaddr *)&addr, sizeof(addr));
+
     int beacon = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
     setsockopt(beacon, SOL_SOCKET, SO_BROADCAST, &one, sizeof(one));
     struct sockaddr_in bcast = {
@@ -114,7 +127,11 @@ static void wifi_server_task(__attribute__((unused)) void *arg)
     for (;;) {
         /* Advertise while nobody is connected, so tools can find the IP
          * without a console. */
-        if (wifi.client < 0 &&
+        if (wifi.udp_active &&
+            (xTaskGetTickCount() - wifi.udp_last_rx) > pdMS_TO_TICKS(10000)) {
+            wifi.udp_active = false;
+        }
+        if (wifi.client < 0 && !wifi.udp_active &&
             (xTaskGetTickCount() - last_beacon) > pdMS_TO_TICKS(2000)) {
             last_beacon = xTaskGetTickCount();
             sendto(beacon, note, notelen, 0, (struct sockaddr *)&bcast,
@@ -125,6 +142,10 @@ static void wifi_server_task(__attribute__((unused)) void *arg)
         FD_ZERO(&rf);
         FD_SET(listener, &rf);
         int maxfd = listener;
+        FD_SET(wifi.udp, &rf);
+        if (wifi.udp > maxfd) {
+            maxfd = wifi.udp;
+        }
         if (wifi.client >= 0) {
             FD_SET(wifi.client, &rf);
             if (wifi.client > maxfd) {
@@ -151,6 +172,33 @@ static void wifi_server_task(__attribute__((unused)) void *arg)
                  * preemption traffic. Measured cost of nodelay: part of a
                  * 5x jump in stabilization deadline warnings. */
                 wifi.client = c;
+            }
+        }
+
+        if (FD_ISSET(wifi.udp, &rf)) {
+            uint8_t buf[WIFI_RX_CHUNK];
+            struct sockaddr_in from;
+            socklen_t fromlen = sizeof(from);
+            int n = recvfrom(wifi.udp, buf, sizeof(buf), MSG_DONTWAIT,
+                             (struct sockaddr *)&from, &fromlen);
+            if (n > 0) {
+                wifi.udp_peer    = from;
+                wifi.udp_last_rx = xTaskGetTickCount();
+                wifi.udp_active  = true;
+                if (wifi.rx_in_cb) {
+                    uint16_t off = 0;
+                    for (int spins = 0; off < (uint16_t)n && spins < 200; spins++) {
+                        bool woken = false;
+                        uint16_t took = (wifi.rx_in_cb)(wifi.rx_in_context,
+                                                        buf + off,
+                                                        (uint16_t)(n - off),
+                                                        NULL, &woken);
+                        off += took;
+                        if (off < (uint16_t)n) {
+                            vTaskDelay(pdMS_TO_TICKS(2));
+                        }
+                    }
+                }
             }
         }
 
@@ -202,7 +250,7 @@ static void PIOS_WIFI_SetBaud(__attribute__((unused)) uint32_t id,
 static void PIOS_WIFI_TxStart(__attribute__((unused)) uint32_t id,
                               __attribute__((unused)) uint16_t avail)
 {
-    if (!wifi.tx_out_cb || wifi.client < 0) {
+    if (!wifi.tx_out_cb || (wifi.client < 0 && !wifi.udp_active)) {
         /* No client: drain and drop, so the COM buffer never fills up and
          * back-pressures telemetry because nobody is listening. */
         if (wifi.tx_out_cb) {
@@ -230,7 +278,16 @@ static void PIOS_WIFI_TxStart(__attribute__((unused)) uint32_t id,
         fill += len;
         if (len == 0 || fill == sizeof(buf)) {
             if (fill) {
-                send(wifi.client, buf, fill, MSG_DONTWAIT);
+                if (wifi.client >= 0) {
+                    send(wifi.client, buf, fill, MSG_DONTWAIT);
+                } else {
+                    /* One datagram per drain; a torn peer update at latch
+                     * time can misdirect a single datagram, which UAVTalk
+                     * shrugs off. */
+                    struct sockaddr_in to = wifi.udp_peer;
+                    sendto(wifi.udp, buf, fill, MSG_DONTWAIT,
+                           (struct sockaddr *)&to, sizeof(to));
+                }
                 fill = 0;
             }
             if (len == 0) {

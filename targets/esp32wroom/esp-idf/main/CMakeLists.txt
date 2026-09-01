@@ -240,6 +240,19 @@ set(UAVO_SYNTH_SRCS
     ${UAVOSYNTH}/waypointactive.c
 )
 
+# Generate the firmware version blob header (git + UAVO-set hash) so the
+# GCS's version-mismatch check has something truthful to compare against.
+execute_process(
+    COMMAND python3 "${NINJAPILOT_ROOT}/make/scripts/version-info.py"
+            --path=${CMAKE_CURRENT_LIST_DIR}/../../../..
+            --uavodir=${NINJAPILOT_ROOT}/shared/uavobjectdefinition
+            --template=${CMAKE_CURRENT_LIST_DIR}/fw_version_info.tpl
+            --outfile=${CMAKE_BINARY_DIR}/fw_version_info.h
+    RESULT_VARIABLE FW_VERSION_RC)
+if(NOT FW_VERSION_RC EQUAL 0)
+    message(FATAL_ERROR "fw_version_info.h generation failed")
+endif()
+
 idf_component_register(
     SRCS
         ${BOARD_SRCS}
@@ -250,6 +263,7 @@ idf_component_register(
         ${LIB_SRCS}
         ${NINJA_MODULE_SRCS}
     INCLUDE_DIRS
+        ${CMAKE_BINARY_DIR}
         ${BOARD}
         ${BOARD}/firmware
         ${BOARD}/firmware/inc

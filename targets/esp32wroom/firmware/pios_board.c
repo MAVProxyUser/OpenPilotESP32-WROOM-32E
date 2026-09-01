@@ -36,6 +36,7 @@
 #include <mixersettings.h>
 #include <actuatorsettings.h>
 #include <firmwareiapobj.h>
+#include "fw_version_info.h"
 #include <flightstatus.h>
 #include <systemalarms.h>
 #include "driver/gpio.h"
@@ -786,6 +787,23 @@ void PIOS_Board_Init(void)
         FirmwareIAPObjGet(&iap);
         iap.BoardType     = pios_board_info_blob.board_type;
         iap.BoardRevision = pios_board_info_blob.board_rev;
+
+        /* The 100-byte "OpFw" description blob the GCS parses
+         * (devicedescriptorstruct.h). The uavo-set sha1 at offset 60 is
+         * what the GCS's version-mismatch warning compares; the rest
+         * feeds its version display. Generated into fw_version_info.h at
+         * configure time from the same script and XML tree the GCS
+         * builds its own hash from. */
+        memset(iap.Description, 0, sizeof(iap.Description));
+        memcpy(&iap.Description[0], "OpFw", 4);
+        uint32_t v = FW_VERSION_HASH32;
+        memcpy(&iap.Description[4], &v, 4);
+        v = FW_VERSION_UNIXTIME;
+        memcpy(&iap.Description[8], &v, 4);
+        iap.Description[12] = pios_board_info_blob.board_type;
+        iap.Description[13] = pios_board_info_blob.board_rev;
+        strncpy((char *)&iap.Description[14], FW_VERSION_FWTAG, 25);
+        memcpy(&iap.Description[60], fw_version_uavo_sha1, 20);
         FirmwareIAPObjSet(&iap);
     }
 
