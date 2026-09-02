@@ -872,7 +872,7 @@ def main():
         # motor response: does the mixer raise the dropped side
         mr = [(s["att"][1], (s["pwm"][0] + s["pwm"][1]) - (s["pwm"][2] + s["pwm"][3]),
                s["att"][0], (s["pwm"][0] + s["pwm"][3]) - (s["pwm"][1] + s["pwm"][2]))
-              for s in move if 0.15 < s["thr"] < 0.85 and all(p > 900 for p in s["pwm"])]
+              for s in move if 0.14 <= s["thr"] < 0.85 and all(p > 900 for p in s["pwm"])]
         c_pm = corr([x[0] for x in mr], [x[1] for x in mr])
         c_rm = corr([x[2] for x in mr], [x[3] for x in mr])
         for name, c in (("pitch vs front-rear PWM", c_pm), ("roll vs left-right PWM", c_rm)):
