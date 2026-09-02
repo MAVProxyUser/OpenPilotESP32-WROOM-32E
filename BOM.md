@@ -15,7 +15,7 @@ were bought from.
 | 2b | IMU (breakout) | Generic **ICM-20602** SPI breakout | 1 | https://www.amazon.com/dp/B0FXWL157Q | Any ICM-20602 board with SCLK/MOSI/MISO/CS/INT broken out works. Not an ICM-20948 or BNO08x (different drivers). |
 | 3 | Motors | **T-Motor F40 2300KV** FPV series, sold as a set of 2 | 2 sets (4 motors) | https://www.getfpv.com/tiger-motor-f40-2300kv-fpv-series-motor-set-of-2.html | Two CW, two CCW as delivered in a set. |
 | 4 | ESC | Generic **4-in-1 ESC** (the tested unit was an unbranded one) | 1 | -- | Must accept standard PWM 1000-2000 us (the firmware has no DShot), rated for 4S and >= 25 A per motor for the F40 on 4x4.5, and provide a 5 V BEC. The BEC feeds the board's VUSB rail -- see "Power". |
-| 5 | Props | **HQProp 4x4.5 Bullnose** | 1 set (2 CW + 2 CCW) | https://www.amazon.com/dp/B07FN65Z8L | QuadX: front-left and rear-right spin one way, front-right and rear-left the other. Re-check every prop against its motor's rotation after any refit. |
+| 5 | Props | **HQProp 4x4.5 Bullnose** | 1 set (2 CW + 2 CCW) | https://www.amazon.com/dp/B07FN65Z8L | CW props on M1 (front-left) and M3 (rear-right); CCW props on M2 (front-right) and M4 (rear-left) -- see "Mixer and rotation". Re-check every prop against its motor's rotation after any refit. |
 | 6a | Battery | **Tattu 650 mAh 4S1P 75C 14.8 V, XT30** | 1+ | https://www.amazon.com/dp/B07219QLWG | The pack that hovered. |
 | 6b | Battery (alternate) | **Tattu 850 mAh 4S 75C 14.8 V, XT30** | -- | https://www.amazon.com/dp/B07218QR29 | Same electrics, 31 % more capacity and mass. |
 | 7 | RC receiver | **Spektrum DSMX satellite, SPM9745** | 1 | Spektrum | 3.3 V device: 3.3 V, GND, signal to GPIO16. Bind it to the transmitter beforehand (firmware auto-bind is off). |
@@ -38,7 +38,10 @@ GCS (Qt 5.15) and the Python tools in `tools/` (Python 3, no extra packages).
 | IMU chip select | 14 | IMU nCS |
 | IMU data ready | 32 | IMU INT1 |
 | 3.3 V, GND | 3V3, GND | IMU VDD/VDDIO, GND (3.3 V only) |
-| DSM satellite | 16 (RX1) | satellite signal; satellite power from 3V3, not 5 V |
+| DSM satellite | 16 (RX1) | satellite signal on UART2 RX; satellite power from 3V3, not 5 V |
+| UART2 TX (spare) | 17 (TX1) | unused. The same UART2 (16/17, 57600) is the `pios_usart_aux_cfg` spare port for GPS / second telemetry / serial RC; SBUS would use `invert_rx` (ESP32 inverts in hardware) -- but it is DSM's port on this build |
+| PPM sum in | 21 | **compiled out** (RMT noise on an open pin starved the gyro task); wire a real PPM source before enabling |
+| IDF console (optional) | 22 TX / 23 RX | UART1, 57600, boot log and panics; not needed to fly |
 | Motor 1 | 15 | ESC channel for the **front-left** motor (NW) |
 | Motor 2 | 33 | ESC channel for the **front-right** motor (NE) |
 | Motor 3 | 27 | ESC channel for the **rear-right** motor (SE) |
@@ -46,12 +49,45 @@ GCS (Qt 5.15) and the Python tools in `tools/` (Python 3, no extra packages).
 | ESC 5 V BEC | VUSB | powers the board in flight |
 | ESC GND | GND | |
 | Status LED | 13 | on-board (slow blink disarmed, strobe armed) |
-| BOOT button | 0 | hold ~3 s at power-up to erase stored settings |
-| UART0 | 1 / 3 | the USB-C bridge; serial UAVTalk if WiFi is not used |
+| BOOT button | 0 | `BOARD_BTN_PIN`: hold ~3 s at power-up to erase stored settings (LED flutters while pending) |
+| UART0 | 1 TX / 3 RX | the USB-C bridge (`pios_usart_telem_cfg`, 115200 at boot); serial UAVTalk if WiFi is not used |
 
 Motor numbering is the OpenPilot QuadX convention: 1 NW, 2 NE, 3 SE, 4 SW,
 looking down with the nose up the page. "Nose" is the airframe's, not the
 IMU's -- see below.
+
+## Mixer and rotation
+
+`MixerSettings.Mixer{1..4}Vector` is `[ThrottleCurve1, ThrottleCurve2, Roll,
+Pitch, Yaw]`; the preflight in `tools/flight_monitor.py` insists on this
+table (its `QUADX_MIXER`, the last three columns):
+
+| Output | GPIO | Position | Roll | Pitch | Yaw | Motor spin (from above) | Prop |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| M1 | 15 | front-left (NW) | +64 | +64 | -64 | **CW** | CW |
+| M2 | 33 | front-right (NE) | -64 | +64 | +64 | **CCW** | CCW |
+| M3 | 27 | rear-right (SE) | -64 | -64 | -64 | **CW** | CW |
+| M4 | 12 | rear-left (SW) | +64 | -64 | +64 | **CCW** | CCW |
+
+How to read it, and why the physical layout must match it exactly:
+
+- **Roll +**: a positive roll command (the controller wants the right side
+  down / is fixing a left-side-low tilt) speeds up the motors with +Roll,
+  so those must be the LEFT motors: M1 and M4.
+- **Pitch +**: a positive pitch command (nose up / fixing a nose-low tilt)
+  speeds up the +Pitch motors, so those must be the FRONT motors: M1 and M2.
+- **Yaw +**: a positive yaw command (nose right, clockwise from above) speeds
+  up the +Yaw motors. A motor's reaction torque turns the frame the opposite
+  way to its own spin, so the +Yaw motors (M2, M4) must spin **CCW** and the
+  -Yaw motors (M1, M3) **CW**. Props are matched to that: CW props on M1/M3,
+  CCW props on M2/M4.
+
+Every one of those statements is relative to the IMU's idea of "front", so
+the IMU orientation (next section) has to be right first. The bench tool
+(`tools/bench_test.py --quick`) confirms the roll and pitch columns against
+the airframe (tip the nose down: M1 and M2 must speed up), and the 2026-09-01
+crashes are what it looks like when the IMU's front is the airframe's tail on
+this exact table.
 
 ## Power -- the one hard rule
 
