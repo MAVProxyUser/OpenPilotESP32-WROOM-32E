@@ -106,6 +106,13 @@ Every power-up of the cal build recalibrates — never leave it flashed.
 python3 tools/bench_test.py            # board on battery, GCS closed
 ```
 
+REQUIRES firmware built 2026-09-01 20:18 or later (firmware_normal_41hz.bin):
+earlier builds never bound the GCS receiver as an input source, so a UDP
+client could not drive the throttle - the board simply would not arm or
+output PWM. The tool now VERIFIES arming from FlightStatus and aborts with
+the blocking reason (throttle not reaching the flight side, an alarm, or an
+unconfigured mixer) rather than assuming it worked.
+
 The tool drives, you hold the quad and follow the spoken prompts (macOS
 `say`): it applies the recommended settings (persisted), temporarily
 takes control (GCS receiver mapping + Always Armed, RAM ONLY - a power

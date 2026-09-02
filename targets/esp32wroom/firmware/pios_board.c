@@ -45,6 +45,8 @@
 #include <taskinfo.h>
 #include <pios_com_priv.h>
 #include <pios_rcvr_priv.h>
+#include <pios_gcsrcvr_priv.h>
+#include <gcsreceiver.h>
 #include <pios_flashfs.h>
 #include <pios_board_info.h>
 #include <pios_debuglog.h>
@@ -817,6 +819,24 @@ void PIOS_Board_Init(void)
         }
     }
 #endif /* PIOS_INCLUDE_DSM */
+
+#ifdef PIOS_INCLUDE_GCSRCVR
+    /* Bind the GCS receiver as an input source (same pattern the sim twin
+     * uses). It sources nothing until ManualControlSettings maps a channel
+     * group to GCS -- so it costs a real flight nothing, and it lets a UDP
+     * client (tools/bench_test.py, or a GCS) drive the control channels for
+     * ground testing without a transmitter. */
+    {
+        GCSReceiverInitialize();
+        uint32_t pios_gcsrcvr_id;
+        PIOS_GCSRCVR_Init(&pios_gcsrcvr_id);
+        uint32_t pios_gcsrcvr_rcvr_id;
+        if (PIOS_RCVR_Init(&pios_gcsrcvr_rcvr_id, &pios_gcsrcvr_rcvr_driver, pios_gcsrcvr_id)) {
+            PIOS_Assert(0);
+        }
+        pios_rcvr_group_map[MANUALCONTROLSETTINGS_CHANNELGROUPS_GCS] = pios_gcsrcvr_rcvr_id;
+    }
+#endif /* PIOS_INCLUDE_GCSRCVR */
 
     /* From here the LED belongs to the status task, not to init. */
     board_ux_start();

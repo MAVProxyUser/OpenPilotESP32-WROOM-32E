@@ -56,6 +56,7 @@ set(PIOS_ESP32_SRCS
 set(PIOS_COMMON_SRCS
     ${FLIGHT}/pios/common/pios_com.c
     ${FLIGHT}/pios/common/pios_rcvr.c
+    ${FLIGHT}/pios/common/pios_gcsrcvr.c
     ${FLIGHT}/pios/common/pios_mem.c
     ${FLIGHT}/pios/common/pios_crc.c
     ${FLIGHT}/pios/common/pios_deltatime.c

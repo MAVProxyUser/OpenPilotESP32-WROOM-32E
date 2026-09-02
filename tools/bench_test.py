@@ -69,6 +69,13 @@ from uavtalk_client import UdpTransport, UAVTalkClient, default_xml_dir  # noqa:
 import flight_config as bov  # noqa: E402
 
 
+ALARM_NAMES = ["SystemConfiguration", "BootFault", "OutOfMemory", "StackOverflow",
+               "CPUOverload", "EventSystem", "Telemetry", "Receiver", "ManualControl",
+               "Actuator", "Attitude", "Sensors", "Magnetometer", "Airspeed",
+               "Stabilization", "Guidance", "PathPlan", "Battery", "FlightTime",
+               "I2C", "GPS"]
+
+
 def corr(xs, ys):
     n = len(xs)
     if n < 8:
@@ -227,7 +234,7 @@ def main():
     def stick_pump():
         # GCSReceiver keepalive at 20Hz (the 100ms receiver supervisor) with
         # sensor polls interleaved, never back-to-back
-        polls = ["GyroState", "AccelState", "ActuatorCommand", "ActuatorDesired"]
+        polls = ["GyroState", "AccelState", "ActuatorCommand", "FlightStatus"]
         i = 0
         while not stop.is_set():
             client.send_object("GCSReceiver", {"Channel": gcs_channels()})
@@ -242,17 +249,80 @@ def main():
 
     # ---- 3. the ramp, voice-directed --------------------------------------
     samples = []
-    say("Bench test ready. Hold the quad firmly, roughly level.")
-    time.sleep(3.0)
-    say("Arming now. Motors will start idling.")
-    time.sleep(3.0)
+    say("Bench test ready.")
+    time.sleep(2.5)
+    say("Hold the quad level. Props off?")
+    time.sleep(3.5)
+
+    # Confirm the GCS receiver is actually feeding control BEFORE arming -
+    # this is the check whose absence let the old version narrate a state
+    # that never happened. If throttle is not reaching the flight side,
+    # arming (Always Armed = arm when throttle low) cannot occur.
+    mcc = fetch("ManualControlCommand")
+    thr_in = mcc.get("Throttle")
+    conn = mcc.get("Connected")
+    print("[check] ManualControlCommand: Throttle=%s Connected=%s" % (thr_in, conn), flush=True)
+    if conn not in ("True", True) or thr_in is None or float(thr_in) >= 0:
+        alarms = fetch("SystemAlarms").get("Alarm", [])
+        bad = [ALARM_NAMES[i] + "=" + v for i, v in enumerate(alarms)
+               if i < len(ALARM_NAMES) and v not in ("OK", "Uninitialised")]
+        say("Stop. The board is not receiving my throttle. Aborting.")
+        print("[ABORT] GCS control not reaching the flight side.")
+        print("        Throttle=%s (need < 0), Connected=%s" % (thr_in, conn))
+        print("        alarms: %s" % (", ".join(bad) or "none"))
+        print("        This board needs the GCS-receiver firmware "
+              "(firmware_normal_41hz.bin rebuilt 2026-09-01 or later).")
+        raise SystemExit(1)
+
+    # mixer/curve must be real or arming spins nothing (the simwroom sim's
+    # own failure mode - a zero mixer produces zero PWM regardless)
+    mix = fetch("MixerSettings")
+    curve = mix.get("ThrottleCurve1", [])
+    m1 = mix.get("Mixer1Vector", [0, 0, 0, 0, 0])
+    if not any(float(c) > 0 for c in curve) or not any(v != 0 for v in m1[2:5]):
+        say("Stop. The mixer is not configured. Aborting.")
+        print("[ABORT] MixerSettings not usable - ThrottleCurve1=%s Mixer1Vector=%s"
+              % ([round(float(c), 2) for c in curve], list(m1)))
+        write_verify("ManualControlSettings", mcs_orig, ["ChannelGroups"])
+        raise SystemExit(1)
+
+    say("Receiver check good. Arming.")
+    time.sleep(2.0)
     fms = dict(fms_orig)
     fms["Arming"] = "Always Armed"
     write_verify("FlightModeSettings", fms, ["Arming"])
-    time.sleep(1.5)
-    say("Armed. Beginning throttle ramp to %d percent over %d seconds."
-        % (int(args.max * 100), int(args.time)))
-    say("Follow my directions. Gentle, smooth tilts, about thirty degrees.")
+
+    # VERIFY the board actually armed - poll FlightStatus, do not assume
+    armed = False
+    end = time.time() + 5.0
+    while time.time() < end:
+        fs = get("FlightStatus")
+        if fs and fs.get("Armed") == "Armed":
+            armed = True
+            break
+        time.sleep(0.1)
+    if not armed:
+        alarms = fetch("SystemAlarms").get("Alarm", [])
+        bad = [ALARM_NAMES[i] + "=" + v for i, v in enumerate(alarms)
+               if i < len(ALARM_NAMES) and v not in ("OK", "Uninitialised")]
+        say("The board did not arm. Aborting.")
+        print("[ABORT] FlightStatus never reached Armed. alarms: %s"
+              % (", ".join(bad) or "none"))
+        write_verify("FlightModeSettings", fms_orig, ["Arming"])
+        write_verify("ManualControlSettings", mcs_orig, ["ChannelGroups"])
+        raise SystemExit(1)
+
+    # confirm motors actually idle (MotorsSpinWhileArmed) before ramping
+    time.sleep(0.5)
+    ac = fetch("ActuatorCommand").get("Channel", [0] * 4)[:4]
+    print("[check] armed. idle ActuatorCommand: %s" % ac, flush=True)
+    if not any(c > 1050 for c in ac):
+        say("Armed, but motors are not idling. Continuing, watch closely.")
+        print("[WARN] no idle PWM > 1050 - MotorsSpinWhileArmed may be off, "
+              "or outputs disabled. PWM: %s" % ac)
+    else:
+        say("Armed. Motors idling. Beginning the ramp.")
+    say("Follow my directions. Gentle tilts.")
 
     # repeating voice-directed motion cycle; each phase labels its samples
     CYCLE = [("nose_down", "Nose down.", 3.5),

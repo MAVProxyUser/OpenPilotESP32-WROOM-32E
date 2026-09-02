@@ -56,6 +56,12 @@
 #define PIOS_INCLUDE_USART
 #define PIOS_INCLUDE_SERVO
 #define PIOS_INCLUDE_RCVR
+/* GCS receiver: lets a UDP client drive the control channels over UAVTalk
+ * (GCSReceiver object), exactly as the sim twin flies. Harmless for normal
+ * flight - it is only an INPUT SOURCE, active only when ManualControlSettings
+ * maps a channel group to GCS; the DSM stays the default. Enables tools/
+ * bench_test.py to own the throttle for props-off characterization. */
+#define PIOS_INCLUDE_GCSRCVR
 /* PPM disabled: the RMT receiver on an unconnected pin collects coupled
  * noise edges (one per 500Hz SPI burst), fills its 64-item RX memory every
  * ~254ms, and its ISR then blocks level-1 interrupts on core 0 for ~3.6ms
