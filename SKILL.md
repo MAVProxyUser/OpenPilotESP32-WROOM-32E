@@ -175,6 +175,8 @@ time = safe shutdown + restore. Full record lands in
 
 ```bash
 python3 tools/flight_monitor.py            # board at 192.168.0.45:9000
+# any alarm that goes up pulls its context objects (Attitude -> AttitudeState/GyroState/AccelState/
+# AttitudeSettings, Receiver -> ManualControlCommand/..., see ALARM_CONTEXT) at once and every 5 s: CTX lines + jsonl
 ```
 
 Close/disconnect the GCS first (one UAVTalk client at a time). On connect

@@ -13,7 +13,10 @@ does not push: FlightStatus, StabilizationDesired, RateDesired,
 ActuatorDesired, ActuatorCommand, GyroState.
 
 Everything received is recorded to ~/NinjaPilot-logs/flightmon_<ts>.jsonl
-with wall-clock timestamps, and a 1Hz status line shows the flight live:
+with wall-clock timestamps, and a 1Hz status line shows the flight live.
+When an alarm is raised, the objects that explain it (ALARM_CONTEXT, e.g.
+Attitude -> AttitudeState/GyroState/AccelState/AttitudeSettings) are pulled at
+once and every 5 s while it stays up, printed as CTX lines and logged in full:
 arm state, mode, attitude, throttle, worst alarm, packet rate, and LINK
 STALL warnings whenever the AttitudeState stream gaps >1s (the signature
 of WiFi trouble, distinct from anything the vehicle does).
@@ -60,6 +63,36 @@ ALARM_NAMES = ["SystemConfiguration", "BootFault", "OutOfMemory", "StackOverflow
                "Stabilization", "Guidance", "PathPlan", "Battery", "FlightTime",
                "I2C", "GPS"]
 ALARM_RANK = {"OK": 0, "Uninitialised": 0, "Warning": 1, "Error": 2, "Critical": 3}
+
+# When an alarm is raised (and every ALARM_CTX_PERIOD while it stays up), pull
+# the objects that explain it, one frame per POLL_GAP ahead of the round-robin.
+# Each arrives as a CTX line on screen and as a full record in the jsonl, so a
+# post-flight read has the evidence next to the alarm instead of a name only.
+ALARM_CONTEXT = {
+    "SystemConfiguration": ["SystemSettings", "MixerSettings", "HwSettings", "ManualControlSettings"],
+    "BootFault": ["SystemStats", "FirmwareIAPObj", "GyroState", "AccelState"],
+    "OutOfMemory": ["SystemStats", "TaskInfo"],
+    "StackOverflow": ["SystemStats", "TaskInfo"],
+    "CPUOverload": ["SystemStats", "TaskInfo", "CallbackInfo"],
+    "EventSystem": ["SystemStats", "TaskInfo"],
+    "Telemetry": ["FlightTelemetryStats", "GCSTelemetryStats"],
+    "Receiver": ["ManualControlCommand", "ManualControlSettings", "GCSReceiver", "ReceiverActivity"],
+    "ManualControl": ["ManualControlCommand", "ManualControlSettings", "FlightStatus", "FlightModeSettings"],
+    "Actuator": ["ActuatorCommand", "ActuatorDesired", "ActuatorSettings", "MixerStatus"],
+    "Attitude": ["AttitudeState", "GyroState", "AccelState", "AttitudeSettings", "SystemStats"],
+    "Sensors": ["GyroSensor", "AccelSensor", "GyroState", "AccelState"],
+    "Magnetometer": ["MagState", "MagSensor"],
+    "Airspeed": ["AirspeedSensor", "AirspeedState"],
+    "Stabilization": ["StabilizationDesired", "StabilizationStatus", "RateDesired", "ActuatorDesired",
+                      "AttitudeState", "GyroState", "StabilizationSettings"],
+    "Guidance": ["PathDesired", "PathStatus", "VelocityState", "PositionState", "VelocityDesired"],
+    "PathPlan": ["PathPlan", "PathStatus", "WaypointActive", "PathAction"],
+    "Battery": ["FlightBatteryState", "FlightBatterySettings"],
+    "FlightTime": ["FlightStatus", "FlightBatteryState"],
+    "I2C": ["I2CStats"],
+    "GPS": ["GPSPositionSensor", "GPSSatellites", "GPSTime"],
+}
+ALARM_CTX_PERIOD = 5.0
 
 # ---------------------------------------------------------------------------
 # Preflight: confirm the board is configured the way the 2026-09-01
@@ -299,6 +332,7 @@ def main():
         "armed": None, "mode": None, "alarms": None,
         "stall_open": None,
         "pf_cfg": {}, "pf_req_i": 0, "pf_last_req": 0.0, "pf_done": False, "pf_deadline": None,
+        "extra_req": [], "ctx_last": {}, "ctx_pending": {},
     }
     events = []          # (wall, kind, text)
     stalls = []          # (start, end)
@@ -312,6 +346,46 @@ def main():
     def event(now, kind, text):
         events.append((now - t0, kind, text))
         print("[%7.1fs] %s: %s" % (now - t0, kind, text), flush=True)
+
+    def note(now, kind, text):
+        # on screen and in the jsonl (via record) but not in the end-of-run
+        # event summary - alarm context repeats every few seconds
+        print("[%7.1fs] %s: %s" % (now - t0, kind, text), flush=True)
+
+    def queue_ctx(alarm, now, force=False):
+        objs = ALARM_CONTEXT.get(alarm)
+        if not objs:
+            return
+        if not force and now - state["ctx_last"].get(alarm, 0.0) < ALARM_CTX_PERIOD:
+            return
+        state["ctx_last"][alarm] = now
+        for n in objs:
+            try:
+                od = db[n]
+            except Exception:
+                continue
+            # settings objects do not change under an alarm: pull them once per
+            # episode (force), re-pull only the dynamic ones every period
+            if not force and (getattr(od, "is_settings", False) or getattr(od, "settings", False) is True):
+                continue
+            if n not in state["extra_req"]:
+                state["extra_req"].append(n)
+            state["ctx_pending"].setdefault(n, set()).add(alarm)
+
+    def digest(d, limit=7):
+        parts = []
+        for k, v in d.items():
+            if len(parts) >= limit:
+                parts.append("...")
+                break
+            if isinstance(v, float):
+                parts.append("%s=%.2f" % (k, v))
+            elif isinstance(v, list):
+                vv = ["%.1f" % x if isinstance(x, float) else str(x) for x in v[:4]]
+                parts.append("%s=[%s%s]" % (k, ",".join(vv), ",.." if len(v) > 4 else ""))
+            else:
+                parts.append("%s=%s" % (k, v))
+        return " ".join(parts)
 
     def send_gcs(status):
         payload = gcs_stats.pack({"Status": status})
@@ -354,8 +428,15 @@ def main():
             # round-robin poll, one frame at a time
             if state["gcs"] == GCS_CONNECTED and state["pf_done"] and now - state["last_poll"] > POLL_GAP:
                 state["last_poll"] = now
-                name = POLL_OBJECTS[state["poll_i"] % len(POLL_OBJECTS)]
-                state["poll_i"] += 1
+                # alarms that are still up get their context re-pulled slowly
+                for i, v in enumerate(state["alarms"] or []):
+                    if ALARM_RANK.get(v, 0) >= 1 and i < len(ALARM_NAMES):
+                        queue_ctx(ALARM_NAMES[i], now)
+                if state["extra_req"]:
+                    name = state["extra_req"].pop(0)
+                else:
+                    name = POLL_OBJECTS[state["poll_i"] % len(POLL_OBJECTS)]
+                    state["poll_i"] += 1
                 o = db[name]
                 sock.sendto(uavtalk.build_packet(uavtalk.TYPE_OBJ_REQ, o.obj_id, 0), addr)
 
@@ -386,6 +467,10 @@ def main():
                 state["n_rx"] += 1
                 state["n_rx_win"] += 1
                 record(o.name, iid, d, now)
+
+                if o.name in state["ctx_pending"] and state["ctx_pending"][o.name]:
+                    for_alarms = "/".join(sorted(state["ctx_pending"].pop(o.name)))
+                    note(now, "CTX", "%s (for %s): %s" % (o.name, for_alarms, digest(d)))
 
                 # armed-bias watchdog: ZeroDuringArming re-learns gyro bias in
                 # the arming second; average the resting gyro 0.5-3 s after
@@ -458,6 +543,11 @@ def main():
                             if pv is not None and v != pv and ALARM_RANK.get(v, 0) != ALARM_RANK.get(pv, 0):
                                 nm = ALARM_NAMES[i] if i < len(ALARM_NAMES) else str(i)
                                 event(now, "ALARM", "%s: %s -> %s" % (nm, pv, v))
+                                if ALARM_RANK.get(v, 0) >= 1:
+                                    queue_ctx(nm, now, force=True)
+                            elif pv is None and ALARM_RANK.get(v, 0) >= 1:
+                                # already up when we connected: pull its context once now
+                                queue_ctx(ALARM_NAMES[i] if i < len(ALARM_NAMES) else str(i), now, force=True)
                         state["alarms"] = al
 
             now = time.time()
