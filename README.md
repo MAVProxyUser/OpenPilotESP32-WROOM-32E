@@ -9,6 +9,18 @@ HAL port unavoidably needs are kept as a patch you apply and revert on demand.
 
 ## Status
 
+**HOVERED 2026-09-02.** The 4-inch QuadX flew a stable hover on this
+firmware under transmitter control, after two real crashes and one night of
+finding what each of them was actually caused by (the section below). The
+configuration that hovered: `AttitudeSettings.BoardRotation = (0,0,180)`
+(the IMU's +x points at the tail), gesture arming with the quad on the
+ground and untouched (the estimator learns gyro bias during the arming
+second), an idle low enough that four equal idle thrusts cannot lift the
+light end (the battery sits aft), 41 Hz DLPF, Rate yaw, MotorsSpinWhileArmed,
+4-inch-class Bank1 defaults. `tools/flight_monitor.py` gave a preflight GO
+and recorded the flight. Level trims are zero (they were measured in the
+old frame) - re-level next; gains are "hovers", nothing finer yet.
+
 **Flies the whole control chain on the bench.** SparkFun ESP32 Thing Plus
 (ESP32-D0WD-V3 rev 3.0), ESP-IDF v5.3.2 / GCC 13.2, built on macOS arm64.
 Both cores are in use: every flight task is pinned to core 1, WiFi and lwIP
@@ -56,8 +68,8 @@ stay on core 0.
 - 60 s characterization with WiFi telemetry active, full flight stack:
   0 Attitude alarm events, 7 Stabilization warnings/min, CPU 34 %
 
-**Not yet done:** no baro / mag / GPS (rate and attitude flight only), no
-DShot, no flight testing off the bench.
+**Not yet done:** re-level after the frame fix, judge gains from hover
+logs, no baro / mag / GPS (rate and attitude flight only), no DShot.
 
 ## The 2026-09-01 flip: root cause and fix (corrected 2026-09-02)
 

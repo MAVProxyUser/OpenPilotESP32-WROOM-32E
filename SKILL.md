@@ -181,11 +181,20 @@ python3 tools/flight_monitor.py            # board at 192.168.0.45:9000
 
 Close/disconnect the GCS first (one UAVTalk client at a time). On connect
 it runs a PREFLIGHT: reads the board's actual configuration over UAVTalk
-and prints a GO/NO-GO checklist - firmware currency (is the 41Hz DLPF fix
-on the board, proven by build stamp or UAVO-set hash), board identity,
-QuadX mixer table, throttle curve, neutral symmetry, spin-while-armed,
-Stabilized1-3 mode arrays, Bank1 gain sanity, receiver mapping, board
-rotation, airframe type. A FAIL means do not fly. Then the 1Hz status
+and prints a GO/NO-GO checklist - firmware currency (build stamp or UAVO-set
+hash), board identity, QuadX mixer table, throttle curve, neutral symmetry,
+spin-while-armed, Stabilized1-3 mode arrays, Bank1 gain sanity, receiver
+mapping, board rotation (Yaw MUST be 180 on this frame), Error/Critical
+alarms (BootFault here = IMU gave no WHO_AM_I at boot), resting gyro bias
+and a live gyro stream, airframe type. A FAIL means do not fly. After any
+arming it averages the resting gyro for 2 s and shouts GYRO BIAS if the quad
+moved during the arming second.
+
+The sequence that hovered (2026-09-02): battery in with the quad sitting
+still, hands off 10 s -> start the monitor, wait for GO -> arm on the
+ground, do not touch it until the motors idle -> throttle up gently. Idle
+must not lift the light end (rear battery): at 1168 us it tipped nose-up
+over its own tail at zero throttle, where the FC applies no stabilization. Then the 1Hz status
 line: arm state, mode, attitude, throttle, all four motor PWMs, alarms,
 packet rate; instant events for arming, mode and alarm transitions, and
 STALL warnings on >1s telemetry gaps. Everything received is recorded to

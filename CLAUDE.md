@@ -2,6 +2,23 @@
 
 Rules and traps for this port. Every entry below cost real bench time to find.
 
+## STATUS 2026-09-02: the quad HOVERED on this firmware
+
+First successful hover of the 4-inch QuadX on the ESP32 Thing Plus. The
+settled recipe, in the order the problems were found (each one masked the
+next):
+1. `AttitudeSettings.BoardRotation = (0,0,180)` - the IMU's +x points at the
+   tail. This was the 2026-09-01 flip cause. Verified with
+   `tools/orientation_check.py`, enforced by flight_monitor preflight.
+2. Power up still for 10 s; arm on the ground, hands off - the CC estimator
+   learns gyro bias during the arming second (ZeroDuringArming).
+3. Idle low enough that four equal idle thrusts cannot lift the light end
+   (battery sits aft: a 1168 us idle pitched it nose-up over its own tail
+   at zero throttle, where the FC applies no stabilization).
+4. 41 Hz DLPF, Rate yaw, MotorsSpinWhileArmed, 4-inch-class Bank1 defaults.
+Preflight GO from `tools/flight_monitor.py` before every flight; it pulls the
+objects behind any alarm that goes up. Bench: `tools/bench_test.py --quick`.
+
 ## HARD RULE: flight battery and USB are mutually exclusive
 
 On the Thing Plus the ESC/BEC 5 V line feeds VUSB. Never design, suggest or
