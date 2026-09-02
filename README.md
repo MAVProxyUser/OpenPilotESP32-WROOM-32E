@@ -310,6 +310,9 @@ telemetry's.
 
 ## Hardware
 
+The complete parts list, wiring table and the settings that made the first
+hover are in [BOM.md](BOM.md).
+
 3.3 V only. The WROOM-32 has **no USB peripheral** — the USB socket is a
 CP2102/CH340 UART bridge, so serial UAVTalk runs over UART0 through it (or
 skip the cable entirely and use WiFi telemetry).
@@ -322,7 +325,7 @@ silkscreen names where it has them.
 | UART0 TX / RX | 1 / 3 | serial UAVTalk via the USB bridge |
 | SPI3 SCLK / MISO / MOSI | 5 / 19 / 18 | sensor bus |
 | IMU CS | 14 | plain GPIO, driven by PiOS |
-| IMU INT (data ready) | 34 | input-only pin, deliberately |
+| IMU INT (data ready) | 32 | GPIO34 would be nicer (input-only) but is not on the Thing Plus headers |
 | DSM satellite in | 16 (RX1) | UART2, Spektrum serial stream |
 | Motor 1–4 | 15, 33, 27, 12 | MCPWM quad X: NW, NE, SE, SW |
 | LED | 13 | slow blink disarmed, fast strobe armed |

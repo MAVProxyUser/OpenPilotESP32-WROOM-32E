@@ -171,6 +171,11 @@ and expect them to scream at the high end of the ramp. Ctrl+C at any
 time = safe shutdown + restore. Full record lands in
 ~/NinjaPilot-logs/bench_*.jsonl.
 
+## Parts and wiring
+
+See `BOM.md`: every part on the airframe that hovered, pin-by-pin wiring,
+the power rule, IMU orientation, and the settings table.
+
 ## Monitor a real flight
 
 ```bash

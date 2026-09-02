@@ -1,0 +1,102 @@
+# Bill of materials -- the airframe that hovered on 2026-09-02
+
+Everything below is what was actually on the quad for the first stable hover,
+plus the pin-by-pin wiring the firmware expects. Where a part was a generic
+substitute the requirement it has to meet is stated so it can be swapped.
+Prices are omitted on purpose (they drift); the links are the ones the parts
+were bought from.
+
+## Parts
+
+| # | Item | Part | Qty | Source | Notes |
+| --- | --- | --- | --- | --- | --- |
+| 1 | Flight controller | **SparkFun Thing Plus - ESP32 WROOM (USB-C)**, SKU **WRL-20168**, module ESP32-WROOM-32E (ESP32-D0WD-V3 rev 3.0) | 1 | https://www.sparkfun.com/products/20168 | 3.3 V logic, no USB peripheral (the USB-C is a UART bridge). Motor 4 on GPIO12 needs the one-way `XPD_SDIO_FORCE` eFuse burned (see README "Hardware"). |
+| 2a | IMU (evaluation board) | **TDK InvenSense EV-ICM-20602** | 1 | https://www.digikey.com/en/products/detail/tdk-invensense/EV-ICM-20602/6140300 | ICM-20602, SPI. Either 2a or 2b. |
+| 2b | IMU (breakout) | Generic **ICM-20602** SPI breakout | 1 | https://www.amazon.com/dp/B0FXWL157Q | Any ICM-20602 board with SCLK/MOSI/MISO/CS/INT broken out works. Not an ICM-20948 or BNO08x (different drivers). |
+| 3 | Motors | **T-Motor F40 2300KV** FPV series, sold as a set of 2 | 2 sets (4 motors) | https://www.getfpv.com/tiger-motor-f40-2300kv-fpv-series-motor-set-of-2.html | Two CW, two CCW as delivered in a set. |
+| 4 | ESC | Generic **4-in-1 ESC** (the tested unit was an unbranded one) | 1 | -- | Must accept standard PWM 1000-2000 us (the firmware has no DShot), rated for 4S and >= 25 A per motor for the F40 on 4x4.5, and provide a 5 V BEC. The BEC feeds the board's VUSB rail -- see "Power". |
+| 5 | Props | **HQProp 4x4.5 Bullnose** | 1 set (2 CW + 2 CCW) | https://www.amazon.com/dp/B07FN65Z8L | QuadX: front-left and rear-right spin one way, front-right and rear-left the other. Re-check every prop against its motor's rotation after any refit. |
+| 6a | Battery | **Tattu 650 mAh 4S1P 75C 14.8 V, XT30** | 1+ | https://www.amazon.com/dp/B07219QLWG | The pack that hovered. |
+| 6b | Battery (alternate) | **Tattu 850 mAh 4S 75C 14.8 V, XT30** | -- | https://www.amazon.com/dp/B07218QR29 | Same electrics, 31 % more capacity and mass. |
+| 7 | RC receiver | **Spektrum DSMX satellite, SPM9745** | 1 | Spektrum | 3.3 V device: 3.3 V, GND, signal to GPIO16. Bind it to the transmitter beforehand (firmware auto-bind is off). |
+| 8 | Frame | 4-inch-class X frame, ~8 in diagonal motor-to-motor, ~6 in lateral | 1 | -- | Model not recorded. Battery was mounted AFT on the hovering build; see "Center of gravity". |
+| 9 | USB-C cable | any data cable | 1 | -- | Flashing only, at 115200 baud (460800 fails on this bridge). **Never with the battery connected.** |
+| 10 | (optional) USB-UART adapter, 3.3 V | any | 1 | -- | IDF console on UART1: TX GPIO22, RX GPIO23, 57600. Not needed to fly. |
+
+Firmware: `firmware_normal_41hz.bin` from this repo (41 Hz DLPF, Rate yaw,
+MotorsSpinWhileArmed, GCS receiver bound, no Flip, no Autotune). Toolchain
+that built it: ESP-IDF v5.3.2, GCC 13.2, macOS arm64. Ground: the NinjaPilot
+GCS (Qt 5.15) and the Python tools in `tools/` (Python 3, no extra packages).
+
+## Wiring (SparkFun Thing Plus silkscreen names, from `board_hw_defs.c`)
+
+| Signal | Board GPIO | Goes to |
+| --- | --- | --- |
+| SPI SCLK | 5 (SCK) | IMU SCLK |
+| SPI MOSI | 18 (MOSI) | IMU SDI / MOSI |
+| SPI MISO | 19 (MISO) | IMU SDO / MISO -- leave the IMU's SA0/AD0 pin **unconnected** (it is often the same net as SDO; grounding it shorts MISO) |
+| IMU chip select | 14 | IMU nCS |
+| IMU data ready | 32 | IMU INT1 |
+| 3.3 V, GND | 3V3, GND | IMU VDD/VDDIO, GND (3.3 V only) |
+| DSM satellite | 16 (RX1) | satellite signal; satellite power from 3V3, not 5 V |
+| Motor 1 | 15 | ESC channel for the **front-left** motor (NW) |
+| Motor 2 | 33 | ESC channel for the **front-right** motor (NE) |
+| Motor 3 | 27 | ESC channel for the **rear-right** motor (SE) |
+| Motor 4 | 12 | ESC channel for the **rear-left** motor (SW) -- eFuse note above |
+| ESC 5 V BEC | VUSB | powers the board in flight |
+| ESC GND | GND | |
+| Status LED | 13 | on-board (slow blink disarmed, strobe armed) |
+| BOOT button | 0 | hold ~3 s at power-up to erase stored settings |
+| UART0 | 1 / 3 | the USB-C bridge; serial UAVTalk if WiFi is not used |
+
+Motor numbering is the OpenPilot QuadX convention: 1 NW, 2 NE, 3 SE, 4 SW,
+looking down with the nose up the page. "Nose" is the airframe's, not the
+IMU's -- see below.
+
+## Power -- the one hard rule
+
+**Never connect the flight battery and USB at the same time.** The ESC's 5 V
+BEC and the USB-C bridge land on the same VUSB rail; two supplies on one rail
+has destroyed boards. Flash on USB with no battery; run motors on battery
+with no USB. There is deliberately no firmware interlock (the only detectable
+signal is also energized by the BEC in flight).
+
+## IMU orientation
+
+The firmware mounts the ICM-20602 as `TOP_0DEG`: the chip's +x is the nose.
+On the hovering build the breakout ended up with +x pointing at the TAIL, and
+that -- not tuning, not vibration -- flipped the quad twice on 2026-09-01: on
+a correct mixer a backwards board is positive feedback on both axes. Either
+mount the IMU with +x forward, or set `AttitudeSettings.BoardRotation =
+(0, 0, 180)` and save (`tools/apply_recommended_settings.py --board-rotation
+0,0,180`). **Verify before the first arm**: `tools/orientation_check.py`, tip
+the airframe's real nose down, it must say NOSE DOWN. The preflight in
+`tools/flight_monitor.py` fails unless Yaw is 180 on this frame; edit that
+expectation if you mount the IMU straight.
+
+## Center of gravity and idle
+
+The 650 mAh pack sits aft on this frame. Four equal idle thrusts lift the
+light end first: at a 1168 us idle the armed quad pitched nose-up over its own
+tail at zero throttle, where the FC applies no stabilization at all. Set the
+idle (`ActuatorSettings.ChannelNeutral`, `--neutral` in the apply tool) low
+enough that the motors barely turn, and/or move the battery forward over the
+motor centroid. Arm with the quad on the ground and untouched: the estimator
+learns gyro bias during the arming second.
+
+## Settings that made it fly
+
+| Object.Field | Value | Why |
+| --- | --- | --- |
+| AttitudeSettings.BoardRotation | 0, 0, 180 | IMU +x at the tail on this build |
+| ManualControlSettings.ChannelGroups | DSM (MainPort) x5 | SPM9745 on GPIO16 |
+| ActuatorSettings.MotorsSpinWhileArmed | TRUE | idle spin when armed |
+| ActuatorSettings.ChannelNeutral | low enough not to lift the nose | see above |
+| FlightModeSettings.Arming | Yaw Right | gesture arming, on the ground |
+| FlightModeSettings.Stabilization1-3 | Attitude, Attitude, Rate, Manual | self-leveling, rate yaw |
+| StabilizationSettingsBank1 | rate 0.0032 / 0.0075 / 0.00005, attitude Kp 3.2 | 4-inch-class defaults; "hovers", not yet tuned |
+| MixerSettings | stock QuadX table, linear curve | preflight checks it |
+| board_hw_defs.c DLPF | 41 Hz | good practice on a 4-inch frame |
+
+`tools/flight_monitor.py` checks all of these and prints GO/NO-GO before you
+arm.
