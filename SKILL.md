@@ -104,8 +104,15 @@ Every power-up of the cal build recalibrates — never leave it flashed.
 
 ```bash
 python3 tools/bench_test.py            # board on battery, GCS closed
+python3 tools/bench_test.py --paced    # preferred: YOU press Enter to start each phase
 python3 tools/bench_report.py ~/NinjaPilot-logs/bench_<stamp>.jsonl   # offline deep pass
 ```
+
+`--paced` steps the throttle 15/35/55/75/max % and, for every phase, speaks
+"Next: <move>. Press Enter when you are there." - the window is sampled only
+after your Enter, so labels can neither lead nor lag your hands and the
+still windows are truly still (clean vibration-per-throttle numbers). The
+timed ramp (no flag) remains for hands-off runs.
 
 Radio on or off does not matter: the tool parks every non-GCS channel group
 (Collective, Accessory0-2) on None for the run. It used to leave them on DSM,

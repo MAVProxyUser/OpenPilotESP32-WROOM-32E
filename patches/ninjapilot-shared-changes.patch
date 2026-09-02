@@ -52,7 +52,7 @@ index b0e3ca3b4..aa688a65b 100644
  # Rules to generate GCS resources used to embed firmware binaries into the GCS.
  # They are used later by the vehicle setup wizard to update board firmware.
 diff --git a/flight/modules/Attitude/attitude.c b/flight/modules/Attitude/attitude.c
-index 57c978da2..6c2d6bdb7 100644
+index 57c978da2..fa3864129 100644
 --- a/flight/modules/Attitude/attitude.c
 +++ b/flight/modules/Attitude/attitude.c
 @@ -64,7 +64,13 @@
@@ -142,7 +142,36 @@ index 57c978da2..6c2d6bdb7 100644
          }
  
          // Only update attitude when sensor data is good
-@@ -348,6 +384,7 @@ static void AttitudeTask(__attribute__((unused)) void *parameters)
+@@ -339,6 +375,28 @@ static void AttitudeTask(__attribute__((unused)) void *parameters)
+             PERF_MEASURE_PERIOD(counterPeriod);
+             AlarmsClear(SYSTEMALARMS_ALARM_ATTITUDE);
+         }
++#if defined(SIMPOSIX)
++        /* Sim-twin ground truth for the sensor->attitude handshake: how often
++         * the loop found data vs timed out, once per second. */
++        {
++            static uint32_t sim_ok = 0, sim_err = 0;
++            static portTickType sim_last = 0;
++            if (retval == 0) {
++                sim_ok++;
++            } else {
++                sim_err++;
++            }
++            portTickType sim_now = xTaskGetTickCount();
++            if (sim_now - sim_last >= 1000 / portTICK_RATE_MS) {
++                sim_last = sim_now;
++                printf("[SIMPOSIX-IFDEF-MARKER] attitude: ok=%lu err=%lu cc3d=%d period_ms=%lu tick=%lu\n",
++                       (unsigned long)sim_ok, (unsigned long)sim_err, (int)cc3d,
++                       (unsigned long)sensor_period_ms, (unsigned long)sim_now);
++                fflush(stdout);
++                sim_ok = sim_err = 0;
++            }
++        }
++#endif
+         vTaskDelayUntil(&lastSysTime, sensor_period_ms / portTICK_PERIOD_MS);
+     }
+ }
+@@ -348,6 +406,7 @@ static void AttitudeTask(__attribute__((unused)) void *parameters)
   * @param[in] attitudeRaw Populate the UAVO instead of saving right here
   * @return 0 if successfull, -1 if not
   */
@@ -150,7 +179,7 @@ index 57c978da2..6c2d6bdb7 100644
  static int32_t updateSensors(AccelStateData *accelState, GyroStateData *gyros)
  {
      struct pios_adxl345_data accel_data;
-@@ -461,6 +498,7 @@ static int32_t updateSensors(AccelStateData *accelState, GyroStateData *gyros)
+@@ -461,6 +520,7 @@ static int32_t updateSensors(AccelStateData *accelState, GyroStateData *gyros)
  
      return 0;
  }
@@ -158,7 +187,7 @@ index 57c978da2..6c2d6bdb7 100644
  
  /**
   * Get an update from the sensors
-@@ -474,10 +512,32 @@ static int32_t updateSensorsCC3D(AccelStateData *accelStateData, GyroStateData *
+@@ -474,10 +534,42 @@ static int32_t updateSensorsCC3D(AccelStateData *accelStateData, GyroStateData *
      float temp = 0;
      uint8_t count   = 0;
  
@@ -168,8 +197,18 @@ index 57c978da2..6c2d6bdb7 100644
 +#if defined(PIOS_INCLUDE_ICM20602) || defined(PIOS_INCLUDE_MPU6000)
 +
 +    xQueueHandle queue = ATTITUDE_IMU_DRIVER.get_queue(0);
-+#if defined(USE_ESP32)
++#if defined(USE_ESP32) || defined(SIMPOSIX)
 +    /*
++     * SIMPOSIX too: the posix twins are fed GyroSensor/AccelSensor over UDP
++     * from a host process (Gazebo bridge, bench_test --sim-sensors) whose
++     * jitter dwarfs the ESP32's. Measured 2026-09-02 with a 345 Hz host pump:
++     * the one-period wait timed out ~100 times a second, and because
++     * alarms.c only lets a severity DROP after PIOS_ALARM_GRACETIME, the
++     * Attitude alarm read Error 99.7% of the time while the estimator was
++     * happily updating 400 times a second - which blocked arming (Error
++     * outranks Critical in SystemAlarms). Same tolerance as the board it
++     * twins fixes it.
++     *
 +     * Wait TWO nominal sample periods, not one.
 +     *
 +     * sensor_period_ms is exactly the interval samples arrive at (2ms at
@@ -194,7 +233,7 @@ index 57c978da2..6c2d6bdb7 100644
      while (ret == pdTRUE) {
          gyros[0]  += mpu6000_data->sample[1].x;
          gyros[1]  += mpu6000_data->sample[1].y;
-@@ -548,7 +608,7 @@ static int32_t updateSensorsCC3D(AccelStateData *accelStateData, GyroStateData *
+@@ -548,7 +640,7 @@ static int32_t updateSensorsCC3D(AccelStateData *accelStateData, GyroStateData *
      }
      // gyrosData->temperature  = 35.0f + ((float)mpu6000_data.temperature + 512.0f) / 340.0f;
      // accelsData->temperature = 35.0f + ((float)mpu6000_data.temperature + 512.0f) / 340.0f;
@@ -203,7 +242,7 @@ index 57c978da2..6c2d6bdb7 100644
  
      if (rotate) {
          // TODO: rotate sensors too so stabilization is well behaved
-@@ -772,7 +832,7 @@ static void settingsUpdatedCb(__attribute__((unused)) UAVObjEvent *objEv)
+@@ -772,7 +864,7 @@ static void settingsUpdatedCb(__attribute__((unused)) UAVObjEvent *objEv)
  
      if (BOARDISCC3D) {
          float scales[2];

@@ -28,6 +28,7 @@ What it grades:
   flight_monitor running. Type PROPS OFF at the prompt to begin.
 
     python3 bench_test.py [--host 192.168.0.45] [--max 0.90] [--time 100]
+    python3 bench_test.py --paced        # you press Enter to start each phase
 """
 
 import argparse
@@ -113,6 +114,11 @@ def main():
     ap.add_argument("--skip-apply", action="store_true",
                     help="skip applying the recommended settings first")
     ap.add_argument("--quiet", action="store_true", help="no voice prompts")
+    ap.add_argument("--paced", action="store_true",
+                    help="Enter-paced: stepped throttle (15/35/55/75/max %%), each "
+                         "phase starts when YOU press Enter and is sampled for its "
+                         "full duration - labels cannot lag your hands and the "
+                         "still windows are truly still (--time is ignored)")
     ap.add_argument("--sim-sensors", action="store_true",
                     help="SIM ONLY: also feed level GyroSensor/AccelSensor so the "
                          "simwroom twin's attitude converges and it outputs PWM "
@@ -283,14 +289,33 @@ def main():
         # so the grader's tilt->motor checks exercise for real in sim.
         import math as _m
         gyro_o, acc_o = db["GyroSensor"], db["AccelSensor"]
+        # The synthetic airframe slews toward sim_tilt at a hand-like rate and
+        # the gyro reports THAT rate, so the complementary filter integrates
+        # into the tilt within half a second the way it does on real hands
+        # (accel alone, at AccelKp 0.05, only crawls there over ~10 s - the
+        # 2026-09-02 00:33 sim self-test scored 'nose up' +5.7 deg for that
+        # reason). Signs match the real 23:54 log: gyro.y > 0 raises pitch,
+        # gyro.x > 0 raises roll; nose down -> acc.x < 0; roll right -> acc.y < 0.
+        cur = {"roll": 0.0, "pitch": 0.0}
+        SLEW = 60.0   # deg/s
+        last_t = time.time()
         while not stop.is_set():
-            r = _m.radians(sim_tilt["roll"])
-            p_ = _m.radians(sim_tilt["pitch"])
+            now_t = time.time()
+            dt = max(1e-4, now_t - last_t)
+            last_t = now_t
+            rate = {}
+            for ax_name in ("roll", "pitch"):
+                err = sim_tilt[ax_name] - cur[ax_name]
+                step = max(-SLEW * dt, min(SLEW * dt, err))
+                cur[ax_name] += step
+                rate[ax_name] = step / dt
+            r = _m.radians(cur["roll"])
+            p_ = _m.radians(cur["pitch"])
             ax = _m.sin(p_) * 9.81
             ay = -_m.sin(r) * 9.81
             az = -_m.cos(r) * _m.cos(p_) * 9.81
             client.transport.send(uavtalk.build_packet(uavtalk.TYPE_OBJ, gyro_o.obj_id, 0,
-                gyro_o.pack({"x": 0.0, "y": 0.0, "z": 0.0, "temperature": 25.0})))
+                gyro_o.pack({"x": rate["roll"], "y": rate["pitch"], "z": 0.0, "temperature": 25.0})))
             client.transport.send(uavtalk.build_packet(uavtalk.TYPE_OBJ, acc_o.obj_id, 0,
                 acc_o.pack({"x": ax, "y": ay, "z": az, "temperature": 25.0})))
             time.sleep(0.0025)
@@ -429,6 +454,18 @@ def main():
              ("still", None, 4.0)]  # announced with throttle percentage
     dur_of = {name: dur for name, _, dur in CYCLE}
     REACTION_S = 1.0    # hands need about this long after the words START
+    paced = None
+    if args.paced:
+        lv = sorted({round(x, 2) for x in (0.15, 0.35, 0.55, 0.75, args.max) if x <= args.max + 1e-6})
+        paced = {"levels": lv, "level_i": 0, "step_i": 0, "mode": "announce",
+                 "wait_t0": 0.0, "hold_until": 0.0}
+        _enter_q = queue.Queue()
+
+        def _stdin_reader():
+            for _line in sys.stdin:
+                _enter_q.put(1)
+        threading.Thread(target=_stdin_reader, daemon=True).start()
+        say("Paced mode. Each step waits for you to press Enter.")
     ramp_t0 = time.time()
     phase = ["level"]   # the label written to each row
     pending = [None]    # (name, tag, queued_at): spoken/queued, not yet reacted to
@@ -439,35 +476,82 @@ def main():
         while True:
             now = time.time()
             el = now - ramp_t0
-            if el > args.time + 4.0:
-                break
-            throttle[0] = min(args.max, args.max * el / args.time)
-            # A prompt becomes the row label only REACTION_S after the words
-            # actually started (the say queue may be seconds behind us), and
-            # its window is timed from then. Rows in between are labeled
-            # "transition" and excluded from the per-phase grades.
-            if pending[0] is not None:
-                name, tag, queued_at = pending[0]
-                spoken = _spoken_at.get(tag)
-                if spoken is None and now - queued_at > 10.0:
-                    spoken = now      # speech wedged: never stall the ramp
-                if spoken is not None and now - spoken >= REACTION_S:
-                    phase[0] = name
-                    phase_until[0] = spoken + REACTION_S + dur_of[name]
-                    pending[0] = None
-                    if args.sim_sensors:
-                        sim_tilt["roll"] = {"roll_left": -20.0, "roll_right": 20.0}.get(name, 0.0)
-                        sim_tilt["pitch"] = {"nose_down": -20.0, "nose_up": 20.0}.get(name, 0.0)
-            if pending[0] is None and now >= phase_until[0]:
-                name, prompt, dur = CYCLE[cyc_i[0] % len(CYCLE)]
-                cyc_i[0] += 1
-                tag = "phase%d" % cyc_i[0]
-                pending[0] = (name, tag, now)
-                phase[0] = "transition"
-                if name == "still":
-                    say("Hold still. %d percent." % int(throttle[0] * 100), tag=tag)
-                else:
-                    say(prompt, tag=tag)
+            if args.paced:
+                # ---- Enter-paced: stepped throttle; each phase begins when
+                # the pilot presses Enter and is sampled for its full
+                # duration, so the label can never lead or lag the hands.
+                if paced["mode"] == "done":
+                    break
+                tgt = paced["levels"][paced["level_i"]]
+                throttle[0] += max(-0.01, min(0.01, tgt - throttle[0]))   # ~0.25/s glide
+                name, prompt, dur = CYCLE[paced["step_i"]]
+                if paced["mode"] == "announce":
+                    if paced["step_i"] == 0:
+                        say("Throttle %d percent." % int(tgt * 100))
+                    if name == "still":
+                        say("Next: hold still. Press Enter, then keep it still.")
+                    else:
+                        say("Next: %s Press Enter when you are there." % prompt)
+                    phase[0] = "transition"
+                    while not _enter_q.empty():      # only presses AFTER this prompt count
+                        _enter_q.get()
+                    paced["mode"], paced["wait_t0"] = "wait_enter", now
+                elif paced["mode"] == "wait_enter":
+                    pressed = False
+                    while not _enter_q.empty():
+                        _enter_q.get()
+                        pressed = True
+                    if pressed or now - paced["wait_t0"] > 45.0:
+                        if not pressed:
+                            say("No Enter. Moving on.")
+                        phase[0] = name
+                        paced["hold_until"] = now + dur
+                        paced["mode"] = "hold"
+                        say("Hold.")
+                        if args.sim_sensors:
+                            sim_tilt["roll"] = {"roll_left": -20.0, "roll_right": 20.0}.get(name, 0.0)
+                            sim_tilt["pitch"] = {"nose_down": -20.0, "nose_up": 20.0}.get(name, 0.0)
+                elif paced["mode"] == "hold" and now >= paced["hold_until"]:
+                    phase[0] = "transition"
+                    paced["step_i"] += 1
+                    if paced["step_i"] >= len(CYCLE):
+                        paced["step_i"] = 0
+                        paced["level_i"] += 1
+                        if paced["level_i"] >= len(paced["levels"]):
+                            paced["mode"] = "done"
+                            say("All levels done.")
+                    if paced["mode"] != "done":
+                        paced["mode"] = "announce"
+            else:
+                if el > args.time + 4.0:
+                    break
+                throttle[0] = min(args.max, args.max * el / args.time)
+                # A prompt becomes the row label only REACTION_S after the words
+                # actually started (the say queue may be seconds behind us), and
+                # its window is timed from then. Rows in between are labeled
+                # "transition" and excluded from the per-phase grades.
+                if pending[0] is not None:
+                    name, tag, queued_at = pending[0]
+                    spoken = _spoken_at.get(tag)
+                    if spoken is None and now - queued_at > 10.0:
+                        spoken = now      # speech wedged: never stall the ramp
+                    if spoken is not None and now - spoken >= REACTION_S:
+                        phase[0] = name
+                        phase_until[0] = spoken + REACTION_S + dur_of[name]
+                        pending[0] = None
+                        if args.sim_sensors:
+                            sim_tilt["roll"] = {"roll_left": -20.0, "roll_right": 20.0}.get(name, 0.0)
+                            sim_tilt["pitch"] = {"nose_down": -20.0, "nose_up": 20.0}.get(name, 0.0)
+                if pending[0] is None and now >= phase_until[0]:
+                    name, prompt, dur = CYCLE[cyc_i[0] % len(CYCLE)]
+                    cyc_i[0] += 1
+                    tag = "phase%d" % cyc_i[0]
+                    pending[0] = (name, tag, now)
+                    phase[0] = "transition"
+                    if name == "still":
+                        say("Hold still. %d percent." % int(throttle[0] * 100), tag=tag)
+                    else:
+                        say(prompt, tag=tag)
             att = get("AttitudeState") or {}
             gyro = get("GyroState") or {}
             acc = get("AccelState") or {}
