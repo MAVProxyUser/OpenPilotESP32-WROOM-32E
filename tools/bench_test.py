@@ -451,17 +451,22 @@ def main():
         gn += 1
         time.sleep(0.25)
     gbias = [v / gn for v in gsum]
-    print("[check] gyro at rest: x %+.1f y %+.1f z %+.1f deg/s" % tuple(gbias), flush=True)
+    up_ms = float(fetch("SystemStats").get("FlightTime", 0))
+    print("[check] gyro at rest: x %+.1f y %+.1f z %+.1f deg/s   (board up %.0f s)"
+          % (gbias[0], gbias[1], gbias[2], up_ms / 1000.0), flush=True)
     if max(abs(v) for v in gbias) > 4.0:
-        say("Stop. The gyro reads %d degrees per second at rest. The board learned motion as "
-            "bias at power up. Power cycle it and leave it still for ten seconds. Aborting."
-            % int(max(abs(v) for v in gbias)))
-        print("[ABORT] gyro bias at rest %s deg/s (limit 4). The board was moving during its" % [round(v, 1) for v in gbias])
-        print("        startup calibration window (~7 s after power-up). Power cycle with the quad")
-        print("        sitting still on the bench for 10 s, then re-run. (AttitudeSettings.")
-        print("        ZeroDuringArming=TRUE re-learns it at every arm - see apply_recommended.)")
-        write_verify("ManualControlSettings", mcs_orig, ["ChannelGroups"])
-        raise SystemExit(1)
+        # Not an abort: this is a STALE bias - learned at the end of the boot
+        # window or at the last arming, then only trickled away by AccelKi
+        # (0.0001: tens of minutes). It is not you moving it now. The arming
+        # second re-zeros the gyros against the resting reading, and this
+        # tool now arms with the quad flat and hands-off, so it is cured
+        # below; the post-arm check is the one that enforces.
+        say("The gyro carries %d degrees per second of old bias. Not a problem yet - "
+            "arming will re-zero it while the quad sits flat." % int(max(abs(v) for v in gbias)))
+        print("[WARN] stale gyro bias %s deg/s after %.0f s of uptime - learned earlier (boot"
+              % ([round(v, 1) for v in gbias], up_ms / 1000.0))
+        print("       window or last arming), NOT current motion. Arming flat/hands-off re-zeros it;")
+        print("       the post-arm check below aborts if it does not.")
 
     # ---- orientation gate: the board's nose must be the AIRFRAME's nose ----
     # The 2026-09-02 00:59 paced run read every commanded tilt with the
@@ -483,7 +488,15 @@ def main():
             print("[WARN] orientation check skipped on %s (no Enter)" % axis)
             break
         time.sleep(0.4)
-        v = float(fetch("AttitudeState").get(key, 0.0))
+        # gravity from the accelerometer, not the estimate: a stale gyro bias
+        # walks the estimate (01:28 run: roll past 90 deg) but not the accel
+        a = fetch("AccelState")
+        ax, ay, az = float(a.get("x", 0)), float(a.get("y", 0)), float(a.get("z", -9.81))
+        amag = max(1e-3, math.sqrt(ax * ax + ay * ay + az * az))
+        if key == "Pitch":
+            v = math.degrees(math.asin(max(-1.0, min(1.0, ax / amag))))
+        else:
+            v = math.degrees(math.atan2(-ay, -az))
         seen = name_neg if v < -8 else name_pos if v > 8 else "LEVEL"
         print("[check] orientation %s: you tipped %s, board reads %s (%+.0f deg)"
               % (axis, name_neg.lower(), seen, v), flush=True)
