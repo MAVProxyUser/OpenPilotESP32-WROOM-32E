@@ -70,7 +70,7 @@ ALARM_RANK = {"OK": 0, "Uninitialised": 0, "Warning": 1, "Error": 2, "Critical":
 PREFLIGHT_OBJECTS = ["FirmwareIAPObj", "MixerSettings", "ActuatorSettings",
                      "FlightModeSettings", "StabilizationSettingsBank1",
                      "ManualControlSettings", "SystemSettings", "AttitudeSettings",
-                     "GyroState"]
+                     "GyroState", "SystemAlarms"]
 
 # Build time of the firmware that first carried the 41Hz gyro DLPF (and the
 # GCS receiver binding). The DLPF was believed to be the 2026-09-01 flip fix;
@@ -233,9 +233,25 @@ def run_preflight(cfg):
             add("WARN", "board rotation", "BoardRotation %s - Yaw 180 ok, roll/pitch trim > 3 deg" % rot)
         else:
             add("OK", "board rotation", "Yaw 180 (IMU +x at tail, corrected) trims %s" % rot[:2])
+    al = cfg.get("SystemAlarms")
+    if al:
+        alv = al.get("Alarm", [])
+        crit = [ALARM_NAMES[i] + "=" + v for i, v in enumerate(alv)
+                if i < len(ALARM_NAMES) and v in ("Error", "Critical")]
+        if crit:
+            hint = ""
+            if any(c.startswith("BootFault") for c in crit):
+                hint = " - BootFault on this board = IMU did not answer WHO_AM_I at boot (or DRDY/DSM task failed); blocks arming; clean power cycle, else SPI leads"
+            if any(c.startswith("Attitude") for c in crit):
+                hint += " - Attitude: IMU not producing samples; clean power cycle, then check GyroState"
+            add("FAIL", "alarms", ", ".join(crit) + hint)
+        else:
+            add("OK", "alarms", "no Error/Critical alarms")
     gy = cfg.get("GyroState")
     if gy:
         gb = [float(gy.get(k, 0.0)) for k in ("x", "y", "z")]
+        if all(abs(v) < 1e-6 for v in gb):
+            add("FAIL", "gyro stream", "GyroState exactly zero - IMU produced no samples since boot; clean power cycle")
         # CC attitude learns gyro bias with a 0.2 s time constant during the
         # first ~7 s after power-up AND during the arming second
         # (ZeroDuringArming). A quad that was moving then carries that rate as

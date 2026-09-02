@@ -428,8 +428,24 @@ def main():
     else:
         alv = (get("SystemAlarms") or {}).get("Alarm", [])
         att = alv[att_idx] if alv else "?"
+        bad = [ALARM_NAMES[i] + "=" + v for i, v in enumerate(alv)
+               if i < len(ALARM_NAMES) and v not in ("OK", "Uninitialised")]
+        g = fetch("GyroState")
+        gz = all(abs(float(g.get(k, 0.0))) < 1e-6 for k in ("x", "y", "z"))
+        up_s = float(fetch("SystemStats").get("FlightTime", 0)) / 1000.0
         say("The attitude estimator did not become ready. Aborting.")
-        print("[ABORT] Attitude alarm stuck at %s after 20s - sensors/vibration?" % att)
+        print("[ABORT] Attitude alarm stuck at %s after 20s. alarms: %s (board up %.0f s)"
+              % (att, ", ".join(bad) or "none", up_s))
+        if gz:
+            print("        GyroState is EXACTLY zero: the IMU has produced no samples since boot.")
+            print("        Not vibration, not you. The ICM-20602 did not come up on this boot.")
+        if any(b.startswith("BootFault") for b in bad):
+            print("        BootFault=Critical: on THIS board that means the ICM-20602 did not answer")
+            print("        WHO_AM_I over SPI at boot (4 tries), or its data-ready task/DSM failed to")
+            print("        start (pios_board.c). The board boots anyway, reports it, refuses to arm.")
+        print("        Fix: unplug the battery, wait 5 s, plug it in ONCE firmly (a lead that scrapes")
+        print("        and bounces can catch the IMU mid-power-up), hands off 10 s, re-run. If it")
+        print("        repeats on a clean boot: SPI3 leads SCLK=5 MOSI=18 MISO=19 CS=14 to the IMU.")
         write_verify("ManualControlSettings", mcs_orig, ["ChannelGroups"])
         raise SystemExit(1)
     time.sleep(1.0)
