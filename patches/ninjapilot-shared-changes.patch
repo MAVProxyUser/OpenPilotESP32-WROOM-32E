@@ -4924,10 +4924,10 @@ index 000000000..1167f0f6e
 + */
 diff --git a/flight/targets/boards/simwroom/firmware/pios_board.c b/flight/targets/boards/simwroom/firmware/pios_board.c
 new file mode 100644
-index 000000000..2a519049a
+index 000000000..9de919b44
 --- /dev/null
 +++ b/flight/targets/boards/simwroom/firmware/pios_board.c
-@@ -0,0 +1,364 @@
+@@ -0,0 +1,433 @@
 +/**
 + ******************************************************************************
 + * @addtogroup Revolution Revolution configuration files
@@ -4963,6 +4963,7 @@ index 000000000..2a519049a
 +#include <hwsettings.h>
 +#include <manualcontrolsettings.h>
 +#include <actuatorsettings.h>
++#include <mixersettings.h>
 +#include <taskinfo.h>
 +#include <firmwareiapobj.h>
 +#include <pios_icm20602.h>
@@ -5024,6 +5025,70 @@ index 000000000..2a519049a
 + * NOTE: THIS IS THE ONLY PLACE THAT SHOULD EVER INCLUDE THIS FILE
 + */
 +#include "../board_hw_defs.c"
++
++/* Compiled-in Quad X + GCS control, mirroring the real ESP32 board's
++ * board_apply_default_airframe (targets/esp32wroom) so the sim twin actually
++ * OUTPUTS PWM when armed - the twin has no settings filesystem, so without
++ * this its mixer comes up on the all-zero XML default and every motor
++ * commands nothing. Receiver is mapped to GCS (this is a UDP-driven sim),
++ * MotorsSpinWhileArmed is TRUE, and the neutral sits above the stop so idle
++ * spin is visible. This runs every boot (RAM-only target); a UDP client may
++ * still override any of it at runtime. */
++static void simwroom_apply_default_airframe(void)
++{
++    MixerSettingsData mixer;
++
++    MixerSettingsGet(&mixer);
++    mixer.ThrottleCurve1[0] = 0.0f;
++    mixer.ThrottleCurve1[1] = 0.25f;
++    mixer.ThrottleCurve1[2] = 0.5f;
++    mixer.ThrottleCurve1[3] = 0.75f;
++    mixer.ThrottleCurve1[4] = 1.0f;
++    mixer.Mixer1Type = MIXERSETTINGS_MIXER1TYPE_MOTOR;
++    mixer.Mixer1Vector.ThrottleCurve1 = 127;
++    mixer.Mixer1Vector.Roll = 127; mixer.Mixer1Vector.Pitch = 127; mixer.Mixer1Vector.Yaw = -127;
++    mixer.Mixer2Type = MIXERSETTINGS_MIXER2TYPE_MOTOR;
++    mixer.Mixer2Vector.ThrottleCurve1 = 127;
++    mixer.Mixer2Vector.Roll = -127; mixer.Mixer2Vector.Pitch = 127; mixer.Mixer2Vector.Yaw = 127;
++    mixer.Mixer3Type = MIXERSETTINGS_MIXER3TYPE_MOTOR;
++    mixer.Mixer3Vector.ThrottleCurve1 = 127;
++    mixer.Mixer3Vector.Roll = -127; mixer.Mixer3Vector.Pitch = -127; mixer.Mixer3Vector.Yaw = -127;
++    mixer.Mixer4Type = MIXERSETTINGS_MIXER4TYPE_MOTOR;
++    mixer.Mixer4Vector.ThrottleCurve1 = 127;
++    mixer.Mixer4Vector.Roll = 127; mixer.Mixer4Vector.Pitch = -127; mixer.Mixer4Vector.Yaw = 127;
++    MixerSettingsSet(&mixer);
++
++    ActuatorSettingsData act;
++    ActuatorSettingsGet(&act);
++    for (uint8_t i = 0; i < 4; i++) {
++        act.ChannelType[i]    = ACTUATORSETTINGS_CHANNELTYPE_PWM;
++        act.ChannelAddr[i]    = i;
++        act.ChannelMin[i]     = 1000;
++        act.ChannelNeutral[i] = 1100;   /* above the stop: idle spin visible */
++        act.ChannelMax[i]     = 2000;
++    }
++    act.MotorsSpinWhileArmed = ACTUATORSETTINGS_MOTORSSPINWHILEARMED_TRUE;
++    ActuatorSettingsSet(&act);
++
++    ManualControlSettingsData mc;
++    ManualControlSettingsGet(&mc);
++    mc.ChannelGroups.Throttle   = MANUALCONTROLSETTINGS_CHANNELGROUPS_GCS;
++    mc.ChannelGroups.Roll       = MANUALCONTROLSETTINGS_CHANNELGROUPS_GCS;
++    mc.ChannelGroups.Pitch      = MANUALCONTROLSETTINGS_CHANNELGROUPS_GCS;
++    mc.ChannelGroups.Yaw        = MANUALCONTROLSETTINGS_CHANNELGROUPS_GCS;
++    mc.ChannelGroups.FlightMode = MANUALCONTROLSETTINGS_CHANNELGROUPS_GCS;
++    mc.ChannelNumber.Throttle   = 1;
++    mc.ChannelNumber.Roll       = 2;
++    mc.ChannelNumber.Pitch      = 3;
++    mc.ChannelNumber.Yaw        = 4;
++    mc.ChannelNumber.FlightMode = 5;
++    mc.ChannelMin.Throttle = 1000; mc.ChannelNeutral.Throttle = 1050; mc.ChannelMax.Throttle = 2000;
++    mc.ChannelMin.Roll = 1000; mc.ChannelNeutral.Roll = 1500; mc.ChannelMax.Roll = 2000;
++    mc.ChannelMin.Pitch = 1000; mc.ChannelNeutral.Pitch = 1500; mc.ChannelMax.Pitch = 2000;
++    mc.ChannelMin.Yaw = 1000; mc.ChannelNeutral.Yaw = 1500; mc.ChannelMax.Yaw = 2000;
++    mc.ChannelMin.FlightMode = 1000; mc.ChannelNeutral.FlightMode = 1500; mc.ChannelMax.FlightMode = 2000;
++    ManualControlSettingsSet(&mc);
++}
 +
 +/**
 + * Sensor configurations
@@ -5146,6 +5211,10 @@ index 000000000..2a519049a
 +    HwSettingsInitialize();
 +
 +    UAVObjectsInitializeAll();
++
++    /* Give the twin a real QuadX airframe + GCS control so it outputs PWM
++     * when armed (see the function comment). */
++    simwroom_apply_default_airframe();
 +
 +    /* The GCS identifies the board through FirmwareIAPObj -- populate the
 +     * same identity the real ESP32 Thing Plus reports (board model 0x1202)

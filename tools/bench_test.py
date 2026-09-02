@@ -97,6 +97,10 @@ def main():
     ap.add_argument("--skip-apply", action="store_true",
                     help="skip applying the recommended settings first")
     ap.add_argument("--quiet", action="store_true", help="no voice prompts")
+    ap.add_argument("--sim-sensors", action="store_true",
+                    help="SIM ONLY: also feed level GyroSensor/AccelSensor so the "
+                         "simwroom twin's attitude converges and it outputs PWM "
+                         "(real hardware has real sensors - do not use there)")
     args = ap.parse_args()
     if args.quiet:
         _say_enabled[0] = False
@@ -227,9 +231,11 @@ def main():
     stop = threading.Event()
     n_modes = 6 if True else 5
 
+    yaw_cmd = [1500]   # 2000 = full yaw right (arming gesture), 1500 = neutral
+
     def gcs_channels():
         thr_us = int(1000 + max(0.0, throttle[0]) * 1000)
-        return [thr_us, 1500, 1500, 1500, bov.flight_mode_channel(0, 6), 1500, 1500, 1500]
+        return [thr_us, 1500, 1500, yaw_cmd[0], bov.flight_mode_channel(0, 6), 1500, 1500, 1500]
 
     def stick_pump():
         # GCSReceiver keepalive at 20Hz (the 100ms receiver supervisor) with
@@ -238,13 +244,37 @@ def main():
         i = 0
         while not stop.is_set():
             client.send_object("GCSReceiver", {"Channel": gcs_channels()})
-            time.sleep(0.025)
+            time.sleep(0.02)
             o = db[polls[i % len(polls)]]
             client.transport.send(uavtalk.build_packet(uavtalk.TYPE_OBJ_REQ, o.obj_id, 0))
             i += 1
-            time.sleep(0.025)
+            time.sleep(0.02)
+
+    sim_tilt = {"roll": 0.0, "pitch": 0.0}  # deg, set by the choreography
+
+    def sensor_pump():
+        # SIM ONLY: GyroSensor/AccelSensor at ~400Hz so the attitude queue
+        # (5x sensor period timeout) stays fed and the CC filter converges.
+        # Same client as everything else - no peer-latch fight. When the
+        # choreography sets sim_tilt, the accel gravity vector tilts with it
+        # so the grader's tilt->motor checks exercise for real in sim.
+        import math as _m
+        gyro_o, acc_o = db["GyroSensor"], db["AccelSensor"]
+        while not stop.is_set():
+            r = _m.radians(sim_tilt["roll"])
+            p_ = _m.radians(sim_tilt["pitch"])
+            ax = _m.sin(p_) * 9.81
+            ay = -_m.sin(r) * 9.81
+            az = -_m.cos(r) * _m.cos(p_) * 9.81
+            client.transport.send(uavtalk.build_packet(uavtalk.TYPE_OBJ, gyro_o.obj_id, 0,
+                gyro_o.pack({"x": 0.0, "y": 0.0, "z": 0.0, "temperature": 25.0})))
+            client.transport.send(uavtalk.build_packet(uavtalk.TYPE_OBJ, acc_o.obj_id, 0,
+                acc_o.pack({"x": ax, "y": ay, "z": az, "temperature": 25.0})))
+            time.sleep(0.0025)
     pump = threading.Thread(target=stick_pump, daemon=True)
     pump.start()
+    if args.sim_sensors:
+        threading.Thread(target=sensor_pump, daemon=True).start()
     time.sleep(1.0)
 
     # ---- 3. the ramp, voice-directed --------------------------------------
@@ -286,27 +316,55 @@ def main():
         write_verify("ManualControlSettings", mcs_orig, ["ChannelGroups"])
         raise SystemExit(1)
 
-    say("Receiver check good. Arming.")
-    time.sleep(2.0)
+    say("Receiver check good.")
+    # Wait for the attitude estimator to finish calibrating - okToArm() (which
+    # the real arm gesture runs) blocks while Attitude is Error/Critical, and
+    # filtercf holds ~10s of calibration windows after boot. Same contract the
+    # flight side enforces on a real transmitter arm.
+    att_idx = ALARM_NAMES.index("Attitude")
+    said_wait = False
+    aend = time.time() + 20.0
+    while time.time() < aend:
+        al = get("SystemAlarms")
+        if al and al.get("Alarm") and al["Alarm"][att_idx] == "OK":
+            break
+        if not said_wait:
+            say("Waiting for the sensors to settle. Hold it still and level.")
+            said_wait = True
+        time.sleep(0.2)
+    else:
+        alv = (get("SystemAlarms") or {}).get("Alarm", [])
+        att = alv[att_idx] if alv else "?"
+        say("The attitude estimator did not become ready. Aborting.")
+        print("[ABORT] Attitude alarm stuck at %s after 20s - sensors/vibration?" % att)
+        write_verify("ManualControlSettings", mcs_orig, ["ChannelGroups"])
+        raise SystemExit(1)
+    time.sleep(1.0)
+    # Real arm gesture: throttle low + yaw right held for ArmingSequenceTime
+    # (~1s). This runs the SAME path a transmitter uses, including okToArm()'s
+    # alarm gate - a better test than the Always-Armed bypass.
     fms = dict(fms_orig)
-    fms["Arming"] = "Always Armed"
+    fms["Arming"] = "Yaw Right"
     write_verify("FlightModeSettings", fms, ["Arming"])
-
-    # VERIFY the board actually armed - poll FlightStatus, do not assume
+    throttle[0] = 0.0
+    say("Arming. Holding yaw right. Keep the throttle down for me.")
+    yaw_cmd[0] = 2000   # full yaw right; pump sends it every cycle
     armed = False
-    end = time.time() + 5.0
+    end = time.time() + 6.0
     while time.time() < end:
         fs = get("FlightStatus")
         if fs and fs.get("Armed") == "Armed":
             armed = True
             break
         time.sleep(0.1)
+    yaw_cmd[0] = 1500   # release the gesture the instant it arms
     if not armed:
         alarms = fetch("SystemAlarms").get("Alarm", [])
         bad = [ALARM_NAMES[i] + "=" + v for i, v in enumerate(alarms)
                if i < len(ALARM_NAMES) and v not in ("OK", "Uninitialised")]
         say("The board did not arm. Aborting.")
-        print("[ABORT] FlightStatus never reached Armed. alarms: %s"
+        print("[ABORT] yaw-right gesture did not arm within 6s. "
+              "okToArm() blocks on any Critical alarm. alarms: %s"
               % (", ".join(bad) or "none"))
         write_verify("FlightModeSettings", fms_orig, ["Arming"])
         write_verify("ManualControlSettings", mcs_orig, ["ChannelGroups"])
@@ -348,6 +406,9 @@ def main():
                 cyc_i[0] += 1
                 phase[0] = name
                 phase_until[0] = now + dur
+                if args.sim_sensors:
+                    sim_tilt["roll"] = {"roll_left": -20.0, "roll_right": 20.0}.get(name, 0.0)
+                    sim_tilt["pitch"] = {"nose_down": -20.0, "nose_up": 20.0}.get(name, 0.0)
                 if name == "still":
                     say("Hold still at %d percent. Three. Two. One." % int(throttle[0] * 100))
                 else:
@@ -376,14 +437,26 @@ def main():
         say("Ramp complete. Throttle down.")
         throttle[0] = 0.0
         time.sleep(1.0)
-        say("Disarming and restoring your radio.")
+        say("Disarming.")
+        try:
+            # force disarm explicitly, then hand the radio back
+            dfms = dict(fms_orig)
+            dfms["Arming"] = "Always Disarmed"
+            write_verify("FlightModeSettings", dfms, ["Arming"])
+            dend = time.time() + 3.0
+            while time.time() < dend:
+                fs = get("FlightStatus")
+                if fs and fs.get("Armed") == "Disarmed":
+                    break
+                time.sleep(0.1)
+        except SystemExit:
+            pass
         stop.set()
         time.sleep(0.2)
-        # restore original control ownership (and disarm via original Arming)
         try:
             write_verify("FlightModeSettings", fms_orig, ["Arming"])
             write_verify("ManualControlSettings", mcs_orig, ["ChannelGroups"])
-            say("Your radio is back in control. Test done. You can put the quad down.")
+            say("Disarmed. Your radio is back. Test done. You can put the quad down.")
         except SystemExit:
             say("Warning. Restore failed. Power cycle the board to get your radio back.")
         out.close()
@@ -402,15 +475,11 @@ def main():
         ("nose_up", lambda s: s["att"][1], ">", 3, "estimate sees nose up"),
         ("roll_left", lambda s: s["att"][0], "<", -3, "estimate sees roll left"),
         ("roll_right", lambda s: s["att"][0], ">", 3, "estimate sees roll right"),
-        ("nose_down", lambda s: (s["pwm"][0] + s["pwm"][1]) - (s["pwm"][2] + s["pwm"][3]),
-         ">", 5, "front motors rise when nose drops"),
-        ("nose_up", lambda s: (s["pwm"][0] + s["pwm"][1]) - (s["pwm"][2] + s["pwm"][3]),
-         "<", -5, "rear motors rise when nose lifts"),
-        ("roll_left", lambda s: (s["pwm"][0] + s["pwm"][3]) - (s["pwm"][1] + s["pwm"][2]),
-         ">", 5, "left motors rise when left side drops"),
-        ("roll_right", lambda s: (s["pwm"][0] + s["pwm"][3]) - (s["pwm"][1] + s["pwm"][2]),
-         "<", -5, "right motors rise when right side drops"),
     ]
+    # (mixer-response DIRECTION is graded robustly below by correlation over
+    # all motion - "pitch vs front-rear PWM" / "roll vs left-right PWM" -
+    # rather than per-phase absolute PWM deltas, which are confounded by the
+    # throttle-dependent baseline and the estimate's lag behind fast tilts)
     for ph, fn, op, thresh, desc in checks:
         m = phase_mean(ph, fn)
         if m is None:
