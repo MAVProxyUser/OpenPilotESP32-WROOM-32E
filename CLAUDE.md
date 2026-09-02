@@ -141,7 +141,7 @@ configuration — do not go looking for a HID option to enable.
 
 ## RULE: the IDF console stays OFF UART0
 
-`sdkconfig.defaults` moves it to UART1/GPIO13. Do not move it back except as a
+`sdkconfig.defaults` moves it to UART1 on GPIO22 (TX) / GPIO23 (RX), 57600. Do not move it back except as a
 deliberate, temporary debugging step (see SKILL.md).
 
 **Why:** UART0 carries UAVTalk. With the console sharing it, log text
