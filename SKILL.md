@@ -114,8 +114,8 @@ the first ~7 s after power-up AND during the arming second (ZeroDuringArming is
 TRUE here). Whatever rate the quad has then becomes "bias" for the session:
 the 01:28 bench armed two seconds after the left-arm dip and learned gyro.x
 -54 deg/s; the roll estimate wandered past 90 deg while the accel read the
-truth. Power up with the quad sitting still for 10 s; freeze when bench_test
-says "do not move it while I arm". bench_test waits for a quiet gyro, checks
+truth. Power up with the quad sitting still for 10 s; bench_test asks you to place
+the quad flat on the bench and press Enter, then arms hands-off. bench_test waits for a quiet gyro, checks
 the resting bias before AND after arming (limit 4 deg/s) and disarms if it
 learned one; flight_monitor preflight fails on a biased gyro and shouts if a
 bias appears after any arming.

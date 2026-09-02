@@ -510,7 +510,13 @@ def main():
     # the pilot was still rolling it back to level -> gyro.x -54 deg/s bias,
     # roll estimate past 90 deg all run. So: wait for a QUIET gyro first, tell
     # the pilot to freeze, and verify the bias again right after arming.
-    say("Set it down or hold it perfectly still. Do not move it while I arm.")
+    say("Place the quad flat on the bench, hands off, then press Enter.")
+    if not wait_enter(120.0):
+        say("No Enter. Aborting.")
+        print("[ABORT] no Enter after 'place it flat' - not arming")
+        write_verify("ManualControlSettings", mcs_orig, ["ChannelGroups"])
+        raise SystemExit(1)
+    say("Do not touch it while I arm.")
     quiet_since = None
     q_end = time.time() + 30.0
     while time.time() < q_end:
