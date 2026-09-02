@@ -176,6 +176,26 @@ time = safe shutdown + restore. Full record lands in
 See `BOM.md`: every part on the airframe that hovered, pin-by-pin wiring,
 the power rule, IMU orientation, and the settings table.
 
+## Remote ID (ASTM F3411 over WiFi beacon)
+
+```bash
+python3 tools/remoteid_setup.py --id-type CAARegistrationID --uas-id FA3xxx --operator-id FA3xxx --self-id "text" --enable
+python3 tools/remoteid_setup.py --status
+python3 tools/remoteid_listen.py           # sim twin: decode UDP :9020 packs
+python3 tools/remoteid_listen.py --hex DD..  # decode a captured element
+```
+
+Module `flight/modules/RemoteID`, encoder `flight/libraries/opendroneid`
+(vendored, Apache-2.0; the ESP32 build exempts it from -Werror=format after
+`idf_component_register` - IDF's early script pass rejects
+set_source_files_properties). Transmitter `pios/esp32/pios_rid_wifi.c`
+(APSTA soft-AP `RID-xxxxxx`, vendor element via esp_wifi_set_vendor_ie);
+sim `flight/pios/posix/pios_rid_sim.c` (UDP :9020, `PIOS_INCLUDE_RID_SIM`).
+Objects RemoteIDSettings / RemoteIDStatus (GCS resynced, hash e60dc1f0).
+Sim self-test: fresh dir, start fw_simwroom, `remoteid_listen.py --count 3 &`,
+`remoteid_setup.py --host 127.0.0.1 ... --enable` -> 5-message v2 pack decodes.
+Not compliant Remote ID without a GPS (Location = unknown) - see README.
+
 ## Monitor a real flight
 
 ```bash

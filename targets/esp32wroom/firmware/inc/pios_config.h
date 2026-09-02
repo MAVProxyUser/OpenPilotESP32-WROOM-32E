@@ -62,6 +62,7 @@
  * maps a channel group to GCS; the DSM stays the default. Enables tools/
  * bench_test.py to own the throttle for props-off characterization. */
 #define PIOS_INCLUDE_GCSRCVR
+#define PIOS_INCLUDE_RID_WIFI   /* Remote ID as a beacon vendor element (pios_rid_wifi.c) */
 /* PPM disabled: the RMT receiver on an unconnected pin collects coupled
  * noise edges (one per 500Hz SPI burst), fills its 64-item RX memory every
  * ~254ms, and its ISR then blocks level-1 interrupts on core 0 for ~3.6ms

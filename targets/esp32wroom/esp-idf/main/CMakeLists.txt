@@ -46,6 +46,7 @@ set(PIOS_ESP32_SRCS
     ${ESP32PORT}/pios/esp32/pios_dsm.c
     ${ESP32PORT}/pios/esp32/pios_flashfs_nvs.c
     ${ESP32PORT}/pios/esp32/pios_wifi.c
+    ${ESP32PORT}/pios/esp32/pios_rid_wifi.c
     ${ESP32PORT}/pios/esp32/pios_task_runtime.c
 )
 
@@ -85,6 +86,7 @@ set(LIB_SRCS
     ${FLIGHT}/libraries/CoordinateConversions.c
     ${FLIGHT}/libraries/sanitycheck.c
     ${FLIGHT}/libraries/notification.c
+    ${FLIGHT}/libraries/opendroneid/opendroneid.c
     ${FLIGHT}/libraries/optypes.c
     ${FLIGHT}/libraries/fifo_buffer.c
     ${FLIGHT}/libraries/math/pid.c
@@ -92,6 +94,7 @@ set(LIB_SRCS
     ${FLIGHT}/libraries/math/sin_lookup.c
     ${FLIGHT}/libraries/math/butterworth.c
 )
+
 
 # --- Modules -----------------------------------------------------------
 # KEEP IN SYNC with InitMods.c. A module here but not there never starts.
@@ -115,6 +118,7 @@ set(NINJA_MODULE_SRCS
     ${FLIGHT}/modules/ManualControl/pathplannerhandler.c
     ${FLIGHT}/modules/ManualControl/takeofflocationhandler.c
     ${FLIGHT}/modules/Telemetry/telemetry.c
+    ${FLIGHT}/modules/RemoteID/remoteid.c
     ${FLIGHT}/modules/System/systemmod.c
 )
 
@@ -158,6 +162,8 @@ set(UAVO_SYNTH_SRCS
     ${UAVOSYNTH}/firmwareiapobj.c
     ${UAVOSYNTH}/settingsgeneration.c
     ${UAVOSYNTH}/flipstatus.c
+    ${UAVOSYNTH}/remoteidsettings.c
+    ${UAVOSYNTH}/remoteidstatus.c
     ${UAVOSYNTH}/fixedwingpathfollowersettings.c
     ${UAVOSYNTH}/fixedwingpathfollowerstatus.c
     ${UAVOSYNTH}/flightbatterysettings.c
@@ -283,6 +289,8 @@ idf_component_register(
         ${FLIGHT}/modules/Actuator/inc
         ${FLIGHT}/modules/ManualControl/inc
         ${FLIGHT}/modules/Telemetry/inc
+        ${FLIGHT}/modules/RemoteID/inc
+        ${FLIGHT}/libraries/opendroneid
         ${FLIGHT}/modules/System/inc
         ${UAVOSYNTH}
         # pios_instrumentation.h and friends include "FreeRTOS.h" without
@@ -300,6 +308,16 @@ idf_component_register(
         esp_system
         esp_hw_support
 )
+
+# The vendored reference encoder prints uint32_t with %u in its debug helpers;
+# Xtensa newlib makes that a -Werror=format. Unmodified upstream file, so exempt
+# it. Must come after idf_component_register and not during IDF's early
+# script-mode pass (set_source_files_properties is "not scriptable" there).
+if(NOT CMAKE_BUILD_EARLY_EXPANSION)
+    set_source_files_properties(${FLIGHT}/libraries/opendroneid/opendroneid.c
+        PROPERTIES COMPILE_OPTIONS "-Wno-format")
+endif()
+
 
 # Keeps the UAVObject handle table in writable RAM *and* preserves the
 # __start__/__stop__ boundary symbols. See the header of uavo_handles.ld --
@@ -360,6 +378,9 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE
 target_compile_definitions(${COMPONENT_LIB} PRIVATE
     UAVOBJ_INIT_accelgyrosettings=1
     UAVOBJ_INIT_flipstatus=1
+    UAVOBJ_INIT_remoteidsettings=1
+    UAVOBJ_INIT_remoteidstatus=1
+    ODID_AUTH_MAX_PAGES=1
     UAVOBJ_INIT_accelstate=1
     UAVOBJ_INIT_accessorydesired=1
     UAVOBJ_INIT_actuatorcommand=1
@@ -428,6 +449,9 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE
 target_compile_definitions(${COMPONENT_LIB} PRIVATE
     UAVOBJ_INIT_accelgyrosettings=1
     UAVOBJ_INIT_flipstatus=1
+    UAVOBJ_INIT_remoteidsettings=1
+    UAVOBJ_INIT_remoteidstatus=1
+    ODID_AUTH_MAX_PAGES=1
     UAVOBJ_INIT_accelstate=1
     UAVOBJ_INIT_accessorydesired=1
     UAVOBJ_INIT_actuatorcommand=1

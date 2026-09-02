@@ -81,6 +81,19 @@ estimator zeroes gyros with a 0.2 s time constant for ~7 s after power-up and
 during the arming second (ZeroDuringArming). Any tool that arms must first
 wait for a quiet gyro and re-check the bias after arming (bench_test does).
 
+## Remote ID: a broadcast is not compliance
+
+`flight/modules/RemoteID` broadcasts ASTM F3411 correctly (verified against
+the reference encoder on the sim twin). Do not describe it as FAA-compliant:
+this airframe has no GPS, so Location is "unknown", and a home-built
+transmitter has no Declaration of Compliance. Say "standards-shaped, completes
+when a GPS is on UART2". Never invent a position. Traps that already bit:
+IDF's early script-mode pass rejects set_source_files_properties at the top
+of a component CMakeLists (put it after idf_component_register, guarded by
+NOT CMAKE_BUILD_EARLY_EXPANSION); the vendored encoder's debug printf needs
+-Wno-format on Xtensa; the library's operator-ID enum is ODID_OPERATOR_ID.
+New UAVOs = new UAVO-set hash = GCS resync (recipe in memory).
+
 ## ESC range calibration cannot exist on this board -- do not reintroduce it
 
 The procedure requires the controller alive and holding max throttle

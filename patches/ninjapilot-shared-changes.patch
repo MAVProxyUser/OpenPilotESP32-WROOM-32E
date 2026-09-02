@@ -287,6 +287,19 @@ index 306fa4d68..662555e54 100644
      ManualControlCommandData cmd;
      ManualControlCommandGet(&cmd);
  
+diff --git a/flight/modules/RemoteID/remoteid.c b/flight/modules/RemoteID/remoteid.c
+index 9fe5cecff..1fdea7c09 100644
+--- a/flight/modules/RemoteID/remoteid.c
++++ b/flight/modules/RemoteID/remoteid.c
+@@ -244,7 +244,7 @@ static void fill(const RemoteIDSettingsData *s, RemoteIDStatusData *st)
+         uas.SelfIDValid = 1;
+     }
+     if (s->OperatorID[0]) {
+-        uas.OperatorID.OperatorIdType = ODID_OPERATOR_ID_TYPE_CAA;
++        uas.OperatorID.OperatorIdType = ODID_OPERATOR_ID;
+         copy_field(uas.OperatorID.OperatorId, sizeof(uas.OperatorID.OperatorId), s->OperatorID, REMOTEIDSETTINGS_OPERATORID_NUMELEM);
+         uas.OperatorIDValid = 1;
+     }
 diff --git a/flight/modules/Sensors/simulated/Sensors/sensors.c b/flight/modules/Sensors/simulated/Sensors/sensors.c
 index 0faa36f93..457dd8ac4 100644
 --- a/flight/modules/Sensors/simulated/Sensors/sensors.c
@@ -540,10 +553,10 @@ index 99607a487..835e96964 100644
  UAVOBJSRCFILENAMES += auxmagsensor
  UAVOBJSRCFILENAMES += auxmagsettings
 diff --git a/flight/targets/boards/simwroom/firmware/Makefile b/flight/targets/boards/simwroom/firmware/Makefile
-index de36b5fd6..67b7355d3 100644
+index de36b5fd6..4d5eabbf8 100644
 --- a/flight/targets/boards/simwroom/firmware/Makefile
 +++ b/flight/targets/boards/simwroom/firmware/Makefile
-@@ -57,6 +57,15 @@ MODULES = ManualControl Stabilization Attitude
+@@ -57,8 +57,23 @@ MODULES = ManualControl Stabilization Attitude
  MODULES += Telemetry
  MODULES += Actuator
  MODULES += Receiver
@@ -556,21 +569,43 @@ index de36b5fd6..67b7355d3 100644
 +# The onboard flip sequencer (see flight/modules/Flip/flip.c) - the
 +# board-side flip.pde. Runs on the REAL board too (ESP32 CMake list).
 +MODULES += Flip
++# ASTM F3411 Broadcast Remote ID (flight/modules/RemoteID). On the twin the
++# pack goes out as the beacon element bytes over UDP :9020 (pios_rid_sim.c).
++MODULES += RemoteID
  
  SRC += $(FLIGHTLIB)/notification.c
++SRC += $(FLIGHTLIB)/opendroneid/opendroneid.c
++EXTRAINCDIRS += $(FLIGHTLIB)/opendroneid
++CDEFS += -DODID_AUTH_MAX_PAGES=1
  
+ # Paths
+ OPSYSTEM = .
 diff --git a/flight/targets/boards/simwroom/firmware/UAVObjects.inc b/flight/targets/boards/simwroom/firmware/UAVObjects.inc
-index 835e96964..334c732a9 100644
+index 835e96964..da622510f 100644
 --- a/flight/targets/boards/simwroom/firmware/UAVObjects.inc
 +++ b/flight/targets/boards/simwroom/firmware/UAVObjects.inc
-@@ -46,6 +46,7 @@ UAVOBJSRCFILENAMES += missionprogress
+@@ -46,6 +46,9 @@ UAVOBJSRCFILENAMES += missionprogress
  UAVOBJSRCFILENAMES += missionrecoverysettings
  UAVOBJSRCFILENAMES += sensorhubsettings
  UAVOBJSRCFILENAMES += settingsgeneration
 +UAVOBJSRCFILENAMES += flipstatus
++UAVOBJSRCFILENAMES += remoteidsettings
++UAVOBJSRCFILENAMES += remoteidstatus
  UAVOBJSRCFILENAMES += magsensor
  UAVOBJSRCFILENAMES += auxmagsensor
  UAVOBJSRCFILENAMES += auxmagsettings
+diff --git a/flight/targets/boards/simwroom/firmware/inc/pios_config.h b/flight/targets/boards/simwroom/firmware/inc/pios_config.h
+index 1167f0f6e..c3197b5d7 100644
+--- a/flight/targets/boards/simwroom/firmware/inc/pios_config.h
++++ b/flight/targets/boards/simwroom/firmware/inc/pios_config.h
+@@ -98,6 +98,7 @@
+  * target that driver is the posix simulation shim fed from bridge
+  * sensor objects (pios_icm20602_sim.c). */
+ #define PIOS_INCLUDE_ICM20602
++#define PIOS_INCLUDE_RID_SIM   /* Remote ID pack -> UDP :9020 (tools/remoteid_listen.py) */
+ /* #define PIOS_INCLUDE_OPLINKRCVR */
+ #define PIOS_INCLUDE_IAP
+ #define PIOS_INCLUDE_BL_HELPER
 diff --git a/flight/uavobjects/inc/uavobjectprivate.h b/flight/uavobjects/inc/uavobjectprivate.h
 index 614d96867..c45624709 100644
 --- a/flight/uavobjects/inc/uavobjectprivate.h
@@ -2981,6 +3016,28 @@ index 92cb4af3f..054469175 100644
      QPushButton *m_requestUpdate;
      QPushButton *m_sendUpdate;
      Ui_UAVObjectBrowser *m_browser;
+diff --git a/ground/openpilotgcs/src/plugins/uavobjects/uavobjects.pro b/ground/openpilotgcs/src/plugins/uavobjects/uavobjects.pro
+index c678f6d1f..7a1eaaf38 100644
+--- a/ground/openpilotgcs/src/plugins/uavobjects/uavobjects.pro
++++ b/ground/openpilotgcs/src/plugins/uavobjects/uavobjects.pro
+@@ -45,6 +45,8 @@ HEADERS += \
+     $$UAVOBJECT_SYNTHETICS/actuatorsettings.h \
+     $$UAVOBJECT_SYNTHETICS/settingsgeneration.h \
+     $$UAVOBJECT_SYNTHETICS/flipstatus.h \
++    $$UAVOBJECT_SYNTHETICS/remoteidsettings.h \
++    $$UAVOBJECT_SYNTHETICS/remoteidstatus.h \
+     $$UAVOBJECT_SYNTHETICS/airspeedsensor.h \
+     $$UAVOBJECT_SYNTHETICS/airspeedsettings.h \
+     $$UAVOBJECT_SYNTHETICS/airspeedstate.h \
+@@ -159,6 +161,8 @@ SOURCES += \
+     $$UAVOBJECT_SYNTHETICS/actuatorsettings.cpp \
+     $$UAVOBJECT_SYNTHETICS/settingsgeneration.cpp \
+     $$UAVOBJECT_SYNTHETICS/flipstatus.cpp \
++    $$UAVOBJECT_SYNTHETICS/remoteidsettings.cpp \
++    $$UAVOBJECT_SYNTHETICS/remoteidstatus.cpp \
+     $$UAVOBJECT_SYNTHETICS/airspeedsensor.cpp \
+     $$UAVOBJECT_SYNTHETICS/airspeedsettings.cpp \
+     $$UAVOBJECT_SYNTHETICS/airspeedstate.cpp \
 diff --git a/ground/openpilotgcs/src/plugins/uavobjectutil/devicedescriptorstruct.h b/ground/openpilotgcs/src/plugins/uavobjectutil/devicedescriptorstruct.h
 index acd774c86..b901e7ab2 100644
 --- a/ground/openpilotgcs/src/plugins/uavobjectutil/devicedescriptorstruct.h
@@ -3221,6 +3278,2510 @@ index 139a0dc0a..e6ec7e68b 100644
          <logging updatemode="manual" period="0"/>
      </object>
  </xml>
+diff --git a/flight/libraries/opendroneid/LICENSE b/flight/libraries/opendroneid/LICENSE
+new file mode 100644
+index 000000000..261eeb9e9
+--- /dev/null
++++ b/flight/libraries/opendroneid/LICENSE
+@@ -0,0 +1,201 @@
++                                 Apache License
++                           Version 2.0, January 2004
++                        http://www.apache.org/licenses/
++
++   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
++
++   1. Definitions.
++
++      "License" shall mean the terms and conditions for use, reproduction,
++      and distribution as defined by Sections 1 through 9 of this document.
++
++      "Licensor" shall mean the copyright owner or entity authorized by
++      the copyright owner that is granting the License.
++
++      "Legal Entity" shall mean the union of the acting entity and all
++      other entities that control, are controlled by, or are under common
++      control with that entity. For the purposes of this definition,
++      "control" means (i) the power, direct or indirect, to cause the
++      direction or management of such entity, whether by contract or
++      otherwise, or (ii) ownership of fifty percent (50%) or more of the
++      outstanding shares, or (iii) beneficial ownership of such entity.
++
++      "You" (or "Your") shall mean an individual or Legal Entity
++      exercising permissions granted by this License.
++
++      "Source" form shall mean the preferred form for making modifications,
++      including but not limited to software source code, documentation
++      source, and configuration files.
++
++      "Object" form shall mean any form resulting from mechanical
++      transformation or translation of a Source form, including but
++      not limited to compiled object code, generated documentation,
++      and conversions to other media types.
++
++      "Work" shall mean the work of authorship, whether in Source or
++      Object form, made available under the License, as indicated by a
++      copyright notice that is included in or attached to the work
++      (an example is provided in the Appendix below).
++
++      "Derivative Works" shall mean any work, whether in Source or Object
++      form, that is based on (or derived from) the Work and for which the
++      editorial revisions, annotations, elaborations, or other modifications
++      represent, as a whole, an original work of authorship. For the purposes
++      of this License, Derivative Works shall not include works that remain
++      separable from, or merely link (or bind by name) to the interfaces of,
++      the Work and Derivative Works thereof.
++
++      "Contribution" shall mean any work of authorship, including
++      the original version of the Work and any modifications or additions
++      to that Work or Derivative Works thereof, that is intentionally
++      submitted to Licensor for inclusion in the Work by the copyright owner
++      or by an individual or Legal Entity authorized to submit on behalf of
++      the copyright owner. For the purposes of this definition, "submitted"
++      means any form of electronic, verbal, or written communication sent
++      to the Licensor or its representatives, including but not limited to
++      communication on electronic mailing lists, source code control systems,
++      and issue tracking systems that are managed by, or on behalf of, the
++      Licensor for the purpose of discussing and improving the Work, but
++      excluding communication that is conspicuously marked or otherwise
++      designated in writing by the copyright owner as "Not a Contribution."
++
++      "Contributor" shall mean Licensor and any individual or Legal Entity
++      on behalf of whom a Contribution has been received by Licensor and
++      subsequently incorporated within the Work.
++
++   2. Grant of Copyright License. Subject to the terms and conditions of
++      this License, each Contributor hereby grants to You a perpetual,
++      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
++      copyright license to reproduce, prepare Derivative Works of,
++      publicly display, publicly perform, sublicense, and distribute the
++      Work and such Derivative Works in Source or Object form.
++
++   3. Grant of Patent License. Subject to the terms and conditions of
++      this License, each Contributor hereby grants to You a perpetual,
++      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
++      (except as stated in this section) patent license to make, have made,
++      use, offer to sell, sell, import, and otherwise transfer the Work,
++      where such license applies only to those patent claims licensable
++      by such Contributor that are necessarily infringed by their
++      Contribution(s) alone or by combination of their Contribution(s)
++      with the Work to which such Contribution(s) was submitted. If You
++      institute patent litigation against any entity (including a
++      cross-claim or counterclaim in a lawsuit) alleging that the Work
++      or a Contribution incorporated within the Work constitutes direct
++      or contributory patent infringement, then any patent licenses
++      granted to You under this License for that Work shall terminate
++      as of the date such litigation is filed.
++
++   4. Redistribution. You may reproduce and distribute copies of the
++      Work or Derivative Works thereof in any medium, with or without
++      modifications, and in Source or Object form, provided that You
++      meet the following conditions:
++
++      (a) You must give any other recipients of the Work or
++          Derivative Works a copy of this License; and
++
++      (b) You must cause any modified files to carry prominent notices
++          stating that You changed the files; and
++
++      (c) You must retain, in the Source form of any Derivative Works
++          that You distribute, all copyright, patent, trademark, and
++          attribution notices from the Source form of the Work,
++          excluding those notices that do not pertain to any part of
++          the Derivative Works; and
++
++      (d) If the Work includes a "NOTICE" text file as part of its
++          distribution, then any Derivative Works that You distribute must
++          include a readable copy of the attribution notices contained
++          within such NOTICE file, excluding those notices that do not
++          pertain to any part of the Derivative Works, in at least one
++          of the following places: within a NOTICE text file distributed
++          as part of the Derivative Works; within the Source form or
++          documentation, if provided along with the Derivative Works; or,
++          within a display generated by the Derivative Works, if and
++          wherever such third-party notices normally appear. The contents
++          of the NOTICE file are for informational purposes only and
++          do not modify the License. You may add Your own attribution
++          notices within Derivative Works that You distribute, alongside
++          or as an addendum to the NOTICE text from the Work, provided
++          that such additional attribution notices cannot be construed
++          as modifying the License.
++
++      You may add Your own copyright statement to Your modifications and
++      may provide additional or different license terms and conditions
++      for use, reproduction, or distribution of Your modifications, or
++      for any such Derivative Works as a whole, provided Your use,
++      reproduction, and distribution of the Work otherwise complies with
++      the conditions stated in this License.
++
++   5. Submission of Contributions. Unless You explicitly state otherwise,
++      any Contribution intentionally submitted for inclusion in the Work
++      by You to the Licensor shall be under the terms and conditions of
++      this License, without any additional terms or conditions.
++      Notwithstanding the above, nothing herein shall supersede or modify
++      the terms of any separate license agreement you may have executed
++      with Licensor regarding such Contributions.
++
++   6. Trademarks. This License does not grant permission to use the trade
++      names, trademarks, service marks, or product names of the Licensor,
++      except as required for reasonable and customary use in describing the
++      origin of the Work and reproducing the content of the NOTICE file.
++
++   7. Disclaimer of Warranty. Unless required by applicable law or
++      agreed to in writing, Licensor provides the Work (and each
++      Contributor provides its Contributions) on an "AS IS" BASIS,
++      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
++      implied, including, without limitation, any warranties or conditions
++      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
++      PARTICULAR PURPOSE. You are solely responsible for determining the
++      appropriateness of using or redistributing the Work and assume any
++      risks associated with Your exercise of permissions under this License.
++
++   8. Limitation of Liability. In no event and under no legal theory,
++      whether in tort (including negligence), contract, or otherwise,
++      unless required by applicable law (such as deliberate and grossly
++      negligent acts) or agreed to in writing, shall any Contributor be
++      liable to You for damages, including any direct, indirect, special,
++      incidental, or consequential damages of any character arising as a
++      result of this License or out of the use or inability to use the
++      Work (including but not limited to damages for loss of goodwill,
++      work stoppage, computer failure or malfunction, or any and all
++      other commercial damages or losses), even if such Contributor
++      has been advised of the possibility of such damages.
++
++   9. Accepting Warranty or Additional Liability. While redistributing
++      the Work or Derivative Works thereof, You may choose to offer,
++      and charge a fee for, acceptance of support, warranty, indemnity,
++      or other liability obligations and/or rights consistent with this
++      License. However, in accepting such obligations, You may act only
++      on Your own behalf and on Your sole responsibility, not on behalf
++      of any other Contributor, and only if You agree to indemnify,
++      defend, and hold each Contributor harmless for any liability
++      incurred by, or claims asserted against, such Contributor by reason
++      of your accepting any such warranty or additional liability.
++
++   END OF TERMS AND CONDITIONS
++
++   APPENDIX: How to apply the Apache License to your work.
++
++      To apply the Apache License to your work, attach the following
++      boilerplate notice, with the fields enclosed by brackets "[]"
++      replaced with your own identifying information. (Don't include
++      the brackets!)  The text should be enclosed in the appropriate
++      comment syntax for the file format. We also recommend that a
++      file or class name and description of purpose be included on the
++      same "printed page" as the copyright notice for easier
++      identification within third-party archives.
++
++   Copyright [yyyy] [name of copyright owner]
++
++   Licensed under the Apache License, Version 2.0 (the "License");
++   you may not use this file except in compliance with the License.
++   You may obtain a copy of the License at
++
++       http://www.apache.org/licenses/LICENSE-2.0
++
++   Unless required by applicable law or agreed to in writing, software
++   distributed under the License is distributed on an "AS IS" BASIS,
++   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++   See the License for the specific language governing permissions and
++   limitations under the License.
+diff --git a/flight/libraries/opendroneid/VENDORED.txt b/flight/libraries/opendroneid/VENDORED.txt
+new file mode 100644
+index 000000000..6fc28ad9b
+--- /dev/null
++++ b/flight/libraries/opendroneid/VENDORED.txt
+@@ -0,0 +1 @@
++opendroneid-core-c 12cbebb, libopendroneid/opendroneid.{c,h} only, unmodified. Apache-2.0 (see LICENSE). https://github.com/opendroneid/opendroneid-core-c
+diff --git a/flight/libraries/opendroneid/opendroneid.c b/flight/libraries/opendroneid/opendroneid.c
+new file mode 100644
+index 000000000..13f7e2bb9
+--- /dev/null
++++ b/flight/libraries/opendroneid/opendroneid.c
+@@ -0,0 +1,1498 @@
++/*
++Copyright (C) 2019 Intel Corporation
++
++SPDX-License-Identifier: Apache-2.0
++
++Open Drone ID C Library
++
++Maintainer:
++Gabriel Cox
++gabriel.c.cox@intel.com
++*/
++
++#include "opendroneid.h"
++#include <math.h>
++#include <stdio.h>
++#define ENABLE_DEBUG 1
++
++const float SPEED_DIV[2] = {0.25f, 0.75f};
++const float VSPEED_DIV = 0.5f;
++const int32_t LATLON_MULT = 10000000;
++const float ALT_DIV = 0.5f;
++const int ALT_ADDER = 1000;
++
++static char *safe_dec_copyfill(char *dstStr, const char *srcStr, int dstSize);
++static int intRangeMax(int64_t inValue, int startRange, int endRange);
++static int intInRange(int inValue, int startRange, int endRange);
++
++/**
++* Initialize basic ID data fields to their default values
++*
++* @param data (non encoded/packed) structure
++*/
++void odid_initBasicIDData(ODID_BasicID_data *data)
++{
++    if (!data)
++        return;
++    memset(data, 0, sizeof(ODID_BasicID_data));
++}
++
++/**
++* Initialize location data fields to their default values
++*
++* @param data (non encoded/packed) structure
++*/
++void odid_initLocationData(ODID_Location_data *data)
++{
++    if (!data)
++        return;
++    memset(data, 0, sizeof(ODID_Location_data));
++    data->Direction = INV_DIR;
++    data->SpeedHorizontal = INV_SPEED_H;
++    data->SpeedVertical = INV_SPEED_V;
++    data->AltitudeBaro = INV_ALT;
++    data->AltitudeGeo = INV_ALT;
++    data->Height = INV_ALT;
++}
++
++/**
++* Initialize authorization data fields to their default values
++*
++* @param data (non encoded/packed) structure
++*/
++void odid_initAuthData(ODID_Auth_data *data)
++{
++    if (!data)
++        return;
++    memset(data, 0, sizeof(ODID_Auth_data));
++}
++
++/**
++* Initialize self ID data fields to their default values
++*
++* @param data (non encoded/packed) structure
++*/
++void odid_initSelfIDData(ODID_SelfID_data *data)
++{
++    if (!data)
++        return;
++    memset(data, 0, sizeof(ODID_SelfID_data));
++}
++
++/**
++* Initialize system data fields to their default values
++*
++* @param data (non encoded/packed) structure
++*/
++
++void odid_initSystemData(ODID_System_data *data)
++{
++    if (!data)
++        return;
++    memset(data, 0, sizeof(ODID_System_data));
++    data->AreaCount = 1;
++    data->AreaCeiling = INV_ALT;
++    data->AreaFloor = INV_ALT;
++    data->OperatorAltitudeGeo = INV_ALT;
++}
++
++/**
++* Initialize operator ID data fields to their default values
++*
++* @param data (non encoded/packed) structure
++*/
++
++void odid_initOperatorIDData(ODID_OperatorID_data *data)
++{
++    if (!data)
++        return;
++    memset(data, 0, sizeof(ODID_OperatorID_data));
++}
++
++/**
++* Initialize message pack data fields to their default values
++*
++* @param data (non encoded/packed) structure
++*/
++
++void odid_initMessagePackData(ODID_MessagePack_data *data)
++{
++    if (!data)
++        return;
++    memset(data, 0, sizeof(ODID_MessagePack_data));
++    data->SingleMessageSize = ODID_MESSAGE_SIZE;
++}
++
++/**
++* Initialize UAS data fields to their default values
++*
++* @param data (non encoded/packed) structure
++*/
++
++void odid_initUasData(ODID_UAS_Data *data)
++{
++    if (!data)
++        return;
++    for (int i = 0; i < ODID_BASIC_ID_MAX_MESSAGES; i++) {
++        data->BasicIDValid[i] = 0;
++        odid_initBasicIDData(&data->BasicID[i]);
++    }
++    data->LocationValid = 0;
++    odid_initLocationData(&data->Location);
++    for (int i = 0; i < ODID_AUTH_MAX_PAGES; i++) {
++        data->AuthValid[i] = 0;
++        odid_initAuthData(&data->Auth[i]);
++    }
++    data->SelfIDValid = 0;
++    odid_initSelfIDData(&data->SelfID);
++    data->SystemValid = 0;
++    odid_initSystemData(&data->System);
++    data->OperatorIDValid = 0;
++    odid_initOperatorIDData(&data->OperatorID);
++}
++
++/**
++* Encode direction as defined by Open Drone ID
++*
++* The encoding method uses 8 bits for the direction in degrees and
++* one extra bit for indicating the East/West direction.
++*
++* @param Direcction in degrees. 0 <= x < 360. Route course based on true North
++* @param EWDirection Bit flag indicating whether the direction is towards
++                     East (0 - 179 degrees) or West (180 - 359)
++* @return Encoded Direction in a single byte
++*/
++static uint8_t encodeDirection(float Direction, uint8_t *EWDirection)
++{
++    unsigned int direction_int = (unsigned int) roundf(Direction);
++    if (direction_int == 360)
++        direction_int = 0;
++    if (direction_int < 180) {
++        *EWDirection = 0;
++    } else {
++        *EWDirection = 1;
++        direction_int -= 180;
++    }
++    return (uint8_t) intRangeMax(direction_int, 0, UINT8_MAX);
++}
++
++/**
++* Encode speed into units defined by Open Drone ID
++*
++* The quantization algorithm allows for speed to be stored in units of 0.25 m/s
++* on the low end of the scale and 0.75 m/s on the high end of the scale.
++* This allows for more precise speeds to be represented in a single Uint8 byte
++* rather than using a large float value.
++*
++* @param Speed_data Speed (and decimal) in m/s
++* @param mult a (write only) value that sets the multiplier flag
++* @return Encoded Speed in a single byte or max speed if over max encoded speed.
++*/
++static uint8_t encodeSpeedHorizontal(float Speed_data, uint8_t *mult)
++{
++    if (Speed_data <= UINT8_MAX * SPEED_DIV[0]) {
++        *mult = 0;
++        return (uint8_t) round(Speed_data / SPEED_DIV[0]);
++    } else {
++        *mult = 1;
++        int big_value = (int) round((Speed_data - (UINT8_MAX * SPEED_DIV[0])) / SPEED_DIV[1]);
++        return (uint8_t) intRangeMax(big_value, 0, UINT8_MAX);
++    }
++}
++
++/**
++* Encode Vertical Speed into a signed Integer ODID format
++*
++* @param SpeedVertical_data vertical speed (in m/s)
++* @return Encoded vertical speed
++*/
++static int8_t encodeSpeedVertical(float SpeedVertical_data)
++{
++    int encValue = (int) round(SpeedVertical_data / VSPEED_DIV);
++    return (int8_t) intRangeMax(encValue, INT8_MIN, INT8_MAX);
++}
++
++/**
++* Encode Latitude or Longitude value into a signed Integer ODID format
++*
++* This encodes a 64bit double into a 32 bit integer yet still maintains
++* 10^7 of a degree of accuracy (about 1cm)
++*
++* @param LatLon_data Either Lat or Lon double float value
++* @return Encoded Lat or Lon
++*/
++static int32_t encodeLatLon(double LatLon_data)
++{
++    int64_t encoded = (int64_t) round(LatLon_data * LATLON_MULT);
++    return (int32_t) intRangeMax(encoded, -180 * LATLON_MULT, 180 * LATLON_MULT);
++}
++
++/**
++* Encode Altitude value into an int16 ODID format
++*
++* This encodes a 32bit floating point altitude into an uint16 compressed
++* scale that starts at -1000m.
++*
++* @param Alt_data Altitude to encode (in meters)
++* @return Encoded Altitude
++*/
++static uint16_t encodeAltitude(float Alt_data)
++{
++    return (uint16_t) intRangeMax((int) round((Alt_data + (float) ALT_ADDER) / ALT_DIV), 0, UINT16_MAX);
++}
++
++/**
++* Encode timestamp data in ODID format
++*
++* This encodes a fractional seconds value into a 2 byte int16
++* on a scale of tenths of seconds since after the hour.
++*
++* @param Seconds_data Seconds (to at least 1 decimal place) since the hour
++* @return Encoded timestamp (Tenths of seconds since the hour)
++*/
++static uint16_t encodeTimeStamp(float Seconds_data)
++{
++    if (Seconds_data == INV_TIMESTAMP)
++        return INV_TIMESTAMP;
++    else
++        return (uint16_t) intRangeMax((int64_t) roundf(Seconds_data*10), 0, MAX_TIMESTAMP * 10);
++}
++
++/**
++* Encode area radius data in ODID format
++*
++* This encodes the area radius in meters into a 1 byte value
++*
++* @param Radius The radius of the drone area/swarm
++* @return Encoded area radius
++*/
++static uint8_t encodeAreaRadius(uint16_t Radius)
++{
++    return (uint8_t) intRangeMax(Radius / 10, 0, 255);
++}
++
++/**
++* Encode Basic ID message (packed, ready for broadcast)
++*
++* @param outEncoded Output (encoded/packed) structure
++* @param inData     Input data (non encoded/packed) structure
++* @return           ODID_SUCCESS or ODID_FAIL;
++*/
++int encodeBasicIDMessage(ODID_BasicID_encoded *outEncoded, const ODID_BasicID_data *inData)
++{
++    if (!outEncoded || !inData ||
++        !intInRange(inData->IDType, 0, 15) ||
++        !intInRange(inData->UAType, 0, 15))
++        return ODID_FAIL;
++
++    outEncoded->MessageType = ODID_MESSAGETYPE_BASIC_ID;
++    outEncoded->ProtoVersion = ODID_PROTOCOL_VERSION;
++    outEncoded->IDType = inData->IDType;
++    outEncoded->UAType = inData->UAType;
++    switch (inData->IDType)
++    {
++    case ODID_IDTYPE_SERIAL_NUMBER:
++    case ODID_IDTYPE_CAA_REGISTRATION_ID:
++        memset(outEncoded->UASID, 0, sizeof(outEncoded->UASID));
++        strncpy(outEncoded->UASID, inData->UASID, sizeof(outEncoded->UASID));
++        break;
++    default:
++        memcpy(outEncoded->UASID, inData->UASID, sizeof(outEncoded->UASID));
++        break;
++    }
++    memset(outEncoded->Reserved, 0, sizeof(outEncoded->Reserved));
++    return ODID_SUCCESS;
++}
++
++/**
++* Encode Location message (packed, ready for broadcast)
++*
++* @param outEncoded Output (encoded/packed) structure
++* @param inData     Input data (non encoded/packed) structure
++* @return           ODID_SUCCESS or ODID_FAIL;
++*/
++int encodeLocationMessage(ODID_Location_encoded *outEncoded, const ODID_Location_data *inData)
++{
++    uint8_t bitflag;
++    if (!outEncoded || !inData ||
++        !intInRange(inData->Status, 0, 15) ||
++        !intInRange(inData->HeightType, 0, 1) ||
++        !intInRange(inData->HorizAccuracy, 0, 15) ||
++        !intInRange(inData->VertAccuracy, 0, 15) ||
++        !intInRange(inData->BaroAccuracy, 0, 15) ||
++        !intInRange(inData->SpeedAccuracy, 0, 15) ||
++        !intInRange(inData->TSAccuracy, 0, 15))
++        return ODID_FAIL;
++
++    if (inData->Direction < MIN_DIR || inData->Direction > INV_DIR ||
++        (inData->Direction > MAX_DIR && inData->Direction < INV_DIR))
++        return ODID_FAIL;
++
++    if (inData->SpeedHorizontal < MIN_SPEED_H || inData->SpeedHorizontal > INV_SPEED_H ||
++        (inData->SpeedHorizontal > MAX_SPEED_H && inData->SpeedHorizontal < INV_SPEED_H))
++        return ODID_FAIL;
++
++    if (inData->SpeedVertical < MIN_SPEED_V || inData->SpeedVertical > INV_SPEED_V ||
++        (inData->SpeedVertical > MAX_SPEED_V && inData->SpeedVertical < INV_SPEED_V))
++        return ODID_FAIL;
++
++    if (inData->Latitude < MIN_LAT || inData->Latitude > MAX_LAT ||
++        inData->Longitude < MIN_LON || inData->Longitude > MAX_LON)
++        return ODID_FAIL;
++
++    if (inData->AltitudeBaro < MIN_ALT || inData->AltitudeBaro > MAX_ALT ||
++        inData->AltitudeGeo < MIN_ALT || inData->AltitudeGeo > MAX_ALT ||
++        inData->Height < MIN_ALT || inData->Height > MAX_ALT)
++        return ODID_FAIL;
++
++    if (inData->TimeStamp < 0 ||
++        (inData->TimeStamp > MAX_TIMESTAMP && inData->TimeStamp != INV_TIMESTAMP))
++        return ODID_FAIL;
++
++    outEncoded->MessageType = ODID_MESSAGETYPE_LOCATION;
++    outEncoded->ProtoVersion = ODID_PROTOCOL_VERSION;
++    outEncoded->Status = inData->Status;
++    outEncoded->Reserved = 0;
++    outEncoded->Direction = encodeDirection(inData->Direction, &bitflag);
++    outEncoded->EWDirection = bitflag;
++    outEncoded->SpeedHorizontal = encodeSpeedHorizontal(inData->SpeedHorizontal, &bitflag);
++    outEncoded->SpeedMult = bitflag;
++    outEncoded->SpeedVertical = encodeSpeedVertical(inData->SpeedVertical);
++    outEncoded->Latitude = encodeLatLon(inData->Latitude);
++    outEncoded->Longitude = encodeLatLon(inData->Longitude);
++    outEncoded->AltitudeBaro = encodeAltitude(inData->AltitudeBaro);
++    outEncoded->AltitudeGeo = encodeAltitude(inData->AltitudeGeo);
++    outEncoded->HeightType = inData->HeightType;
++    outEncoded->Height = encodeAltitude(inData->Height);
++    outEncoded->HorizAccuracy = inData->HorizAccuracy;
++    outEncoded->VertAccuracy = inData->VertAccuracy;
++    outEncoded->BaroAccuracy = inData->BaroAccuracy;
++    outEncoded->SpeedAccuracy = inData->SpeedAccuracy;
++    outEncoded->TSAccuracy = inData->TSAccuracy;
++    outEncoded->Reserved2 = 0;
++    outEncoded->TimeStamp = encodeTimeStamp(inData->TimeStamp);
++    outEncoded->Reserved3 = 0;
++    return ODID_SUCCESS;
++}
++
++/**
++* Encode Auth message (packed, ready for broadcast)
++*
++* @param outEncoded Output (encoded/packed) structure
++* @param inData     Input data (non encoded/packed) structure
++* @return           ODID_SUCCESS or ODID_FAIL;
++*/
++int encodeAuthMessage(ODID_Auth_encoded *outEncoded, const ODID_Auth_data *inData)
++{
++    if (!outEncoded || !inData || !intInRange(inData->AuthType, 0, 15))
++        return ODID_FAIL;
++
++    if (inData->DataPage >= ODID_AUTH_MAX_PAGES)
++        return ODID_FAIL;
++
++    if (inData->DataPage == 0) {
++        if (inData->LastPageIndex >= ODID_AUTH_MAX_PAGES)
++            return ODID_FAIL;
++
++#if (MAX_AUTH_LENGTH < UINT8_MAX)
++        if (inData->Length > MAX_AUTH_LENGTH)
++            return ODID_FAIL;
++#endif
++
++        int len = ODID_AUTH_PAGE_ZERO_DATA_SIZE +
++                  inData->LastPageIndex * ODID_AUTH_PAGE_NONZERO_DATA_SIZE;
++        if (len < inData->Length)
++            return ODID_FAIL;
++    }
++
++    outEncoded->page_zero.MessageType = ODID_MESSAGETYPE_AUTH;
++    outEncoded->page_zero.ProtoVersion = ODID_PROTOCOL_VERSION;
++    outEncoded->page_zero.AuthType = inData->AuthType;
++    outEncoded->page_zero.DataPage = inData->DataPage;
++
++    if (inData->DataPage == 0) {
++        outEncoded->page_zero.LastPageIndex = inData->LastPageIndex;
++        outEncoded->page_zero.Length = inData->Length;
++        outEncoded->page_zero.Timestamp = inData->Timestamp;
++        memcpy(outEncoded->page_zero.AuthData, inData->AuthData,
++               sizeof(outEncoded->page_zero.AuthData));
++    } else {
++        memcpy(outEncoded->page_non_zero.AuthData, inData->AuthData,
++               sizeof(outEncoded->page_non_zero.AuthData));
++    }
++    return ODID_SUCCESS;
++}
++
++/**
++* Encode Self ID message (packed, ready for broadcast)
++*
++* @param outEncoded Output (encoded/packed) structure
++* @param inData     Input data (non encoded/packed) structure
++* @return           ODID_SUCCESS or ODID_FAIL;
++*/
++int encodeSelfIDMessage(ODID_SelfID_encoded *outEncoded, const ODID_SelfID_data *inData)
++{
++    if (!outEncoded || !inData || !intInRange(inData->DescType, 0, 255))
++        return ODID_FAIL;
++
++    outEncoded->MessageType = ODID_MESSAGETYPE_SELF_ID;
++    outEncoded->ProtoVersion = ODID_PROTOCOL_VERSION;
++    outEncoded->DescType = inData->DescType;
++    strncpy(outEncoded->Desc, inData->Desc, sizeof(outEncoded->Desc));
++    return ODID_SUCCESS;
++}
++
++/**
++* Encode System message (packed, ready for broadcast)
++*
++* @param outEncoded Output (encoded/packed) structure
++* @param inData     Input data (non encoded/packed) structure
++* @return           ODID_SUCCESS or ODID_FAIL;
++*/
++int encodeSystemMessage(ODID_System_encoded *outEncoded, const ODID_System_data *inData)
++{
++    if (!outEncoded || !inData ||
++        !intInRange(inData->OperatorLocationType, 0, 3) ||
++        !intInRange(inData->ClassificationType, 0, 7) ||
++        !intInRange(inData->CategoryEU, 0, 15) ||
++        !intInRange(inData->ClassEU, 0, 15))
++        return ODID_FAIL;
++
++    if (inData->OperatorLatitude < MIN_LAT || inData->OperatorLatitude > MAX_LAT ||
++        inData->OperatorLongitude < MIN_LON || inData->OperatorLongitude > MAX_LON)
++        return ODID_FAIL;
++
++    if (inData->AreaRadius > MAX_AREA_RADIUS)
++        return ODID_FAIL;
++
++    if (inData->AreaCeiling < MIN_ALT || inData->AreaCeiling > MAX_ALT ||
++        inData->AreaFloor < MIN_ALT || inData->AreaFloor > MAX_ALT ||
++        inData->OperatorAltitudeGeo < MIN_ALT || inData->OperatorAltitudeGeo > MAX_ALT)
++        return ODID_FAIL;
++
++    outEncoded->MessageType = ODID_MESSAGETYPE_SYSTEM;
++    outEncoded->ProtoVersion = ODID_PROTOCOL_VERSION;
++    outEncoded->Reserved = 0;
++    outEncoded->OperatorLocationType = inData->OperatorLocationType;
++    outEncoded->ClassificationType = inData->ClassificationType;
++    outEncoded->OperatorLatitude = encodeLatLon(inData->OperatorLatitude);
++    outEncoded->OperatorLongitude = encodeLatLon(inData->OperatorLongitude);
++    outEncoded->AreaCount = inData->AreaCount;
++    outEncoded->AreaRadius = encodeAreaRadius(inData->AreaRadius);
++    outEncoded->AreaCeiling = encodeAltitude(inData->AreaCeiling);
++    outEncoded->AreaFloor = encodeAltitude(inData->AreaFloor);
++    outEncoded->CategoryEU = inData->CategoryEU;
++    outEncoded->ClassEU = inData->ClassEU;
++    outEncoded->OperatorAltitudeGeo = encodeAltitude(inData->OperatorAltitudeGeo);
++    outEncoded->Timestamp = inData->Timestamp;
++    outEncoded->Reserved2 = 0;
++    return ODID_SUCCESS;
++}
++
++/**
++* Encode Operator ID message (packed, ready for broadcast)
++*
++* @param outEncoded Output (encoded/packed) structure
++* @param inData     Input data (non encoded/packed) structure
++* @return           ODID_SUCCESS or ODID_FAIL;
++*/
++int encodeOperatorIDMessage(ODID_OperatorID_encoded *outEncoded, const ODID_OperatorID_data *inData)
++{
++    if (!outEncoded || !inData || !intInRange(inData->OperatorIdType, 0, 255))
++        return ODID_FAIL;
++
++    outEncoded->MessageType = ODID_MESSAGETYPE_OPERATOR_ID;
++    outEncoded->ProtoVersion = ODID_PROTOCOL_VERSION;
++    outEncoded->OperatorIdType = inData->OperatorIdType;
++    strncpy(outEncoded->OperatorId, inData->OperatorId, sizeof(outEncoded->OperatorId));
++    memset(outEncoded->Reserved, 0, sizeof(outEncoded->Reserved));
++    return ODID_SUCCESS;
++}
++
++/**
++* Check whether the data fields of a pack structure are valid
++*
++* @param msgs   Pointer to the buffer containing the messages
++* @param amount The amount of messages in the pack
++* @return       ODID_SUCCESS or ODID_FAIL;
++*/
++static int checkPackContent(const ODID_Message_encoded *msgs, int amount)
++{
++    if (amount <= 0 || amount > ODID_PACK_MAX_MESSAGES)
++        return ODID_FAIL;
++
++    int numMessages[6] = { 0 }; // Counters for relevant parts of ODID_messagetype_t
++    for (int i = 0; i < amount; i++) {
++        uint8_t MessageType = decodeMessageType(msgs[i].rawData[0]);
++
++        // Check for illegal content. This also avoids recursive calls between
++        // decodeOpenDroneID() and decodeMessagePack()/checkPackContent()
++        if (MessageType <= ODID_MESSAGETYPE_OPERATOR_ID)
++            numMessages[MessageType]++;
++        else
++            return ODID_FAIL;
++    }
++
++    // Allow max one of each message except Basic ID and Authorization.
++    if (numMessages[ODID_MESSAGETYPE_BASIC_ID] > ODID_BASIC_ID_MAX_MESSAGES ||
++        numMessages[ODID_MESSAGETYPE_LOCATION] > 1 ||
++        numMessages[ODID_MESSAGETYPE_AUTH] > ODID_AUTH_MAX_PAGES ||
++        numMessages[ODID_MESSAGETYPE_SELF_ID] > 1 ||
++        numMessages[ODID_MESSAGETYPE_SYSTEM] > 1 ||
++        numMessages[ODID_MESSAGETYPE_OPERATOR_ID] > 1)
++        return ODID_FAIL;
++
++    return ODID_SUCCESS;
++}
++
++/**
++* Encode message pack. I.e. a collection of multiple encoded messages
++*
++* @param outEncoded Output (encoded/packed) structure
++* @param inData     Input data (non encoded/packed) structure
++* @return           ODID_SUCCESS or ODID_FAIL;
++*/
++int encodeMessagePack(ODID_MessagePack_encoded *outEncoded, const ODID_MessagePack_data *inData)
++{
++    if (!outEncoded || !inData || inData->SingleMessageSize != ODID_MESSAGE_SIZE)
++        return ODID_FAIL;
++
++    if (checkPackContent(inData->Messages, inData->MsgPackSize) != ODID_SUCCESS)
++        return ODID_FAIL;
++
++    outEncoded->MessageType = ODID_MESSAGETYPE_PACKED;
++    outEncoded->ProtoVersion = ODID_PROTOCOL_VERSION;
++
++    outEncoded->SingleMessageSize = inData->SingleMessageSize;
++    outEncoded->MsgPackSize = inData->MsgPackSize;
++
++    for (int i = 0; i < inData->MsgPackSize; i++)
++        memcpy(&outEncoded->Messages[i], &inData->Messages[i], ODID_MESSAGE_SIZE);
++
++    return ODID_SUCCESS;
++}
++
++/**
++* Dencode direction from Open Drone ID packed message
++*
++* @param Direction_enc encoded direction
++* @param EWDirection East/West direction flag
++* @return direction in degrees (0 - 359)
++*/
++static float decodeDirection(uint8_t Direction_enc, uint8_t EWDirection)
++{
++    if (EWDirection)
++        return (float) Direction_enc + 180;
++    else
++        return (float) Direction_enc;
++}
++
++/**
++* Dencode speed from Open Drone ID packed message
++*
++* @param Speed_enc encoded speed
++* @param mult multiplier flag
++* @return decoded speed in m/s
++*/
++static float decodeSpeedHorizontal(uint8_t Speed_enc, uint8_t mult)
++{
++    if (mult)
++        return ((float) Speed_enc * SPEED_DIV[1]) + (UINT8_MAX * SPEED_DIV[0]);
++    else
++        return (float) Speed_enc * SPEED_DIV[0];
++}
++
++/**
++* Decode Vertical Speed from Open Drone ID Packed Message
++*
++* @param SpeedVertical_enc Encoded Vertical Speed
++* @return decoded Vertical Speed in m/s
++*/
++static float decodeSpeedVertical(int8_t SpeedVertical_enc)
++{
++    return (float) SpeedVertical_enc * VSPEED_DIV;
++}
++
++/**
++* Decode Latitude or Longitude value into a signed Integer ODID format
++*
++* @param LatLon_enc Either Lat or Lon ecoded int value
++* @return decoded (double) Lat or Lon
++*/
++static double decodeLatLon(int32_t LatLon_enc)
++{
++    return (double) LatLon_enc / LATLON_MULT;
++}
++
++/**
++* Decode Altitude from ODID packed format
++*
++* @param Alt_enc Encoded Altitude to decode
++* @return decoded Altitude (in meters)
++*/
++static float decodeAltitude(uint16_t Alt_enc)
++{
++    return (float) Alt_enc * ALT_DIV - (float) ALT_ADDER;
++}
++
++/**
++* Decode timestamp data from ODID packed format
++*
++* @param Seconds_enc Encoded Timestamp
++* @return Decoded timestamp (seconds since the hour)
++*/
++static float decodeTimeStamp(uint16_t Seconds_enc)
++{
++    if (Seconds_enc == INV_TIMESTAMP)
++        return INV_TIMESTAMP;
++    else
++        return (float) Seconds_enc / 10;
++}
++
++/**
++* Decode area radius data from ODID format
++*
++* This decodes a 1 byte value to the area radius in meters
++*
++* @param Radius_enc Encoded area radius
++* @return The radius of the drone area/swarm in meters
++*/
++static uint16_t decodeAreaRadius(uint8_t Radius_enc)
++{
++    return (uint16_t) ((int) Radius_enc * 10);
++}
++
++/**
++* Get the ID type of the basic ID message
++*
++* @param inEncoded  Input message (encoded/packed) structure
++* @param idType     Output: The ID type of this basic ID message
++* @return           ODID_SUCCESS or ODID_FAIL;
++*/
++int getBasicIDType(ODID_BasicID_encoded *inEncoded, enum ODID_idtype *idType)
++{
++    if (!inEncoded || !idType || inEncoded->MessageType != ODID_MESSAGETYPE_BASIC_ID)
++        return ODID_FAIL;
++
++    *idType = (enum ODID_idtype) inEncoded->IDType;
++    return ODID_SUCCESS;
++}
++
++/**
++* Decode Basic ID data from packed message
++*
++* @param outData   Output: decoded message
++* @param inEncoded Input message (encoded/packed) structure
++* @return          ODID_SUCCESS or ODID_FAIL;
++*/
++int decodeBasicIDMessage(ODID_BasicID_data *outData, const ODID_BasicID_encoded *inEncoded)
++{
++    if (!outData || !inEncoded ||
++        inEncoded->MessageType != ODID_MESSAGETYPE_BASIC_ID ||
++        !intInRange(inEncoded->IDType, 0, 15) ||
++        !intInRange(inEncoded->UAType, 0, 15))
++        return ODID_FAIL;
++
++    outData->IDType = (ODID_idtype_t) inEncoded->IDType;
++    outData->UAType = (ODID_uatype_t) inEncoded->UAType;
++    switch (inEncoded->IDType)
++    {
++    case ODID_IDTYPE_SERIAL_NUMBER:
++    case ODID_IDTYPE_CAA_REGISTRATION_ID:
++        safe_dec_copyfill(outData->UASID, inEncoded->UASID, sizeof(outData->UASID));
++        break;
++    default:
++        memcpy(outData->UASID, inEncoded->UASID, sizeof(outData->UASID));
++        break;
++    }
++    return ODID_SUCCESS;
++}
++
++/**
++* Decode Location data from packed message
++*
++* @param outData   Output: decoded message
++* @param inEncoded Input message (encoded/packed) structure
++* @return          ODID_SUCCESS or ODID_FAIL;
++*/
++int decodeLocationMessage(ODID_Location_data *outData, const ODID_Location_encoded *inEncoded)
++{
++    if (!outData || !inEncoded ||
++        inEncoded->MessageType != ODID_MESSAGETYPE_LOCATION ||
++        !intInRange(inEncoded->Status, 0, 15))
++        return ODID_FAIL;
++
++    outData->Status = (ODID_status_t) inEncoded->Status;
++    outData->Direction = decodeDirection(inEncoded->Direction, inEncoded-> EWDirection);
++    outData->SpeedHorizontal = decodeSpeedHorizontal(inEncoded->SpeedHorizontal, inEncoded->SpeedMult);
++    outData->SpeedVertical = decodeSpeedVertical(inEncoded->SpeedVertical);
++    outData->Latitude = decodeLatLon(inEncoded->Latitude);
++    outData->Longitude = decodeLatLon(inEncoded->Longitude);
++    outData->AltitudeBaro = decodeAltitude(inEncoded->AltitudeBaro);
++    outData->AltitudeGeo = decodeAltitude(inEncoded->AltitudeGeo);
++    outData->HeightType = (ODID_Height_reference_t) inEncoded->HeightType;
++    outData->Height = decodeAltitude(inEncoded->Height);
++    outData->HorizAccuracy = (ODID_Horizontal_accuracy_t) inEncoded->HorizAccuracy;
++    outData->VertAccuracy = (ODID_Vertical_accuracy_t) inEncoded->VertAccuracy;
++    outData->BaroAccuracy = (ODID_Vertical_accuracy_t) inEncoded->BaroAccuracy;
++    outData->SpeedAccuracy = (ODID_Speed_accuracy_t) inEncoded->SpeedAccuracy;
++    outData->TSAccuracy = (ODID_Timestamp_accuracy_t) inEncoded->TSAccuracy;
++    outData->TimeStamp = decodeTimeStamp(inEncoded->TimeStamp);
++    return ODID_SUCCESS;
++}
++
++/**
++* Get the page number of the authorization message
++*
++* @param inEncoded  Input message (encoded/packed) structure
++* @param pageNum    Output: The page number of this authorization message
++* @return           ODID_SUCCESS or ODID_FAIL;
++*/
++int getAuthPageNum(ODID_Auth_encoded *inEncoded, int *pageNum)
++{
++    if (!inEncoded || !pageNum ||
++        inEncoded->page_zero.MessageType != ODID_MESSAGETYPE_AUTH ||
++        !intInRange(inEncoded->page_zero.AuthType, 0, 15) ||
++        !intInRange(inEncoded->page_zero.DataPage, 0, ODID_AUTH_MAX_PAGES - 1))
++        return ODID_FAIL;
++
++    *pageNum = inEncoded->page_zero.DataPage;
++    return ODID_SUCCESS;
++}
++
++/**
++* Decode Auth data from packed message
++*
++* @param outData   Output: decoded message
++* @param inEncoded Input message (encoded/packed) structure
++* @return          ODID_SUCCESS or ODID_FAIL;
++*/
++int decodeAuthMessage(ODID_Auth_data *outData, const ODID_Auth_encoded *inEncoded)
++{
++    if (!outData || !inEncoded ||
++        inEncoded->page_zero.MessageType != ODID_MESSAGETYPE_AUTH ||
++        !intInRange(inEncoded->page_zero.AuthType, 0, 15) ||
++        !intInRange(inEncoded->page_zero.DataPage, 0, ODID_AUTH_MAX_PAGES - 1))
++        return ODID_FAIL;
++
++    if (inEncoded->page_zero.DataPage == 0) {
++        if (inEncoded->page_zero.LastPageIndex >= ODID_AUTH_MAX_PAGES)
++            return ODID_FAIL;
++
++#if (MAX_AUTH_LENGTH < UINT8_MAX)
++        if (inEncoded->page_zero.Length > MAX_AUTH_LENGTH)
++            return ODID_FAIL;
++#endif
++
++        int len = ODID_AUTH_PAGE_ZERO_DATA_SIZE +
++                  inEncoded->page_zero.LastPageIndex * ODID_AUTH_PAGE_NONZERO_DATA_SIZE;
++        if (len < inEncoded->page_zero.Length)
++            return ODID_FAIL;
++    }
++
++    outData->AuthType = (ODID_authtype_t) inEncoded->page_zero.AuthType;
++    outData->DataPage = inEncoded->page_zero.DataPage;
++    if (inEncoded->page_zero.DataPage == 0) {
++        outData->LastPageIndex = inEncoded->page_zero.LastPageIndex;
++        outData->Length = inEncoded->page_zero.Length;
++        outData->Timestamp = inEncoded->page_zero.Timestamp;
++        memset(outData->AuthData, 0, sizeof(outData->AuthData));
++        memcpy(outData->AuthData, inEncoded->page_zero.AuthData,
++               ODID_AUTH_PAGE_ZERO_DATA_SIZE);
++    } else {
++        memset(outData->AuthData, 0, sizeof(outData->AuthData));
++        memcpy(outData->AuthData, inEncoded->page_non_zero.AuthData,
++               ODID_AUTH_PAGE_NONZERO_DATA_SIZE);
++    }
++
++    return ODID_SUCCESS;
++}
++
++/**
++* Decode Self ID data from packed message
++*
++* @param outData   Output: decoded message
++* @param inEncoded Input message (encoded/packed) structure
++* @return          ODID_SUCCESS or ODID_FAIL;
++*/
++int decodeSelfIDMessage(ODID_SelfID_data *outData, const ODID_SelfID_encoded *inEncoded)
++{
++    if (!outData || !inEncoded ||
++        inEncoded->MessageType != ODID_MESSAGETYPE_SELF_ID)
++        return ODID_FAIL;
++
++    outData->DescType = (ODID_desctype_t) inEncoded->DescType;
++    safe_dec_copyfill(outData->Desc, inEncoded->Desc, sizeof(outData->Desc));
++    return ODID_SUCCESS;
++}
++
++/**
++* Decode System data from packed message
++*
++* @param outData   Output: decoded message
++* @param inEncoded Input message (encoded/packed) structure
++* @return          ODID_SUCCESS or ODID_FAIL;
++*/
++int decodeSystemMessage(ODID_System_data *outData, const ODID_System_encoded *inEncoded)
++{
++    if (!outData || !inEncoded ||
++        inEncoded->MessageType != ODID_MESSAGETYPE_SYSTEM)
++        return ODID_FAIL;
++
++    outData->OperatorLocationType =
++        (ODID_operator_location_type_t) inEncoded->OperatorLocationType;
++    outData->ClassificationType =
++        (ODID_classification_type_t) inEncoded->ClassificationType;
++    outData->OperatorLatitude = decodeLatLon(inEncoded->OperatorLatitude);
++    outData->OperatorLongitude = decodeLatLon(inEncoded->OperatorLongitude);
++    outData->AreaCount = inEncoded->AreaCount;
++    outData->AreaRadius = decodeAreaRadius(inEncoded->AreaRadius);
++    outData->AreaCeiling = decodeAltitude(inEncoded->AreaCeiling);
++    outData->AreaFloor = decodeAltitude(inEncoded->AreaFloor);
++    outData->CategoryEU = (ODID_category_EU_t) inEncoded->CategoryEU;
++    outData->ClassEU = (ODID_class_EU_t) inEncoded->ClassEU;
++    outData->OperatorAltitudeGeo = decodeAltitude(inEncoded->OperatorAltitudeGeo);
++    outData->Timestamp = inEncoded->Timestamp;
++    return ODID_SUCCESS;
++}
++
++/**
++* Decode Operator ID data from packed message
++*
++* @param outData   Output: decoded message
++* @param inEncoded Input message (encoded/packed) structure
++* @return          ODID_SUCCESS or ODID_FAIL;
++*/
++int decodeOperatorIDMessage(ODID_OperatorID_data *outData, const ODID_OperatorID_encoded *inEncoded)
++{
++    if (!outData || !inEncoded ||
++        inEncoded->MessageType != ODID_MESSAGETYPE_OPERATOR_ID)
++        return ODID_FAIL;
++
++    outData->OperatorIdType = (ODID_operatorIdType_t) inEncoded->OperatorIdType;
++    safe_dec_copyfill(outData->OperatorId, inEncoded->OperatorId, sizeof(outData->OperatorId));
++    return ODID_SUCCESS;
++}
++
++/**
++* Decode Message Pack from packed message
++*
++* The various Valid flags in uasData are set true whenever a message has been
++* decoded and the corresponding data structure has been filled. The caller must
++* clear these flags before calling decodeMessagePack().
++*
++* @param uasData Output: Structure containing buffers for all message data
++* @param pack    Pointer to an encoded packed message
++* @return        ODID_SUCCESS or ODID_FAIL;
++*/
++int decodeMessagePack(ODID_UAS_Data *uasData, const ODID_MessagePack_encoded *pack)
++{
++    if (!uasData || !pack || pack->MessageType != ODID_MESSAGETYPE_PACKED)
++        return ODID_FAIL;
++
++    if (pack->SingleMessageSize != ODID_MESSAGE_SIZE)
++        return ODID_FAIL;
++
++    if (checkPackContent(pack->Messages, pack->MsgPackSize) != ODID_SUCCESS)
++        return ODID_FAIL;
++
++    for (int i = 0; i < pack->MsgPackSize; i++) {
++        decodeOpenDroneID(uasData, pack->Messages[i].rawData);
++    }
++    return ODID_SUCCESS;
++}
++
++/**
++* Decodes the message type of a packed Open Drone ID message
++*
++* @param byte   The first byte of the message
++* @return       The message type: ODID_messagetype_t
++*/
++ODID_messagetype_t decodeMessageType(uint8_t byte)
++{
++    switch (byte >> 4)
++    {
++    case ODID_MESSAGETYPE_BASIC_ID:
++        return ODID_MESSAGETYPE_BASIC_ID;
++    case ODID_MESSAGETYPE_LOCATION:
++        return ODID_MESSAGETYPE_LOCATION;
++    case ODID_MESSAGETYPE_AUTH:
++        return ODID_MESSAGETYPE_AUTH;
++    case ODID_MESSAGETYPE_SELF_ID:
++        return ODID_MESSAGETYPE_SELF_ID;
++    case ODID_MESSAGETYPE_SYSTEM:
++        return ODID_MESSAGETYPE_SYSTEM;
++    case ODID_MESSAGETYPE_OPERATOR_ID:
++        return ODID_MESSAGETYPE_OPERATOR_ID;
++    case ODID_MESSAGETYPE_PACKED:
++        return ODID_MESSAGETYPE_PACKED;
++    default:
++        return ODID_MESSAGETYPE_INVALID;
++    }
++}
++
++/**
++* Parse encoded Open Drone ID data to identify the message type. Then decode
++* from Open Drone ID packed format into the appropriate Open Drone ID structure
++*
++* This function assumes that msgData points to a buffer containing all
++* ODID_MESSAGE_SIZE bytes of an Open Drone ID message.
++*
++* The various Valid flags in uasData are set true whenever a message has been
++* decoded and the corresponding data structure has been filled. The caller must
++* clear these flags before calling decodeOpenDroneID().
++*
++* @param uasData    Structure containing buffers for all message data
++* @param msgData    Pointer to a buffer containing a full encoded Open Drone ID
++*                   message
++* @return           The message type: ODID_messagetype_t
++*/
++ODID_messagetype_t decodeOpenDroneID(ODID_UAS_Data *uasData, const uint8_t *msgData)
++{
++    if (!uasData || !msgData)
++        return ODID_MESSAGETYPE_INVALID;
++
++    switch (decodeMessageType(msgData[0]))
++    {
++    case ODID_MESSAGETYPE_BASIC_ID: {
++        ODID_BasicID_encoded *basicId = (ODID_BasicID_encoded *) msgData;
++        enum ODID_idtype idType;
++        if (getBasicIDType(basicId, &idType) == ODID_SUCCESS) {
++            // Find a free slot to store the current message in or overwrite old data of the same type.
++            for (int i = 0; i < ODID_BASIC_ID_MAX_MESSAGES; i++) {
++                enum ODID_idtype storedType = uasData->BasicID[i].IDType;
++                if (storedType == ODID_IDTYPE_NONE || storedType == idType) {
++                    if (decodeBasicIDMessage(&uasData->BasicID[i], basicId) == ODID_SUCCESS) {
++                        uasData->BasicIDValid[i] = 1;
++                        return ODID_MESSAGETYPE_BASIC_ID;
++                    }
++                }
++            }
++        }
++        break;
++    }
++    case ODID_MESSAGETYPE_LOCATION: {
++        ODID_Location_encoded *location = (ODID_Location_encoded *) msgData;
++        if (decodeLocationMessage(&uasData->Location, location) == ODID_SUCCESS) {
++            uasData->LocationValid = 1;
++            return ODID_MESSAGETYPE_LOCATION;
++        }
++        break;
++    }
++    case ODID_MESSAGETYPE_AUTH: {
++        ODID_Auth_encoded *auth = (ODID_Auth_encoded *) msgData;
++        int pageNum;
++        if (getAuthPageNum(auth, &pageNum) == ODID_SUCCESS) {
++            ODID_Auth_data *authData = &uasData->Auth[pageNum];
++            if (decodeAuthMessage(authData, auth) == ODID_SUCCESS) {
++                uasData->AuthValid[pageNum] = 1;
++                return ODID_MESSAGETYPE_AUTH;
++            }
++        }
++        break;
++    }
++    case ODID_MESSAGETYPE_SELF_ID: {
++        ODID_SelfID_encoded *selfId = (ODID_SelfID_encoded *) msgData;
++        if (decodeSelfIDMessage(&uasData->SelfID, selfId) == ODID_SUCCESS) {
++            uasData->SelfIDValid = 1;
++            return ODID_MESSAGETYPE_SELF_ID;
++        }
++        break;
++    }
++    case ODID_MESSAGETYPE_SYSTEM: {
++        ODID_System_encoded *system = (ODID_System_encoded *) msgData;
++        if (decodeSystemMessage(&uasData->System, system) == ODID_SUCCESS) {
++            uasData->SystemValid = 1;
++            return ODID_MESSAGETYPE_SYSTEM;
++        }
++        break;
++    }
++    case ODID_MESSAGETYPE_OPERATOR_ID: {
++        ODID_OperatorID_encoded *operatorId = (ODID_OperatorID_encoded *) msgData;
++        if (decodeOperatorIDMessage(&uasData->OperatorID, operatorId) == ODID_SUCCESS) {
++            uasData->OperatorIDValid = 1;
++            return ODID_MESSAGETYPE_OPERATOR_ID;
++        }
++        break;
++    }
++    case ODID_MESSAGETYPE_PACKED: {
++        ODID_MessagePack_encoded *pack = (ODID_MessagePack_encoded *) msgData;
++        if (decodeMessagePack(uasData, pack) == ODID_SUCCESS)
++            return ODID_MESSAGETYPE_PACKED;
++        break;
++    }
++    default:
++        break;
++    }
++
++    return ODID_MESSAGETYPE_INVALID;
++}
++
++/**
++* Safely fill then copy string to destination (when decoding)
++*
++* This prevents overrun and guarantees copy behavior (fully null padded)
++* This function was specially made because the encoded data may not be null
++* terminated (if full size).
++* Therefore, the destination must use the last byte for a null (and is +1 in size)
++*
++* @param dstStr Destination string
++* @param srcStr Source string
++* @param dstSize Destination size
++*/
++static char *safe_dec_copyfill(char *dstStr, const char *srcStr, int dstSize)
++{
++    memset(dstStr, 0, dstSize);  // fills destination with nulls
++    strncpy(dstStr, srcStr, dstSize-1); // copy only up to dst size-1 (no overruns)
++    return dstStr;
++}
++
++/**
++* Safely range check a value and return the minimum or max within the range if exceeded
++*
++* @param inValue Value to range-check
++* @param startRange Start of range to compare
++* @param endRange End of range to compare
++* @return same value if it fits, otherwise, min or max of range as appropriate.
++*/
++static int intRangeMax(int64_t inValue, int startRange, int endRange) {
++    if ( inValue < startRange ) {
++        return startRange;
++    } else if (inValue > endRange) {
++        return endRange;
++    } else {
++        return (int) inValue;
++    }
++}
++
++/**
++ * Determine if an Int is in range
++ *
++ * @param inValue Value to range-check
++ * @param startRange Start of range to compare
++ * @param endRange End of range to compare
++ * @return 1 = yes, 0 = no
++ */
++static int intInRange(int inValue, int startRange, int endRange)
++{
++    if (inValue < startRange || inValue > endRange) {
++        return 0;
++    } else {
++        return 1;
++    }
++}
++
++/**
++* This converts a horizontal accuracy float value to the corresponding enum
++*
++* @param Accuracy The horizontal accuracy in meters
++* @return Enum value representing the accuracy
++*/
++ODID_Horizontal_accuracy_t createEnumHorizontalAccuracy(float Accuracy)
++{
++    if (Accuracy >= 18520)
++        return ODID_HOR_ACC_UNKNOWN;
++    else if (Accuracy >= 7408)
++        return ODID_HOR_ACC_10NM;
++    else if (Accuracy >= 3704)
++        return ODID_HOR_ACC_4NM;
++    else if (Accuracy >= 1852)
++        return ODID_HOR_ACC_2NM;
++    else if (Accuracy >= 926)
++        return ODID_HOR_ACC_1NM;
++    else if (Accuracy >= 555.6f)
++        return ODID_HOR_ACC_0_5NM;
++    else if (Accuracy >= 185.2f)
++        return ODID_HOR_ACC_0_3NM;
++    else if (Accuracy >= 92.6f)
++        return ODID_HOR_ACC_0_1NM;
++    else if (Accuracy >= 30)
++        return ODID_HOR_ACC_0_05NM;
++    else if (Accuracy >= 10)
++        return ODID_HOR_ACC_30_METER;
++    else if (Accuracy >= 3)
++        return ODID_HOR_ACC_10_METER;
++    else if (Accuracy >= 1)
++        return ODID_HOR_ACC_3_METER;
++    else if (Accuracy > 0)
++        return ODID_HOR_ACC_1_METER;
++    else
++        return ODID_HOR_ACC_UNKNOWN;
++}
++
++/**
++* This converts a vertical accuracy float value to the corresponding enum
++*
++* @param Accuracy The vertical accuracy in meters
++* @return Enum value representing the accuracy
++*/
++ODID_Vertical_accuracy_t createEnumVerticalAccuracy(float Accuracy)
++{
++    if (Accuracy >= 150)
++        return ODID_VER_ACC_UNKNOWN;
++    else if (Accuracy >= 45)
++        return ODID_VER_ACC_150_METER;
++    else if (Accuracy >= 25)
++        return ODID_VER_ACC_45_METER;
++    else if (Accuracy >= 10)
++        return ODID_VER_ACC_25_METER;
++    else if (Accuracy >= 3)
++        return ODID_VER_ACC_10_METER;
++    else if (Accuracy >= 1)
++        return ODID_VER_ACC_3_METER;
++    else if (Accuracy > 0)
++        return ODID_VER_ACC_1_METER;
++    else
++        return ODID_VER_ACC_UNKNOWN;
++}
++
++/**
++* This converts a speed accuracy float value to the corresponding enum
++*
++* @param Accuracy The speed accuracy in m/s
++* @return Enum value representing the accuracy
++*/
++ODID_Speed_accuracy_t createEnumSpeedAccuracy(float Accuracy)
++{
++    if (Accuracy >= 10)
++        return ODID_SPEED_ACC_UNKNOWN;
++    else if (Accuracy >= 3)
++        return ODID_SPEED_ACC_10_METERS_PER_SECOND;
++    else if (Accuracy >= 1)
++        return ODID_SPEED_ACC_3_METERS_PER_SECOND;
++    else if (Accuracy >= 0.3f)
++        return ODID_SPEED_ACC_1_METERS_PER_SECOND;
++    else if (Accuracy > 0)
++        return ODID_SPEED_ACC_0_3_METERS_PER_SECOND;
++    else
++        return ODID_SPEED_ACC_UNKNOWN;
++}
++
++/**
++* This converts a timestamp accuracy float value to the corresponding enum
++*
++* @param Accuracy The timestamp accuracy in seconds
++* @return Enum value representing the accuracy
++*/
++ODID_Timestamp_accuracy_t createEnumTimestampAccuracy(float Accuracy)
++{
++    if (Accuracy > 1.5f)
++        return ODID_TIME_ACC_UNKNOWN;
++    else if (Accuracy > 1.4f)
++        return ODID_TIME_ACC_1_5_SECOND;
++    else if (Accuracy > 1.3f)
++        return ODID_TIME_ACC_1_4_SECOND;
++    else if (Accuracy > 1.2f)
++        return ODID_TIME_ACC_1_3_SECOND;
++    else if (Accuracy > 1.1f)
++        return ODID_TIME_ACC_1_2_SECOND;
++    else if (Accuracy > 1.0f)
++        return ODID_TIME_ACC_1_1_SECOND;
++    else if (Accuracy > 0.9f)
++        return ODID_TIME_ACC_1_0_SECOND;
++    else if (Accuracy > 0.8f)
++        return ODID_TIME_ACC_0_9_SECOND;
++    else if (Accuracy > 0.7f)
++        return ODID_TIME_ACC_0_8_SECOND;
++    else if (Accuracy > 0.6f)
++        return ODID_TIME_ACC_0_7_SECOND;
++    else if (Accuracy > 0.5f)
++        return ODID_TIME_ACC_0_6_SECOND;
++    else if (Accuracy > 0.4f)
++        return ODID_TIME_ACC_0_5_SECOND;
++    else if (Accuracy > 0.3f)
++        return ODID_TIME_ACC_0_4_SECOND;
++    else if (Accuracy > 0.2f)
++        return ODID_TIME_ACC_0_3_SECOND;
++    else if (Accuracy > 0.1f)
++        return ODID_TIME_ACC_0_2_SECOND;
++    else if (Accuracy > 0.0f)
++        return ODID_TIME_ACC_0_1_SECOND;
++    else
++        return ODID_TIME_ACC_UNKNOWN;
++}
++
++/**
++* This decodes a horizontal accuracy enum to the corresponding float value
++*
++* @param Accuracy Enum value representing the accuracy
++* @return The maximum horizontal accuracy in meters
++*/
++float decodeHorizontalAccuracy(ODID_Horizontal_accuracy_t Accuracy)
++{
++    switch (Accuracy)
++    {
++    case ODID_HOR_ACC_UNKNOWN:
++        return 18520;
++    case ODID_HOR_ACC_10NM:
++        return 18520;
++    case ODID_HOR_ACC_4NM:
++        return 7808;
++    case ODID_HOR_ACC_2NM:
++        return 3704;
++    case ODID_HOR_ACC_1NM:
++        return 1852;
++    case ODID_HOR_ACC_0_5NM:
++        return 926;
++    case ODID_HOR_ACC_0_3NM:
++        return 555.6f;
++    case ODID_HOR_ACC_0_1NM:
++        return 185.2f;
++    case ODID_HOR_ACC_0_05NM:
++        return 92.6f;
++    case ODID_HOR_ACC_30_METER:
++        return 30;
++    case ODID_HOR_ACC_10_METER:
++        return 10;
++    case ODID_HOR_ACC_3_METER:
++        return 3;
++    case ODID_HOR_ACC_1_METER:
++        return 1;
++    default:
++        return 18520;
++    }
++}
++
++/**
++* This decodes a vertical accuracy enum to the corresponding float value
++*
++* @param Accuracy Enum value representing the accuracy
++* @return The maximum vertical accuracy in meters
++*/
++float decodeVerticalAccuracy(ODID_Vertical_accuracy_t Accuracy)
++{
++    switch (Accuracy)
++    {
++    case ODID_VER_ACC_UNKNOWN:
++        return 150;
++    case ODID_VER_ACC_150_METER:
++        return 150;
++    case ODID_VER_ACC_45_METER:
++        return 45;
++    case ODID_VER_ACC_25_METER:
++        return 25;
++    case ODID_VER_ACC_10_METER:
++        return 10;
++    case ODID_VER_ACC_3_METER:
++        return 3;
++    case ODID_VER_ACC_1_METER:
++        return 1;
++    default:
++        return 150;
++    }
++}
++
++/**
++* This decodes a speed accuracy enum to the corresponding float value
++*
++* @param Accuracy Enum value representing the accuracy
++* @return The maximum speed accuracy in m/s
++*/
++float decodeSpeedAccuracy(ODID_Speed_accuracy_t Accuracy)
++{
++    switch (Accuracy)
++    {
++    case ODID_SPEED_ACC_UNKNOWN:
++        return 10;
++    case ODID_SPEED_ACC_10_METERS_PER_SECOND:
++        return 10;
++    case ODID_SPEED_ACC_3_METERS_PER_SECOND:
++        return 3;
++    case ODID_SPEED_ACC_1_METERS_PER_SECOND:
++        return 1;
++    case ODID_SPEED_ACC_0_3_METERS_PER_SECOND:
++        return 0.3f;
++    default:
++        return 10;
++    }
++}
++
++/**
++* This decodes a timestamp accuracy enum to the corresponding float value
++*
++* @param Accuracy Enum value representing the accuracy
++* @return The maximum timestamp accuracy in seconds
++*/
++float decodeTimestampAccuracy(ODID_Timestamp_accuracy_t Accuracy)
++{
++    switch (Accuracy)
++    {
++    case ODID_TIME_ACC_UNKNOWN:
++        return 0.0f;
++    case ODID_TIME_ACC_0_1_SECOND:
++        return 0.1f;
++    case ODID_TIME_ACC_0_2_SECOND:
++        return 0.2f;
++    case ODID_TIME_ACC_0_3_SECOND:
++        return 0.3f;
++    case ODID_TIME_ACC_0_4_SECOND:
++        return 0.4f;
++    case ODID_TIME_ACC_0_5_SECOND:
++        return 0.5f;
++    case ODID_TIME_ACC_0_6_SECOND:
++        return 0.6f;
++    case ODID_TIME_ACC_0_7_SECOND:
++        return 0.7f;
++    case ODID_TIME_ACC_0_8_SECOND:
++        return 0.8f;
++    case ODID_TIME_ACC_0_9_SECOND:
++        return 0.9f;
++    case ODID_TIME_ACC_1_0_SECOND:
++        return 1.0f;
++    case ODID_TIME_ACC_1_1_SECOND:
++        return 1.1f;
++    case ODID_TIME_ACC_1_2_SECOND:
++        return 1.2f;
++    case ODID_TIME_ACC_1_3_SECOND:
++        return 1.3f;
++    case ODID_TIME_ACC_1_4_SECOND:
++        return 1.4f;
++    case ODID_TIME_ACC_1_5_SECOND:
++        return 1.5f;
++    default:
++        return 0.0f;
++    }
++}
++
++#ifndef ODID_DISABLE_PRINTF
++
++/**
++* Print array of bytes as a hex string
++*
++* @param byteArray Array of bytes to be printed
++* @param asize Size of array of bytes to be printed
++*/
++
++void printByteArray(const uint8_t *byteArray, uint16_t asize, int spaced)
++{
++    if (ENABLE_DEBUG) {
++        int x;
++        for (x=0;x<asize;x++) {
++            printf("%02x", (unsigned int) byteArray[x]);
++            if (spaced) {
++                printf(" ");
++            }
++        }
++        printf("\n");
++    }
++}
++
++/**
++* Print formatted BasicID Data
++*
++* @param BasicID structure to be printed
++*/
++void printBasicID_data(ODID_BasicID_data *BasicID)
++{
++    // Ensure the ID is null-terminated
++    char buf[ODID_ID_SIZE + 1] = { 0 };
++    memcpy(buf, BasicID->UASID, ODID_ID_SIZE);
++
++    const char ODID_BasicID_data_format[] =
++        "UAType: %d\nIDType: %d\nUASID: %s\n";
++    printf(ODID_BasicID_data_format, BasicID->UAType, BasicID->IDType, buf);
++}
++
++/**
++* Print formatted Location Data
++*
++* @param Location structure to be printed
++*/
++void printLocation_data(ODID_Location_data *Location)
++{
++    const char ODID_Location_data_format[] =
++        "Status: %d\nDirection: %.1f\nSpeedHori: %.2f\nSpeedVert: "\
++        "%.2f\nLat/Lon: %.7f, %.7f\nAlt: Baro, Geo, Height above %s: %.2f, "\
++        "%.2f, %.2f\nHoriz, Vert, Baro, Speed, TS Accuracy: %.1f, %.1f, %.1f, "\
++        "%.1f, %.1f\nTimeStamp: %.2f\n";
++    printf(ODID_Location_data_format, Location->Status,
++        (double) Location->Direction, (double) Location->SpeedHorizontal,
++        (double) Location->SpeedVertical, Location->Latitude,
++        Location->Longitude, Location->HeightType ? "Ground" : "TakeOff",
++        (double) Location->AltitudeBaro, (double) Location->AltitudeGeo,
++        (double) Location->Height,
++        (double) decodeHorizontalAccuracy(Location->HorizAccuracy),
++        (double) decodeVerticalAccuracy(Location->VertAccuracy),
++        (double) decodeVerticalAccuracy(Location->BaroAccuracy),
++        (double) decodeSpeedAccuracy(Location->SpeedAccuracy),
++        (double) decodeTimestampAccuracy(Location->TSAccuracy),
++        (double) Location->TimeStamp);
++}
++
++/**
++* Print formatted Auth Data
++*
++* @param Auth structure to be printed
++*/
++void printAuth_data(ODID_Auth_data *Auth)
++{
++    if (Auth->DataPage == 0) {
++        const char ODID_Auth_data_format[] =
++            "AuthType: %d\nDataPage: %d\nLastPageIndex: %d\nLength: %d\n"\
++            "Timestamp: %u\nAuthData: ";
++        printf(ODID_Auth_data_format, Auth->AuthType, Auth->DataPage,
++               Auth->LastPageIndex, Auth->Length, Auth->Timestamp);
++        for (int i = 0; i < ODID_AUTH_PAGE_ZERO_DATA_SIZE; i++)
++            printf("0x%02X ", Auth->AuthData[i]);
++    } else {
++        const char ODID_Auth_data_format[] =
++            "AuthType: %d\nDataPage: %d\nAuthData: ";
++        printf(ODID_Auth_data_format, Auth->AuthType, Auth->DataPage);
++        for (int i = 0; i < ODID_AUTH_PAGE_NONZERO_DATA_SIZE; i++)
++            printf("0x%02X ", Auth->AuthData[i]);
++    }
++    printf("\n");
++}
++
++/**
++* Print formatted SelfID Data
++*
++* @param SelfID structure to be printed
++*/
++void printSelfID_data(ODID_SelfID_data *SelfID)
++{
++    // Ensure the description is null-terminated
++    char buf[ODID_STR_SIZE + 1] = { 0 };
++    memcpy(buf, SelfID->Desc, ODID_STR_SIZE);
++
++    const char ODID_SelfID_data_format[] = "DescType: %d\nDesc: %s\n";
++    printf(ODID_SelfID_data_format, SelfID->DescType, buf);
++}
++
++/**
++* Print formatted System Data
++*
++* @param System_data structure to be printed
++*/
++void printSystem_data(ODID_System_data *System_data)
++{
++    const char ODID_System_data_format[] = "Operator Location Type: %d\n"
++        "Classification Type: %d\nLat/Lon: %.7f, %.7f\n"
++        "Area Count, Radius, Ceiling, Floor: %d, %d, %.2f, %.2f\n"
++        "Category EU: %d, Class EU: %d, Altitude: %.2f, Timestamp: %u\n";
++    printf(ODID_System_data_format, System_data->OperatorLocationType,
++        System_data->ClassificationType,
++        System_data->OperatorLatitude, System_data->OperatorLongitude,
++        System_data->AreaCount, System_data->AreaRadius,
++        (double) System_data->AreaCeiling, (double) System_data->AreaFloor,
++        System_data->CategoryEU, System_data->ClassEU,
++        (double) System_data->OperatorAltitudeGeo, System_data->Timestamp);
++}
++
++/**
++* Print formatted OperatorID Data
++*
++* @param OperatorID structure to be printed
++*/
++void printOperatorID_data(ODID_OperatorID_data *operatorID)
++{
++    // Ensure the ID is null-terminated
++    char buf[ODID_ID_SIZE + 1] = { 0 };
++    memcpy(buf, operatorID->OperatorId, ODID_ID_SIZE);
++
++    const char ODID_OperatorID_data_format[] =
++        "OperatorIdType: %d\nOperatorId: %s\n";
++    printf(ODID_OperatorID_data_format, operatorID->OperatorIdType, buf);
++}
++
++#endif // ODID_DISABLE_PRINTF
+diff --git a/flight/libraries/opendroneid/opendroneid.h b/flight/libraries/opendroneid/opendroneid.h
+new file mode 100644
+index 000000000..0c11f5792
+--- /dev/null
++++ b/flight/libraries/opendroneid/opendroneid.h
+@@ -0,0 +1,780 @@
++/*
++Copyright (C) 2019 Intel Corporation
++
++SPDX-License-Identifier: Apache-2.0
++
++Open Drone ID C Library
++
++Maintainer:
++Gabriel Cox
++gabriel.c.cox@intel.com
++*/
++
++#ifndef _OPENDRONEID_H_
++#define _OPENDRONEID_H_
++
++#include <stdint.h>
++#include <string.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#define ODID_MESSAGE_SIZE 25
++#define ODID_ID_SIZE 20
++#define ODID_STR_SIZE 23
++
++/*
++ * This implementation is compliant with the:
++ *   - ASTM F3411 Specification for Remote ID and Tracking
++ *   - ASD-STAN prEN 4709-002 Direct Remote Identification
++ * 
++ * Since the strategy of the standardization for drone ID has been to not break
++ * backwards compatibility when adding new functionality, no attempt in this
++ * implementation is made to verify the version number when decoding messages.
++ * It is assumed that newer versions can be decoded but some data elements
++ * might be missing in the output.
++ * 
++ * The following protocol versions have been in use:
++ * 0: ASTM F3411-19. Published Feb 14, 2020. https://www.astm.org/f3411-19.html
++ * 1: ASD-STAN prEN 4709-002 P1. Published 31-Oct-2021. http://asd-stan.org/downloads/asd-stan-pren-4709-002-p1/
++ *    ASTM F3411 v1.1 draft sent for first ballot round autumn 2021
++ * 2: ASTM F3411-v1.1 draft sent for second ballot round Q1 2022. (ASTM F3411-22 ?)
++ *    The delta to protocol version 1 is small:
++ *    - New enum values ODID_STATUS_REMOTE_ID_SYSTEM_FAILURE, ODID_DESC_TYPE_EMERGENCY and ODID_DESC_TYPE_EXTENDED_STATUS
++ *    - New Timestamp field in the System message
++ */
++#define ODID_PROTOCOL_VERSION 2
++
++/*
++ * To save memory on implementations that do not need support for 16 pages of
++ * authentication data, define ODID_AUTH_MAX_PAGES to the desired value before
++ * including opendroneid.h. E.g. "-DODID_AUTH_MAX_PAGES=5" when calling cmake.
++ */
++#ifndef ODID_AUTH_MAX_PAGES
++#define ODID_AUTH_MAX_PAGES 16
++#endif
++#if (ODID_AUTH_MAX_PAGES < 1) || (ODID_AUTH_MAX_PAGES > 16)
++#error "ODID_AUTH_MAX_PAGES must be between 1 and 16."
++#endif
++
++#define ODID_AUTH_PAGE_ZERO_DATA_SIZE    17
++#define ODID_AUTH_PAGE_NONZERO_DATA_SIZE 23
++#define MAX_AUTH_LENGTH (ODID_AUTH_PAGE_ZERO_DATA_SIZE + \
++                         ODID_AUTH_PAGE_NONZERO_DATA_SIZE * (ODID_AUTH_MAX_PAGES - 1))
++
++#ifndef ODID_BASIC_ID_MAX_MESSAGES
++#define ODID_BASIC_ID_MAX_MESSAGES 2
++#endif
++#if (ODID_BASIC_ID_MAX_MESSAGES < 1) || (ODID_BASIC_ID_MAX_MESSAGES > 5)
++#error "ODID_BASIC_ID_MAX_MESSAGES must be between 1 and 5."
++#endif
++
++#define ODID_PACK_MAX_MESSAGES 9
++
++#define ODID_SUCCESS    0
++#define ODID_FAIL       1
++
++#define MIN_DIR         0       // Minimum direction
++#define MAX_DIR         360     // Maximum direction
++#define INV_DIR         361     // Invalid direction
++#define MIN_SPEED_H     0       // Minimum speed horizontal
++#define MAX_SPEED_H     254.25f // Maximum speed horizontal
++#define INV_SPEED_H     255     // Invalid speed horizontal
++#define MIN_SPEED_V     (-62)   // Minimum speed vertical
++#define MAX_SPEED_V     62      // Maximum speed vertical
++#define INV_SPEED_V     63      // Invalid speed vertical
++#define MIN_LAT         (-90)   // Minimum latitude
++#define MAX_LAT         90      // Maximum latitude
++#define MIN_LON         (-180)  // Minimum longitude
++#define MAX_LON         180     // Maximum longitude
++#define MIN_ALT         (-1000) // Minimum altitude
++#define MAX_ALT         31767.5f// Maximum altitude
++#define INV_ALT         MIN_ALT // Invalid altitude
++#define MAX_TIMESTAMP   (60 * 60) // 1 hour in seconds
++#define INV_TIMESTAMP   0xFFFF  // Invalid, No Value or Unknown Timestamp
++#define MAX_AREA_RADIUS 2550
++
++typedef enum ODID_messagetype {
++    ODID_MESSAGETYPE_BASIC_ID = 0,
++    ODID_MESSAGETYPE_LOCATION = 1,
++    ODID_MESSAGETYPE_AUTH = 2,
++    ODID_MESSAGETYPE_SELF_ID = 3,
++    ODID_MESSAGETYPE_SYSTEM = 4,
++    ODID_MESSAGETYPE_OPERATOR_ID = 5,
++    ODID_MESSAGETYPE_PACKED = 0xF,
++    ODID_MESSAGETYPE_INVALID = 0xFF,
++} ODID_messagetype_t;
++
++// Each message type must maintain it's own message uint8_t counter, which must
++// be incremented if the message content changes. For repeated transmission of
++// the same message content, incrementing the counter is optional.
++typedef enum ODID_msg_counter {
++    ODID_MSG_COUNTER_BASIC_ID = 0,
++    ODID_MSG_COUNTER_LOCATION = 1,
++    ODID_MSG_COUNTER_AUTH = 2,
++    ODID_MSG_COUNTER_SELF_ID = 3,
++    ODID_MSG_COUNTER_SYSTEM = 4,
++    ODID_MSG_COUNTER_OPERATOR_ID = 5,
++    ODID_MSG_COUNTER_PACKED = 6,
++    ODID_MSG_COUNTER_AMOUNT = 7,
++} ODID_msg_counter_t;
++
++typedef enum ODID_idtype {
++    ODID_IDTYPE_NONE = 0,
++    ODID_IDTYPE_SERIAL_NUMBER = 1,
++    ODID_IDTYPE_CAA_REGISTRATION_ID = 2, // Civil Aviation Authority
++    ODID_IDTYPE_UTM_ASSIGNED_UUID = 3,   // UAS (Unmanned Aircraft System) Traffic Management
++    ODID_IDTYPE_SPECIFIC_SESSION_ID = 4, // The exact id type is specified by the first byte of UASID and these type
++                                         // values are managed by ICAO. 0 is reserved. 1 - 224 are managed by ICAO.
++                                         // 225 - 255 are available for private experimental usage only
++    // 5 to 15 reserved
++} ODID_idtype_t;
++
++typedef enum ODID_uatype {
++    ODID_UATYPE_NONE = 0,
++    ODID_UATYPE_AEROPLANE = 1, // Fixed wing
++    ODID_UATYPE_HELICOPTER_OR_MULTIROTOR = 2,
++    ODID_UATYPE_GYROPLANE = 3,
++    ODID_UATYPE_HYBRID_LIFT = 4, // Fixed wing aircraft that can take off vertically
++    ODID_UATYPE_ORNITHOPTER = 5,
++    ODID_UATYPE_GLIDER = 6,
++    ODID_UATYPE_KITE = 7,
++    ODID_UATYPE_FREE_BALLOON = 8,
++    ODID_UATYPE_CAPTIVE_BALLOON = 9,
++    ODID_UATYPE_AIRSHIP = 10, // Such as a blimp
++    ODID_UATYPE_FREE_FALL_PARACHUTE = 11, // Unpowered
++    ODID_UATYPE_ROCKET = 12,
++    ODID_UATYPE_TETHERED_POWERED_AIRCRAFT = 13,
++    ODID_UATYPE_GROUND_OBSTACLE = 14,
++    ODID_UATYPE_OTHER = 15,
++} ODID_uatype_t;
++
++typedef enum ODID_status {
++    ODID_STATUS_UNDECLARED = 0,
++    ODID_STATUS_GROUND = 1,
++    ODID_STATUS_AIRBORNE = 2,
++    ODID_STATUS_EMERGENCY = 3,
++    ODID_STATUS_REMOTE_ID_SYSTEM_FAILURE = 4,
++    // 3 to 15 reserved
++} ODID_status_t;
++
++typedef enum ODID_Height_reference {
++    ODID_HEIGHT_REF_OVER_TAKEOFF = 0,
++    ODID_HEIGHT_REF_OVER_GROUND = 1,
++} ODID_Height_reference_t;
++
++typedef enum ODID_Horizontal_accuracy {
++    ODID_HOR_ACC_UNKNOWN = 0,
++    ODID_HOR_ACC_10NM = 1,      // Nautical Miles. 18.52 km
++    ODID_HOR_ACC_4NM = 2,       // 7.408 km
++    ODID_HOR_ACC_2NM = 3,       // 3.704 km
++    ODID_HOR_ACC_1NM = 4,       // 1.852 km
++    ODID_HOR_ACC_0_5NM = 5,     // 926 m
++    ODID_HOR_ACC_0_3NM = 6,     // 555.6 m
++    ODID_HOR_ACC_0_1NM = 7,     // 185.2 m
++    ODID_HOR_ACC_0_05NM = 8,    // 92.6 m
++    ODID_HOR_ACC_30_METER = 9,
++    ODID_HOR_ACC_10_METER = 10,
++    ODID_HOR_ACC_3_METER = 11,
++    ODID_HOR_ACC_1_METER = 12,
++    // 13 to 15 reserved
++} ODID_Horizontal_accuracy_t;
++
++typedef enum ODID_Vertical_accuracy {
++    ODID_VER_ACC_UNKNOWN = 0,
++    ODID_VER_ACC_150_METER = 1,
++    ODID_VER_ACC_45_METER = 2,
++    ODID_VER_ACC_25_METER = 3,
++    ODID_VER_ACC_10_METER = 4,
++    ODID_VER_ACC_3_METER = 5,
++    ODID_VER_ACC_1_METER = 6,
++    // 7 to 15 reserved
++} ODID_Vertical_accuracy_t;
++
++typedef enum ODID_Speed_accuracy {
++    ODID_SPEED_ACC_UNKNOWN = 0,
++    ODID_SPEED_ACC_10_METERS_PER_SECOND = 1,
++    ODID_SPEED_ACC_3_METERS_PER_SECOND = 2,
++    ODID_SPEED_ACC_1_METERS_PER_SECOND = 3,
++    ODID_SPEED_ACC_0_3_METERS_PER_SECOND = 4,
++    // 5 to 15 reserved
++} ODID_Speed_accuracy_t;
++
++typedef enum ODID_Timestamp_accuracy {
++    ODID_TIME_ACC_UNKNOWN = 0,
++    ODID_TIME_ACC_0_1_SECOND = 1,
++    ODID_TIME_ACC_0_2_SECOND = 2,
++    ODID_TIME_ACC_0_3_SECOND = 3,
++    ODID_TIME_ACC_0_4_SECOND = 4,
++    ODID_TIME_ACC_0_5_SECOND = 5,
++    ODID_TIME_ACC_0_6_SECOND = 6,
++    ODID_TIME_ACC_0_7_SECOND = 7,
++    ODID_TIME_ACC_0_8_SECOND = 8,
++    ODID_TIME_ACC_0_9_SECOND = 9,
++    ODID_TIME_ACC_1_0_SECOND = 10,
++    ODID_TIME_ACC_1_1_SECOND = 11,
++    ODID_TIME_ACC_1_2_SECOND = 12,
++    ODID_TIME_ACC_1_3_SECOND = 13,
++    ODID_TIME_ACC_1_4_SECOND = 14,
++    ODID_TIME_ACC_1_5_SECOND = 15,
++} ODID_Timestamp_accuracy_t;
++
++typedef enum ODID_authtype {
++    ODID_AUTH_NONE = 0,
++    ODID_AUTH_UAS_ID_SIGNATURE = 1, // Unmanned Aircraft System
++    ODID_AUTH_OPERATOR_ID_SIGNATURE = 2,
++    ODID_AUTH_MESSAGE_SET_SIGNATURE = 3,
++    ODID_AUTH_NETWORK_REMOTE_ID = 4, // Authentication provided by Network Remote ID
++    ODID_AUTH_SPECIFIC_AUTHENTICATION = 5, // Specific auth method. The exact authentication type is indicated by the
++                                           // first byte of AuthData and these type values are managed by ICAO.
++                                           // 0 is reserved. 1 - 224 are managed by ICAO. 225 - 255 are available for
++                                           // private experimental usage only
++    // 6 to 9 reserved for the specification. 0xA to 0xF reserved for private use
++} ODID_authtype_t;
++
++typedef enum ODID_desctype {
++    ODID_DESC_TYPE_TEXT = 0,            // General free-form information text
++    ODID_DESC_TYPE_EMERGENCY = 1,       // Additional clarification when ODID_status == EMERGENCY
++    ODID_DESC_TYPE_EXTENDED_STATUS = 2, // Additional clarification when ODID_status != EMERGENCY
++    // 3 to 200 reserved
++    // 201 to 255 available for private use
++} ODID_desctype_t;
++
++typedef enum ODID_operatorIdType {
++    ODID_OPERATOR_ID = 0,
++    // 1 to 200 reserved
++    // 201 to 255 available for private use
++} ODID_operatorIdType_t;
++
++typedef enum ODID_operator_location_type {
++    ODID_OPERATOR_LOCATION_TYPE_TAKEOFF = 0,   // Takeoff location and altitude
++    ODID_OPERATOR_LOCATION_TYPE_LIVE_GNSS = 1, // Dynamic/Live location and altitude
++    ODID_OPERATOR_LOCATION_TYPE_FIXED = 2,     // Fixed location and altitude
++    // 3 to 255 reserved
++} ODID_operator_location_type_t;
++
++typedef enum ODID_classification_type {
++    ODID_CLASSIFICATION_TYPE_UNDECLARED = 0,
++    ODID_CLASSIFICATION_TYPE_EU = 1, // European Union
++    // 2 to 7 reserved
++} ODID_classification_type_t;
++
++typedef enum ODID_category_EU {
++    ODID_CATEGORY_EU_UNDECLARED = 0,
++    ODID_CATEGORY_EU_OPEN = 1,
++    ODID_CATEGORY_EU_SPECIFIC = 2,
++    ODID_CATEGORY_EU_CERTIFIED = 3,
++    // 4 to 15 reserved
++} ODID_category_EU_t;
++
++typedef enum ODID_class_EU {
++    ODID_CLASS_EU_UNDECLARED = 0,
++    ODID_CLASS_EU_CLASS_0 = 1,
++    ODID_CLASS_EU_CLASS_1 = 2,
++    ODID_CLASS_EU_CLASS_2 = 3,
++    ODID_CLASS_EU_CLASS_3 = 4,
++    ODID_CLASS_EU_CLASS_4 = 5,
++    ODID_CLASS_EU_CLASS_5 = 6,
++    ODID_CLASS_EU_CLASS_6 = 7,
++    // 8 to 15 reserved
++} ODID_class_EU_t;
++
++/*
++ * @name ODID_DataStructs
++ * ODID Data Structures in their normative (non-packed) form.
++ * This is the structure that any input adapters should form to
++ * let the encoders put the data into encoded form.
++ */
++typedef struct ODID_BasicID_data {
++    ODID_uatype_t UAType;
++    ODID_idtype_t IDType;
++    char UASID[ODID_ID_SIZE+1]; // Additional byte to allow for null term in normative form. Fill unused space with NULL
++} ODID_BasicID_data;
++
++typedef struct ODID_Location_data {
++    ODID_status_t Status;
++    float Direction;          // Degrees. 0 <= x < 360. Route course based on true North. Invalid, No Value, or Unknown: 361deg
++    float SpeedHorizontal;    // m/s. Positive only. Invalid, No Value, or Unknown: 255m/s. If speed is >= 254.25 m/s: 254.25m/s
++    float SpeedVertical;      // m/s. Invalid, No Value, or Unknown: 63m/s. If speed is >= 62m/s: 62m/s
++    double Latitude;          // Invalid, No Value, or Unknown: 0 deg (both Lat/Lon)
++    double Longitude;         // Invalid, No Value, or Unknown: 0 deg (both Lat/Lon)
++    float AltitudeBaro;       // meter (Ref 29.92 inHg, 1013.24 mb). Invalid, No Value, or Unknown: -1000m
++    float AltitudeGeo;        // meter (WGS84-HAE). Invalid, No Value, or Unknown: -1000m
++    ODID_Height_reference_t HeightType;
++    float Height;             // meter. Invalid, No Value, or Unknown: -1000m
++    ODID_Horizontal_accuracy_t HorizAccuracy;
++    ODID_Vertical_accuracy_t VertAccuracy;
++    ODID_Vertical_accuracy_t BaroAccuracy;
++    ODID_Speed_accuracy_t SpeedAccuracy;
++    ODID_Timestamp_accuracy_t TSAccuracy;
++    float TimeStamp;          // seconds after the full hour relative to UTC. Invalid, No Value, or Unknown: 0xFFFF
++} ODID_Location_data;
++
++/*
++ * The Authentication message can have two different formats:
++ *  - For data page 0, the fields LastPageIndex, Length and TimeStamp are present.
++ *    The size of AuthData is maximum 17 bytes (ODID_AUTH_PAGE_ZERO_DATA_SIZE).
++ *  - For data page 1 through (ODID_AUTH_MAX_PAGES - 1), LastPageIndex, Length and
++ *    TimeStamp are not present.
++ *    For pages 1 to LastPageIndex, the size of AuthData is maximum
++ *    23 bytes (ODID_AUTH_PAGE_NONZERO_DATA_SIZE).
++ *
++ * Unused bytes in the AuthData field must be filled with NULLs (i.e. 0x00).
++ *
++ * Since the Length field is uint8_t, the precise amount of data bytes
++ * transmitted over multiple pages of AuthData can only be specified up to 255.
++ * I.e. the maximum is one page 0, then 10 full pages and finally a page with
++ * 255 - (10*23 + 17) = 8 bytes of data.
++ *
++ * The payload data consisting of actual authentication data can never be
++ * larger than 255 bytes. However, it is possible to transmit additional
++ * support data, such as Forward Error Correction (FEC) data beyond that.
++ * This is e.g. useful when transmitting on Bluetooth 4, which does not have
++ * built-in FEC in the transmission protocol. The presence of this additional
++ * data is indicated by a combination of LastPageIndex and the value of the
++ * AuthData byte right after the last data byte indicated by Length. If this
++ * additional byte is non-zero/non-NULL, the value of the byte indicates the
++ * amount of additional (e.g. FEC) data bytes. The value of LastPageIndex must
++ * always be large enough to include all pages containing normal authentication
++ * and additional data. Some examples are given below. The value in the
++ * "FEC data" column must be stored in the "(Length - 1) + 1" position in the
++ * transmitted AuthData[] array. The total size of valid data in the AuthData
++ * array will be = Length + 1 + "FEC data".
++ *                                                                 Unused bytes
++ *    Authentication data        FEC data   LastPageIndex  Length  on last page
++ * 17 +  1*23 + 23 =  63 bytes    0 bytes         2           63         0
++ * 17 +  1*23 + 23 =  63 bytes   22 bytes         3           63         0
++ * 17 +  2*23 +  1 =  64 bytes    0 bytes         3           64        22
++ * 17 +  2*23 +  1 =  64 bytes   21 bytes         3           64         0
++ * 17 +  2*23 +  1 =  64 bytes   22 bytes         4           64        22
++ * ...
++ * 17 +  4*23 + 19 = 128 bytes    0 bytes         5          128         4
++ * 17 +  4*23 + 19 = 128 bytes    3 bytes         5          128         0
++ * 17 +  4*23 + 20 = 128 bytes   16 bytes         6          128        10
++ * 17 +  4*23 + 20 = 128 bytes   26 bytes         6          128         0
++ * ...
++ * 17 +  9*23 + 23 = 247 bytes    0 bytes        10          247         0
++ * 17 +  9*23 + 23 = 247 bytes   22 bytes        11          247         0
++ * 17 + 10*23 +  1 = 248 bytes    0 bytes        11          248        22
++ * 17 + 10*23 +  1 = 248 bytes   44 bytes        12          248         0
++ * ...
++ * 17 + 10*23 +  8 = 255 bytes    0 bytes        11          255        15
++ * 17 + 10*23 +  8 = 255 bytes   14 bytes        11          255         0
++ * 17 + 10*23 +  8 = 255 bytes   37 bytes        12          255         0
++ * 17 + 10*23 +  8 = 255 bytes   60 bytes        13          255         0
++ */
++typedef struct ODID_Auth_data {
++    uint8_t DataPage;       // 0 - (ODID_AUTH_MAX_PAGES - 1)
++    ODID_authtype_t AuthType;
++    uint8_t LastPageIndex;  // Page 0 only. Maximum (ODID_AUTH_MAX_PAGES - 1)
++    uint8_t Length;         // Page 0 only. Bytes. See description above.
++    uint32_t Timestamp;     // Page 0 only. Relative to 00:00:00 01/01/2019 UTC/Unix Time
++    uint8_t AuthData[ODID_AUTH_PAGE_NONZERO_DATA_SIZE+1]; // Additional byte to allow for null term in normative form
++} ODID_Auth_data;
++
++typedef struct ODID_SelfID_data {
++    ODID_desctype_t DescType;
++    char Desc[ODID_STR_SIZE+1]; // Additional byte to allow for null term in normative form. Fill unused space with NULL
++} ODID_SelfID_data;
++
++typedef struct ODID_System_data {
++    ODID_operator_location_type_t OperatorLocationType;
++    ODID_classification_type_t ClassificationType;
++    double OperatorLatitude;  // Invalid, No Value, or Unknown: 0 deg (both Lat/Lon)
++    double OperatorLongitude; // Invalid, No Value, or Unknown: 0 deg (both Lat/Lon)
++    uint16_t AreaCount;       // Default 1
++    uint16_t AreaRadius;      // meter. Default 0
++    float AreaCeiling;        // meter. Invalid, No Value, or Unknown: -1000m
++    float AreaFloor;          // meter. Invalid, No Value, or Unknown: -1000m
++    ODID_category_EU_t CategoryEU; // Only filled if ClassificationType = ODID_CLASSIFICATION_TYPE_EU
++    ODID_class_EU_t ClassEU;       // Only filled if ClassificationType = ODID_CLASSIFICATION_TYPE_EU
++    float OperatorAltitudeGeo;// meter (WGS84-HAE). Invalid, No Value, or Unknown: -1000m
++    uint32_t Timestamp;       // Relative to 00:00:00 01/01/2019 UTC/Unix Time
++} ODID_System_data;
++
++typedef struct ODID_OperatorID_data {
++    ODID_operatorIdType_t OperatorIdType;
++    char OperatorId[ODID_ID_SIZE+1]; // Additional byte to allow for null term in normative form. Fill unused space with NULL
++} ODID_OperatorID_data;
++
++typedef struct ODID_UAS_Data {
++    ODID_BasicID_data BasicID[ODID_BASIC_ID_MAX_MESSAGES];
++    ODID_Location_data Location;
++    ODID_Auth_data Auth[ODID_AUTH_MAX_PAGES];
++    ODID_SelfID_data SelfID;
++    ODID_System_data System;
++    ODID_OperatorID_data OperatorID;
++
++    uint8_t BasicIDValid[ODID_BASIC_ID_MAX_MESSAGES];
++    uint8_t LocationValid;
++    uint8_t AuthValid[ODID_AUTH_MAX_PAGES];
++    uint8_t SelfIDValid;
++    uint8_t SystemValid;
++    uint8_t OperatorIDValid;
++} ODID_UAS_Data;
++
++/**
++* @Name ODID_PackedStructs
++* Packed Data Structures prepared for broadcast
++* It's best not directly access these.  Use the encoders/decoders.
++*/
++
++typedef struct __attribute__((__packed__)) ODID_BasicID_encoded {
++    // Byte 0 [MessageType][ProtoVersion]  -- must define LSb first
++    uint8_t ProtoVersion: 4;
++    uint8_t MessageType : 4;
++
++    // Byte 1 [IDType][UAType]  -- must define LSb first
++    uint8_t UAType: 4;
++    uint8_t IDType: 4;
++
++    // Bytes 2-21
++    char UASID[ODID_ID_SIZE];
++
++    // 22-24
++    char Reserved[3];
++} ODID_BasicID_encoded;
++
++typedef struct __attribute__((__packed__)) ODID_Location_encoded {
++    // Byte 0 [MessageType][ProtoVersion]  -- must define LSb first
++    uint8_t ProtoVersion: 4;
++    uint8_t MessageType : 4;
++
++    // Byte 1 [Status][Reserved][NSMult][EWMult] -- must define LSb first
++    uint8_t SpeedMult: 1;
++    uint8_t EWDirection: 1;
++    uint8_t HeightType: 1;
++    uint8_t Reserved: 1;
++    uint8_t Status: 4;
++
++    // Bytes 2-18
++    uint8_t Direction;
++    uint8_t SpeedHorizontal;
++    int8_t SpeedVertical;
++    int32_t Latitude;
++    int32_t Longitude;
++    uint16_t AltitudeBaro;
++    uint16_t AltitudeGeo;
++    uint16_t Height;
++
++    // Byte 19 [VertAccuracy][HorizAccuracy]  -- must define LSb first
++    uint8_t HorizAccuracy:4;
++    uint8_t VertAccuracy:4;
++
++    // Byte 20 [BaroAccuracy][SpeedAccuracy]  -- must define LSb first
++    uint8_t SpeedAccuracy:4;
++    uint8_t BaroAccuracy:4;
++
++    // Byte 21-22
++    uint16_t TimeStamp;
++
++    // Byte 23 [Reserved2][TSAccuracy]  -- must define LSb first
++    uint8_t TSAccuracy:4;
++    uint8_t Reserved2:4;
++
++    // Byte 24
++    char Reserved3;
++} ODID_Location_encoded;
++
++typedef struct __attribute__((__packed__)) ODID_Auth_encoded_page_zero {
++    // Byte 0 [MessageType][ProtoVersion]  -- must define LSb first
++    uint8_t ProtoVersion: 4;
++    uint8_t MessageType : 4;
++
++    // Byte 1 [AuthType][DataPage]
++    uint8_t DataPage: 4;
++    uint8_t AuthType: 4;
++
++    // Bytes 2-7
++    uint8_t LastPageIndex;
++    uint8_t Length;
++    uint32_t Timestamp;
++
++    // Byte 8-24
++    uint8_t AuthData[ODID_AUTH_PAGE_ZERO_DATA_SIZE];
++} ODID_Auth_encoded_page_zero;
++
++typedef struct __attribute__((__packed__)) ODID_Auth_encoded_page_non_zero {
++    // Byte 0 [MessageType][ProtoVersion]  -- must define LSb first
++    uint8_t ProtoVersion: 4;
++    uint8_t MessageType : 4;
++
++    // Byte 1 [AuthType][DataPage]
++    uint8_t DataPage: 4;
++    uint8_t AuthType: 4;
++
++    // Byte 2-24
++    uint8_t AuthData[ODID_AUTH_PAGE_NONZERO_DATA_SIZE];
++} ODID_Auth_encoded_page_non_zero;
++
++/*
++ * It is safe to access the first four fields (i.e. ProtoVersion, MessageType,
++ * DataPage and AuthType) from either of the union members, since the declarations
++ * for these fields are identical and the first parts of the structures.
++ * The ISO/IEC 9899:1999 Chapter 6.5.2.3 part 5 and related Example 3 documents this.
++ * https://www.iso.org/standard/29237.html
++ */
++typedef union ODID_Auth_encoded{
++    ODID_Auth_encoded_page_zero page_zero;
++    ODID_Auth_encoded_page_non_zero page_non_zero;
++} ODID_Auth_encoded;
++
++typedef struct __attribute__((__packed__)) ODID_SelfID_encoded {
++    // Byte 0 [MessageType][ProtoVersion]  -- must define LSb first
++    uint8_t ProtoVersion: 4;
++    uint8_t MessageType : 4;
++
++    // Byte 1
++    uint8_t DescType;
++
++    // Byte 2-24
++    char Desc[ODID_STR_SIZE];
++} ODID_SelfID_encoded;
++
++typedef struct __attribute__((__packed__)) ODID_System_encoded {
++    // Byte 0 [MessageType][ProtoVersion]  -- must define LSb first
++    uint8_t ProtoVersion: 4;
++    uint8_t MessageType : 4;
++
++    // Byte 1 [Reserved][ClassificationType][OperatorLocationType]  -- must define LSb first
++    uint8_t OperatorLocationType: 2;
++    uint8_t ClassificationType: 3;
++    uint8_t Reserved: 3;
++
++    // Byte 2-9
++    int32_t OperatorLatitude;
++    int32_t OperatorLongitude;
++
++    // Byte 10-16
++    uint16_t AreaCount;
++    uint8_t  AreaRadius;
++    uint16_t AreaCeiling;
++    uint16_t AreaFloor;
++
++    // Byte 17 [CategoryEU][ClassEU]  -- must define LSb first
++    uint8_t ClassEU: 4;
++    uint8_t CategoryEU: 4;
++
++    // Byte 18-23
++    uint16_t OperatorAltitudeGeo;
++    uint32_t Timestamp;
++
++    // Byte 24
++    char Reserved2;
++} ODID_System_encoded;
++
++typedef struct __attribute__((__packed__)) ODID_OperatorID_encoded {
++    // Byte 0 [MessageType][ProtoVersion]  -- must define LSb first
++    uint8_t ProtoVersion: 4;
++    uint8_t MessageType : 4;
++
++    // Byte 1
++    uint8_t OperatorIdType;
++
++    // Bytes 2-21
++    char OperatorId[ODID_ID_SIZE];
++
++    // 22-24
++    char Reserved[3];
++} ODID_OperatorID_encoded;
++
++/*
++ * It is safe to access the first two fields (i.e. ProtoVersion and MessageType)
++ * from any of the structure parts of the union members, since the declarations
++ * for these fields are identical and the first parts of the structures.
++ * The ISO/IEC 9899:1999 Chapter 6.5.2.3 part 5 and related Example 3 documents this.
++ * https://www.iso.org/standard/29237.html
++ */
++typedef union ODID_Message_encoded {
++    uint8_t rawData[ODID_MESSAGE_SIZE];
++    ODID_BasicID_encoded basicId;
++    ODID_Location_encoded location;
++    ODID_Auth_encoded auth;
++    ODID_SelfID_encoded selfId;
++    ODID_System_encoded system;
++    ODID_OperatorID_encoded operatorId;
++} ODID_Message_encoded;
++
++typedef struct __attribute__((__packed__)) ODID_MessagePack_encoded {
++    // Byte 0 [MessageType][ProtoVersion]  -- must define LSb first
++    uint8_t ProtoVersion: 4;
++    uint8_t MessageType : 4;
++
++    // Byte 1 - 2
++    uint8_t SingleMessageSize;
++    uint8_t MsgPackSize; // no of messages in pack
++
++    // Byte 3 - 227
++    ODID_Message_encoded Messages[ODID_PACK_MAX_MESSAGES];
++} ODID_MessagePack_encoded;
++
++typedef struct ODID_MessagePack_data {
++    uint8_t SingleMessageSize; // Must always be ODID_MESSAGE_SIZE
++    uint8_t MsgPackSize; // Number of messages in pack (NOT number of bytes)
++
++    ODID_Message_encoded Messages[ODID_PACK_MAX_MESSAGES];
++} ODID_MessagePack_data;
++
++// API Calls
++void odid_initBasicIDData(ODID_BasicID_data *data);
++void odid_initLocationData(ODID_Location_data *data);
++void odid_initAuthData(ODID_Auth_data *data);
++void odid_initSelfIDData(ODID_SelfID_data *data);
++void odid_initSystemData(ODID_System_data *data);
++void odid_initOperatorIDData(ODID_OperatorID_data *data);
++void odid_initMessagePackData(ODID_MessagePack_data *data);
++void odid_initUasData(ODID_UAS_Data *data);
++
++int encodeBasicIDMessage(ODID_BasicID_encoded *outEncoded, const ODID_BasicID_data *inData);
++int encodeLocationMessage(ODID_Location_encoded *outEncoded, const ODID_Location_data *inData);
++int encodeAuthMessage(ODID_Auth_encoded *outEncoded, const ODID_Auth_data *inData);
++int encodeSelfIDMessage(ODID_SelfID_encoded *outEncoded, const ODID_SelfID_data *inData);
++int encodeSystemMessage(ODID_System_encoded *outEncoded, const ODID_System_data *inData);
++int encodeOperatorIDMessage(ODID_OperatorID_encoded *outEncoded, const ODID_OperatorID_data *inData);
++int encodeMessagePack(ODID_MessagePack_encoded *outEncoded, const ODID_MessagePack_data *inData);
++
++int decodeBasicIDMessage(ODID_BasicID_data *outData, const ODID_BasicID_encoded *inEncoded);
++int decodeLocationMessage(ODID_Location_data *outData, const ODID_Location_encoded *inEncoded);
++int decodeAuthMessage(ODID_Auth_data *outData, const ODID_Auth_encoded *inEncoded);
++int decodeSelfIDMessage(ODID_SelfID_data *outData, const ODID_SelfID_encoded *inEncoded);
++int decodeSystemMessage(ODID_System_data *outData, const ODID_System_encoded *inEncoded);
++int decodeOperatorIDMessage(ODID_OperatorID_data *outData, const ODID_OperatorID_encoded *inEncoded);
++int decodeMessagePack(ODID_UAS_Data *uasData, const ODID_MessagePack_encoded *pack);
++
++int getBasicIDType(ODID_BasicID_encoded *inEncoded, enum ODID_idtype *idType);
++int getAuthPageNum(ODID_Auth_encoded *inEncoded, int *pageNum);
++ODID_messagetype_t decodeMessageType(uint8_t byte);
++ODID_messagetype_t decodeOpenDroneID(ODID_UAS_Data *uas_data, const uint8_t *msg_data);
++
++// Helper Functions
++ODID_Horizontal_accuracy_t createEnumHorizontalAccuracy(float Accuracy);
++ODID_Vertical_accuracy_t createEnumVerticalAccuracy(float Accuracy);
++ODID_Speed_accuracy_t createEnumSpeedAccuracy(float Accuracy);
++ODID_Timestamp_accuracy_t createEnumTimestampAccuracy(float Accuracy);
++
++float decodeHorizontalAccuracy(ODID_Horizontal_accuracy_t Accuracy);
++float decodeVerticalAccuracy(ODID_Vertical_accuracy_t Accuracy);
++float decodeSpeedAccuracy(ODID_Speed_accuracy_t Accuracy);
++float decodeTimestampAccuracy(ODID_Timestamp_accuracy_t Accuracy);
++
++// OpenDroneID WiFi functions
++
++/**
++ * drone_export_gps_data - prints drone information to json style string,
++ * according to odid message specification
++ * @UAS_Data: general drone status information
++ * @buf: buffer for the json style string
++ * @buf_size: size of the string buffer
++ *
++ * Returns pointer to gps_data string on success, otherwise returns NULL
++ */
++void drone_export_gps_data(const ODID_UAS_Data *UAS_Data, char *buf, size_t buf_size);
++
++/**
++ * odid_message_build_pack - combines the messages and encodes the odid pack
++ * @UAS_Data: general drone status information
++ * @pack: buffer space to write to
++ * @buflen: maximum length of buffer space
++ *
++ * Returns length on success, < 0 on failure. @buf only contains a valid message
++ * if the return code is >0
++ */
++int odid_message_build_pack(const ODID_UAS_Data *UAS_Data, void *pack, size_t buflen);
++
++/* odid_wifi_build_nan_sync_beacon_frame - creates a NAN sync beacon frame
++ * that shall be send just before the NAN action frame.
++ * @mac: mac address of the wifi adapter where the NAN frame will be sent
++ * @buf: pointer to buffer space where the NAN will be written to
++ * @buf_size: maximum size of the buffer
++ *
++ * Returns the packet length on success, or < 0 on error.
++ */
++int odid_wifi_build_nan_sync_beacon_frame(const char *mac, uint8_t *buf, size_t buf_size);
++
++/* odid_wifi_build_message_pack_nan_action_frame - creates a message pack
++ * with each type of message from the drone information into an NAN action frame.
++ * @UAS_Data: general drone status information
++ * @mac: mac address of the wifi adapter where the NAN frame will be sent
++ * @send_counter: sequence number, to be increased for each call of this function
++ * @buf: pointer to buffer space where the NAN will be written to
++ * @buf_size: maximum size of the buffer
++ *
++ * Returns the packet length on success, or < 0 on error.
++ */
++int odid_wifi_build_message_pack_nan_action_frame(const ODID_UAS_Data *UAS_Data, const char *mac,
++                                                  uint8_t send_counter,
++                                                  uint8_t *buf, size_t buf_size);
++
++/* odid_wifi_build_message_pack_beacon_frame - creates a message pack
++ * with each type of message from the drone information into an Beacon frame.
++ * @UAS_Data: general drone status information
++ * @mac: mac address of the wifi adapter where the Beacon frame will be sent
++ * @SSID: SSID of the wifi network to be sent
++ * @SSID_len: length in bytes of the SSID string
++ * @interval_tu: beacon interval in wifi Time Units
++ * @send_counter: sequence number, to be increased for each call of this function
++ * @buf: pointer to buffer space where the Beacon will be written to
++ * @buf_size: maximum size of the buffer
++ *
++ * Returns the packet length on success, or < 0 on error.
++ */
++int odid_wifi_build_message_pack_beacon_frame(const ODID_UAS_Data *UAS_Data, const char *mac,
++                                              const char *SSID, size_t SSID_len,
++                                              uint16_t interval_tu, uint8_t send_counter,
++                                              uint8_t *buf, size_t buf_size);
++
++/* odid_message_process_pack - decodes the messages from the odid message pack
++ * @UAS_Data: general drone status information
++ * @pack: buffer space to read from
++ * @buflen: length of buffer space
++ *
++ * Returns message pack length on success, or < 0 on error.
++ */
++int odid_message_process_pack(ODID_UAS_Data *UAS_Data, const uint8_t *pack, size_t buflen);
++
++/* odid_wifi_receive_message_pack_nan_action_frame - processes a received message pack
++ * with each type of message from the drone information into an NAN action frame
++ * @UAS_Data: general drone status information
++ * @mac: mac address of the wifi adapter where the NAN frame will be sent
++ * @buf: pointer to buffer space where the NAN is stored
++ * @buf_size: maximum size of the buffer
++ *
++ * Returns 0 on success, or < 0 on error. Will fill 6 bytes into @mac.
++ */
++int odid_wifi_receive_message_pack_nan_action_frame(ODID_UAS_Data *UAS_Data,
++                                                    char *mac, const uint8_t *buf, size_t buf_size);
++
++#ifndef ODID_DISABLE_PRINTF
++void printByteArray(const uint8_t *byteArray, uint16_t asize, int spaced);
++void printBasicID_data(ODID_BasicID_data *BasicID);
++void printLocation_data(ODID_Location_data *Location);
++void printAuth_data(ODID_Auth_data *Auth);
++void printSelfID_data(ODID_SelfID_data *SelfID);
++void printOperatorID_data(ODID_OperatorID_data *OperatorID);
++void printSystem_data(ODID_System_data *System_data);
++#endif // ODID_DISABLE_PRINTF
++
++typedef struct FRDID_UAS_Data {
++  const char* Identifier;
++  const char* ANSICTA2063Identifier;
++  double Latitude;
++  double Longitude;
++  int Altitude;
++  int Height;
++  double TakeoffLatitude;
++  double TakeoffLongitude;
++  int HorizontalSpeed;
++  int TrueCourse;
++} FRDID_UAS_Data;
++
++int frdid_wifi_build_beacon_frame(const FRDID_UAS_Data* UAS_Data, const char* mac, const char* SSID, size_t SSID_len,
++                                  uint16_t interval_tu, uint8_t* buf, size_t buf_size);
++
++int frdid_build(const FRDID_UAS_Data* UAS_Data, uint8_t* buf, size_t buf_size);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif // _OPENDRONEID_H_
 diff --git a/flight/modules/Flip/flip.c b/flight/modules/Flip/flip.c
 new file mode 100644
 index 000000000..95daa666c
@@ -3539,6 +6100,333 @@ index 000000000..4fcc86b40
 +int32_t FlipStart(void);
 +
 +#endif /* FLIP_H */
+diff --git a/flight/modules/RemoteID/inc/remoteid.h b/flight/modules/RemoteID/inc/remoteid.h
+new file mode 100644
+index 000000000..ca0c691cb
+--- /dev/null
++++ b/flight/modules/RemoteID/inc/remoteid.h
+@@ -0,0 +1,13 @@
++/**
++ ******************************************************************************
++ * @file       remoteid.h
++ * @brief      ASTM F3411 Broadcast Remote ID module
++ * @see        The GNU Public License (GPL) Version 3
++ *****************************************************************************/
++#ifndef REMOTEID_H
++#define REMOTEID_H
++
++int32_t RemoteIDInitialize(void);
++int32_t RemoteIDStart(void);
++
++#endif /* REMOTEID_H */
+diff --git a/flight/modules/RemoteID/remoteid.c b/flight/modules/RemoteID/remoteid.c
+new file mode 100644
+index 000000000..9fe5cecff
+--- /dev/null
++++ b/flight/modules/RemoteID/remoteid.c
+@@ -0,0 +1,302 @@
++/**
++ ******************************************************************************
++ * @addtogroup Modules
++ * @{
++ * @addtogroup RemoteIDModule ASTM F3411 Broadcast Remote ID
++ * @brief Encodes the aircraft's identity and state into Remote ID messages
++ *        once a second and hands the pack to the board's transmitter.
++ *
++ * Content:
++ *   Basic ID     RemoteIDSettings.IDType / UASID / UAType (skipped when unset)
++ *   Location     status from FlightStatus.Armed; position, altitude, speed,
++ *                direction and time from GPSPositionSensor/GPSTime when there
++ *                is a fix, otherwise the standard's "Unknown" encodings
++ *   System       operator location = takeoff position, latched from the GPS
++ *                at the moment of arming (F3411 OPERATOR_LOCATION_TYPE_TAKEOFF)
++ *   Self-ID      RemoteIDSettings.SelfIDText (skipped when empty)
++ *   Operator ID  RemoteIDSettings.OperatorID (skipped when empty)
++ *
++ * Honesty note: a broadcast without a position is not a compliant Remote ID
++ * anywhere. This module is standards-shaped so it becomes complete the moment
++ * a GPS is wired (the ESP32's spare UART2) - it never invents a position.
++ *
++ * Encoding is the reference implementation (flight/libraries/opendroneid,
++ * Apache-2.0); the pack assembly below mirrors odid_message_build_pack().
++ * @{
++ * @see        The GNU Public License (GPL) Version 3
++ *****************************************************************************/
++
++#include "openpilot.h"
++#include "inc/remoteid.h"
++#include <remoteidsettings.h>
++#include <remoteidstatus.h>
++#include <flightstatus.h>
++#include <gpspositionsensor.h>
++#include <gpstime.h>
++#include <pios_rid.h>
++#ifndef ODID_AUTH_MAX_PAGES
++#define ODID_AUTH_MAX_PAGES 1   /* must match the library's build definition */
++#endif
++#include "opendroneid.h"
++#include <string.h>
++#include <math.h>
++
++#define STACK_SIZE_BYTES 2048
++#define TASK_PRIORITY    (tskIDLE_PRIORITY + 1)
++#define PERIOD_MS        1000          /* F3411: Location at >= 1 Hz */
++#define UNIX_2019        1546300800u   /* System.Timestamp epoch: 2019-01-01T00:00:00Z */
++
++static xTaskHandle taskHandle;
++static ODID_UAS_Data uas;                /* static: too large for a small stack */
++static uint8_t packBuf[3 + ODID_PACK_MAX_MESSAGES * ODID_MESSAGE_SIZE];
++static uint8_t msgCounter;
++static bool takeoffValid;
++static double takeoffLat, takeoffLon;
++static float takeoffAltGeo;
++static uint8_t lastArmed = FLIGHTSTATUS_ARMED_DISARMED;
++
++static void RemoteIDTask(void *parameters);
++
++int32_t RemoteIDInitialize(void)
++{
++    RemoteIDSettingsInitialize();
++    RemoteIDStatusInitialize();
++    return 0;
++}
++
++int32_t RemoteIDStart(void)
++{
++    xTaskCreate(RemoteIDTask, "RemoteID", STACK_SIZE_BYTES / 4, NULL, TASK_PRIORITY, &taskHandle);
++    return 0;
++}
++MODULE_INITCALL(RemoteIDInitialize, RemoteIDStart);
++
++/* NUL-padded copy of a uint8 UAVO array into an ODID string field */
++static void copy_field(char *dst, size_t dstsz, const uint8_t *src, size_t n)
++{
++    memset(dst, 0, dstsz);
++    for (size_t i = 0; i < n && i + 1 < dstsz && src[i]; i++) {
++        dst[i] = (char)src[i];
++    }
++}
++
++/* days since 1970-01-01 for a proleptic Gregorian civil date */
++static uint32_t days_from_civil(int y, unsigned m, unsigned d)
++{
++    y -= m <= 2;
++    const int era = (y >= 0 ? y : y - 399) / 400;
++    const unsigned yoe = (unsigned)(y - era * 400);
++    const unsigned doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
++    const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
++    return (uint32_t)(era * 146097 + (int)doe - 719468);
++}
++
++/* Assemble the pack exactly like the reference odid_message_build_pack() */
++static int build_pack(uint8_t *out, size_t outsz)
++{
++    ODID_MessagePack_data mp;
++    memset(&mp, 0, sizeof(mp));
++    mp.SingleMessageSize = ODID_MESSAGE_SIZE;
++    mp.MsgPackSize = 0;
++    for (int i = 0; i < ODID_BASIC_ID_MAX_MESSAGES; i++) {
++        if (uas.BasicIDValid[i] && mp.MsgPackSize < ODID_PACK_MAX_MESSAGES
++            && encodeBasicIDMessage((void *)&mp.Messages[mp.MsgPackSize], &uas.BasicID[i]) == ODID_SUCCESS) {
++            mp.MsgPackSize++;
++        }
++    }
++    if (uas.LocationValid && mp.MsgPackSize < ODID_PACK_MAX_MESSAGES
++        && encodeLocationMessage((void *)&mp.Messages[mp.MsgPackSize], &uas.Location) == ODID_SUCCESS) {
++        mp.MsgPackSize++;
++    }
++    if (uas.SelfIDValid && mp.MsgPackSize < ODID_PACK_MAX_MESSAGES
++        && encodeSelfIDMessage((void *)&mp.Messages[mp.MsgPackSize], &uas.SelfID) == ODID_SUCCESS) {
++        mp.MsgPackSize++;
++    }
++    if (uas.SystemValid && mp.MsgPackSize < ODID_PACK_MAX_MESSAGES
++        && encodeSystemMessage((void *)&mp.Messages[mp.MsgPackSize], &uas.System) == ODID_SUCCESS) {
++        mp.MsgPackSize++;
++    }
++    if (uas.OperatorIDValid && mp.MsgPackSize < ODID_PACK_MAX_MESSAGES
++        && encodeOperatorIDMessage((void *)&mp.Messages[mp.MsgPackSize], &uas.OperatorID) == ODID_SUCCESS) {
++        mp.MsgPackSize++;
++    }
++    if (mp.MsgPackSize == 0) {
++        return -1;
++    }
++    size_t len = sizeof(ODID_MessagePack_encoded) - (ODID_PACK_MAX_MESSAGES - mp.MsgPackSize) * ODID_MESSAGE_SIZE;
++    if (len > outsz) {
++        return -1;
++    }
++    if (encodeMessagePack((ODID_MessagePack_encoded *)out, &mp) != ODID_SUCCESS) {
++        return -1;
++    }
++    return (int)len;
++}
++
++static void fill(const RemoteIDSettingsData *s, RemoteIDStatusData *st)
++{
++    odid_initUasData(&uas);
++
++    /* --- Basic ID ------------------------------------------------------ */
++    if (s->IDType != REMOTEIDSETTINGS_IDTYPE_NONE && s->UASID[0]) {
++        uas.BasicID[0].UAType = (ODID_uatype_t)s->UAType;   /* same enumeration order as F3411 */
++        uas.BasicID[0].IDType = (ODID_idtype_t)s->IDType;
++        copy_field(uas.BasicID[0].UASID, sizeof(uas.BasicID[0].UASID), s->UASID, REMOTEIDSETTINGS_UASID_NUMELEM);
++        uas.BasicIDValid[0] = 1;
++    }
++
++    /* --- Location / Vector --------------------------------------------- */
++    FlightStatusData fs;
++    FlightStatusGet(&fs);
++    bool armed = fs.Armed == FLIGHTSTATUS_ARMED_ARMED;
++
++    GPSPositionSensorData gps;
++    bool fix = false, fix3d = false;
++    if (GPSPositionSensorHandle()) {
++        GPSPositionSensorGet(&gps);
++        fix   = gps.Status == GPSPOSITIONSENSOR_STATUS_FIX2D || gps.Status == GPSPOSITIONSENSOR_STATUS_FIX3D;
++        fix3d = gps.Status == GPSPOSITIONSENSOR_STATUS_FIX3D;
++    }
++    GPSTimeData gt;
++    bool haveTime = false;
++    if (GPSTimeHandle()) {
++        GPSTimeGet(&gt);
++        haveTime = gt.Year >= 2019;
++    }
++
++    ODID_Location_data *L = &uas.Location;
++    L->Status          = armed ? ODID_STATUS_AIRBORNE : ODID_STATUS_GROUND;
++    L->Direction       = INV_DIR;
++    L->SpeedHorizontal = INV_SPEED_H;
++    L->SpeedVertical   = INV_SPEED_V;
++    L->Latitude        = 0;
++    L->Longitude       = 0;
++    L->AltitudeBaro    = INV_ALT;
++    L->AltitudeGeo     = INV_ALT;
++    L->HeightType      = ODID_HEIGHT_REF_OVER_TAKEOFF;
++    L->Height          = INV_ALT;
++    L->HorizAccuracy   = ODID_HOR_ACC_UNKNOWN;
++    L->VertAccuracy    = ODID_VER_ACC_UNKNOWN;
++    L->BaroAccuracy    = ODID_VER_ACC_UNKNOWN;
++    L->SpeedAccuracy   = ODID_SPEED_ACC_UNKNOWN;
++    L->TSAccuracy      = ODID_TIME_ACC_UNKNOWN;
++    L->TimeStamp       = INV_TIMESTAMP;
++    if (fix) {
++        L->Latitude        = gps.Latitude * 1e-7;
++        L->Longitude       = gps.Longitude * 1e-7;
++        L->SpeedHorizontal = gps.Groundspeed;
++        L->SpeedAccuracy   = ODID_SPEED_ACC_1_METERS_PER_SECOND;
++        if (gps.Groundspeed > 0.5f) {
++            float h = gps.Heading;
++            while (h < 0) { h += 360.0f; }
++            while (h >= 360.0f) { h -= 360.0f; }
++            L->Direction = h;
++        }
++        L->HorizAccuracy = gps.HDOP < 2.0f ? ODID_HOR_ACC_10_METER : gps.HDOP < 6.0f ? ODID_HOR_ACC_30_METER : ODID_HOR_ACC_UNKNOWN;
++        if (fix3d) {
++            float hae = gps.Altitude + gps.GeoidSeparation;   /* MSL + separation = WGS84 HAE */
++            L->AltitudeGeo  = hae;
++            L->VertAccuracy = ODID_VER_ACC_10_METER;
++            if (takeoffValid) {
++                L->Height = hae - takeoffAltGeo;
++            }
++        }
++        if (haveTime) {
++            L->TimeStamp  = (float)(gt.Minute * 60 + gt.Second);   /* seconds after the hour */
++            L->TSAccuracy = ODID_TIME_ACC_1_0_SECOND;
++        }
++    }
++    uas.LocationValid = 1;
++
++    /* takeoff latch: first arming with a fix defines the operator/takeoff point */
++    if (armed && lastArmed != FLIGHTSTATUS_ARMED_ARMED && fix) {
++        takeoffValid  = true;
++        takeoffLat    = L->Latitude;
++        takeoffLon    = L->Longitude;
++        takeoffAltGeo = fix3d ? gps.Altitude + gps.GeoidSeparation : INV_ALT;
++    }
++    lastArmed = fs.Armed;
++
++    /* --- System --------------------------------------------------------- */
++    ODID_System_data *S = &uas.System;
++    S->OperatorLocationType = ODID_OPERATOR_LOCATION_TYPE_TAKEOFF;
++    S->ClassificationType   = ODID_CLASSIFICATION_TYPE_UNDECLARED;
++    S->OperatorLatitude     = takeoffValid ? takeoffLat : 0;
++    S->OperatorLongitude    = takeoffValid ? takeoffLon : 0;
++    S->AreaCount   = 1;
++    S->AreaRadius  = 0;
++    S->AreaCeiling = INV_ALT;
++    S->AreaFloor   = INV_ALT;
++    S->CategoryEU  = ODID_CATEGORY_EU_UNDECLARED;
++    S->ClassEU     = ODID_CLASS_EU_UNDECLARED;
++    S->OperatorAltitudeGeo = takeoffValid ? takeoffAltGeo : INV_ALT;
++    S->Timestamp = 0;
++    if (haveTime) {
++        uint32_t unix = days_from_civil(gt.Year, gt.Month, gt.Day) * 86400u + gt.Hour * 3600u + gt.Minute * 60u + gt.Second;
++        S->Timestamp = unix > UNIX_2019 ? unix - UNIX_2019 : 0;
++    }
++    uas.SystemValid = 1;
++
++    /* --- Self-ID / Operator ID ----------------------------------------- */
++    if (s->SelfIDText[0]) {
++        uas.SelfID.DescType = ODID_DESC_TYPE_TEXT;
++        copy_field(uas.SelfID.Desc, sizeof(uas.SelfID.Desc), s->SelfIDText, REMOTEIDSETTINGS_SELFIDTEXT_NUMELEM);
++        uas.SelfIDValid = 1;
++    }
++    if (s->OperatorID[0]) {
++        uas.OperatorID.OperatorIdType = ODID_OPERATOR_ID_TYPE_CAA;
++        copy_field(uas.OperatorID.OperatorId, sizeof(uas.OperatorID.OperatorId), s->OperatorID, REMOTEIDSETTINGS_OPERATORID_NUMELEM);
++        uas.OperatorIDValid = 1;
++    }
++
++    st->PositionSource = fix ? REMOTEIDSTATUS_POSITIONSOURCE_GPS : REMOTEIDSTATUS_POSITIONSOURCE_NONE;
++}
++
++static void RemoteIDTask(__attribute__((unused)) void *parameters)
++{
++    portTickType lastSysTime = xTaskGetTickCount();
++    RemoteIDStatusData st;
++    RemoteIDStatusGet(&st);
++    bool wasOn = false;
++
++    while (1) {
++        vTaskDelayUntil(&lastSysTime, PERIOD_MS / portTICK_RATE_MS);
++
++        RemoteIDSettingsData s;
++        RemoteIDSettingsGet(&s);
++
++        if (s.Enabled != REMOTEIDSETTINGS_ENABLED_TRUE) {
++            if (wasOn) {
++                PIOS_RID_Broadcast(NULL, 0, 0);   /* stop */
++                wasOn = false;
++            }
++            st.State    = REMOTEIDSTATUS_STATE_DISABLED;
++            st.Messages = 0;
++            st.PositionSource = REMOTEIDSTATUS_POSITIONSOURCE_NONE;
++            RemoteIDStatusSet(&st);
++            continue;
++        }
++
++        fill(&s, &st);
++        int len = build_pack(packBuf, sizeof(packBuf));
++        if (len < 0) {
++            st.State = REMOTEIDSTATUS_STATE_NOTRANSMITTER;
++            RemoteIDStatusSet(&st);
++            continue;
++        }
++        st.Messages = ((ODID_MessagePack_encoded *)packBuf)->MsgPackSize;
++        if (PIOS_RID_Broadcast(packBuf, (uint16_t)len, msgCounter++) == 0) {
++            wasOn = true;
++            st.TxCount++;
++            st.State = uas.BasicIDValid[0] ? REMOTEIDSTATUS_STATE_BROADCASTING : REMOTEIDSTATUS_STATE_NOID;
++        } else {
++            st.State = REMOTEIDSTATUS_STATE_NOTRANSMITTER;
++        }
++        RemoteIDStatusSet(&st);
++    }
++}
++
++/**
++ * @}
++ * @}
++ */
 diff --git a/flight/pios/common/pios_gcsrcvr.c b/flight/pios/common/pios_gcsrcvr.c
 index 93fd871a3..b7971d558 100644
 --- a/flight/pios/common/pios_gcsrcvr.c
@@ -3585,6 +6473,40 @@ index 93fd871a3..b7971d558 100644
  
  #endif /* PIOS_INCLUDE_GCSRCVR */
  
+diff --git a/flight/pios/inc/pios_rid.h b/flight/pios/inc/pios_rid.h
+new file mode 100644
+index 000000000..a7bd947e5
+--- /dev/null
++++ b/flight/pios/inc/pios_rid.h
+@@ -0,0 +1,28 @@
++/**
++ ******************************************************************************
++ * @file       pios_rid.h
++ * @brief      Board hook for ASTM F3411 Broadcast Remote ID.
++ *
++ * The RemoteID module encodes a Message Pack once a second and calls
++ * PIOS_RID_Broadcast(). The board decides how it leaves the aircraft:
++ *   - esp32wroom: a vendor-specific element (OUI FA:0B:BC, type 0x0D) in the
++ *     soft-AP's own beacon and probe-response frames (pios_rid_wifi.c)
++ *   - posix twins: the identical element bytes over UDP to 127.0.0.1:9020 so
++ *     tools/remoteid_listen.py can decode exactly what a receiver would see
++ * @see        The GNU Public License (GPL) Version 3
++ *****************************************************************************/
++#ifndef PIOS_RID_H
++#define PIOS_RID_H
++
++#include <stdint.h>
++
++/**
++ * Transmit one encoded Message Pack.
++ * @param pack     encoded ODID_MessagePack (3-byte header + N * 25 bytes)
++ * @param len      its length in bytes; 0 (or pack == NULL) means stop broadcasting
++ * @param counter  message counter for the vendor element (increments per pack)
++ * @return 0 on success, nonzero when no transmitter is available
++ */
++int32_t PIOS_RID_Broadcast(const uint8_t *pack, uint16_t len, uint8_t counter);
++
++#endif /* PIOS_RID_H */
 diff --git a/flight/pios/posix/inc/pios_icm20602.h b/flight/pios/posix/inc/pios_icm20602.h
 new file mode 100644
 index 000000000..c40a69dee
@@ -3770,6 +6692,71 @@ index 000000000..b5585178a
 +}
 +
 +#endif /* PIOS_INCLUDE_ICM20602 */
+diff --git a/flight/pios/posix/pios_rid_sim.c b/flight/pios/posix/pios_rid_sim.c
+new file mode 100644
+index 000000000..192e4f866
+--- /dev/null
++++ b/flight/pios/posix/pios_rid_sim.c
+@@ -0,0 +1,59 @@
++/**
++ ******************************************************************************
++ * @file       pios_rid_sim.c
++ * @brief      Remote ID "transmitter" for the posix twins: emits the exact
++ *             vendor-specific element a WiFi beacon would carry (0xDD, len,
++ *             OUI FA:0B:BC, type 0x0D, counter, Message Pack) over UDP to
++ *             127.0.0.1:9020, where tools/remoteid_listen.py decodes it.
++ *             Whole body guarded: every .c in pios/posix compiles into every
++ *             posix target.
++ * @see        The GNU Public License (GPL) Version 3
++ *****************************************************************************/
++#include "pios.h"
++
++#ifdef PIOS_INCLUDE_RID_SIM
++
++#include <pios_rid.h>
++#include <string.h>
++#include <sys/socket.h>
++#include <netinet/in.h>
++#include <arpa/inet.h>
++#include <unistd.h>
++
++#ifndef PIOS_RID_SIM_PORT
++#define PIOS_RID_SIM_PORT 9020
++#endif
++
++int32_t PIOS_RID_Broadcast(const uint8_t *pack, uint16_t len, uint8_t counter)
++{
++    static int sock = -1;
++    static struct sockaddr_in dst;
++
++    if (sock < 0) {
++        sock = socket(AF_INET, SOCK_DGRAM, 0);
++        if (sock < 0) {
++            return -1;
++        }
++        memset(&dst, 0, sizeof(dst));
++        dst.sin_family = AF_INET;
++        dst.sin_port   = htons(PIOS_RID_SIM_PORT);
++        dst.sin_addr.s_addr = inet_addr("127.0.0.1");
++    }
++    if (!pack || !len) {
++        return 0;
++    }
++    if (len + 5 > 255) {
++        return -2;
++    }
++    uint8_t ie[7 + 255];
++    ie[0] = 0xDD;
++    ie[1] = (uint8_t)(5 + len);
++    ie[2] = 0xFA; ie[3] = 0x0B; ie[4] = 0xBC;
++    ie[5] = 0x0D;
++    ie[6] = counter;
++    memcpy(ie + 7, pack, len);
++    (void)sendto(sock, ie, 7 + len, 0, (struct sockaddr *)&dst, sizeof(dst));
++    return 0;
++}
++
++#endif /* PIOS_INCLUDE_RID_SIM */
 diff --git a/flight/targets/boards/simwroom/board-info.mk b/flight/targets/boards/simwroom/board-info.mk
 new file mode 100644
 index 000000000..3ba96875e
@@ -6733,6 +9720,46 @@ index 000000000..3e1cc48fb
 +        <access gcs="readwrite" flight="readwrite"/>
 +        <telemetrygcs acked="false" updatemode="onchange" period="0"/>
 +        <telemetryflight acked="false" updatemode="onchange" period="0"/>
++        <logging updatemode="manual" period="0"/>
++    </object>
++</xml>
+diff --git a/shared/uavobjectdefinition/remoteidsettings.xml b/shared/uavobjectdefinition/remoteidsettings.xml
+new file mode 100644
+index 000000000..89582cd26
+--- /dev/null
++++ b/shared/uavobjectdefinition/remoteidsettings.xml
+@@ -0,0 +1,15 @@
++<xml>
++    <object name="RemoteIDSettings" singleinstance="true" settings="true" category="System">
++        <description>ASTM F3411 Broadcast Remote ID content. The RemoteID module encodes these once a second into a Message Pack (Basic ID, Location/Vector, System, Self-ID, Operator ID) and hands it to the board's transmitter (a WiFi beacon vendor element on the ESP32). Location comes from GPSPositionSensor when it has a fix; without a GPS the Location message reports unknown position, which is NOT a compliant broadcast by itself.</description>
++        <field name="Enabled" units="" type="enum" elements="1" options="FALSE,TRUE" defaultvalue="FALSE"/>
++        <field name="IDType" units="" type="enum" elements="1" options="None,SerialNumber,CAARegistrationID,UTMAssignedUUID" defaultvalue="None"/>
++        <field name="UASID" units="ascii" type="uint8" elements="20" defaultvalue="0"/>
++        <field name="UAType" units="" type="enum" elements="1" options="None,Aeroplane,HelicopterOrMultirotor,Gyroplane,HybridLift,Ornithopter,Glider,Kite,FreeBalloon,CaptiveBalloon,Airship,FreeFallParachute,Rocket,TetheredPoweredAircraft,GroundObstacle,Other" defaultvalue="HelicopterOrMultirotor"/>
++        <field name="OperatorID" units="ascii" type="uint8" elements="20" defaultvalue="0"/>
++        <field name="SelfIDText" units="ascii" type="uint8" elements="23" defaultvalue="0"/>
++        <access gcs="readwrite" flight="readwrite"/>
++        <telemetrygcs acked="true" updatemode="onchange" period="0"/>
++        <telemetryflight acked="true" updatemode="onchange" period="0"/>
++        <logging updatemode="manual" period="0"/>
++    </object>
++</xml>
+diff --git a/shared/uavobjectdefinition/remoteidstatus.xml b/shared/uavobjectdefinition/remoteidstatus.xml
+new file mode 100644
+index 000000000..b9331ce1d
+--- /dev/null
++++ b/shared/uavobjectdefinition/remoteidstatus.xml
+@@ -0,0 +1,13 @@
++<xml>
++    <object name="RemoteIDStatus" singleinstance="true" settings="false" category="System">
++        <description>What the RemoteID module is actually broadcasting: state, where the position came from, how many messages are in the pack, and a transmit counter.</description>
++        <field name="State" units="" type="enum" elements="1" options="Disabled,NoID,NoTransmitter,Broadcasting" defaultvalue="Disabled"/>
++        <field name="PositionSource" units="" type="enum" elements="1" options="None,GPS" defaultvalue="None"/>
++        <field name="Messages" units="count" type="uint8" elements="1" defaultvalue="0"/>
++        <field name="TxCount" units="count" type="uint32" elements="1" defaultvalue="0"/>
++        <access gcs="readwrite" flight="readwrite"/>
++        <telemetrygcs acked="false" updatemode="periodic" period="1000"/>
++        <telemetryflight acked="false" updatemode="periodic" period="1000"/>
 +        <logging updatemode="manual" period="0"/>
 +    </object>
 +</xml>

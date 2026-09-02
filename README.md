@@ -148,6 +148,43 @@ Prebuilt images in the repo root, from this exact tree:
 
 Flash recipes and the full ESC-calibration ritual: SKILL.md.
 
+## Remote ID broadcast (ASTM F3411)
+
+`flight/modules/RemoteID` (carried in the shared patch) encodes the aircraft's
+identity and state into a Broadcast Remote ID Message Pack once a second, using
+the reference encoder (`flight/libraries/opendroneid`, opendroneid-core-c,
+Apache-2.0, vendored unmodified). On the ESP32 the pack rides as a vendor
+element (OUI FA:0B:BC, type 0x0D) in the beacons and probe responses of a
+soft-AP named `RID-xxxxxx` that runs alongside the telemetry station (or on
+its own on channel 6 when no WiFi credentials are stored). The WiFi driver
+repeats it in every 100 ms beacon; no task of ours touches the radio.
+
+Messages: Basic ID (your ID type + ID + UA type), Location/Vector (armed
+state; position, altitude, speed, track and time from `GPSPositionSensor` /
+`GPSTime` when there is a fix), System (operator location = the position at
+arming), Self-ID (free text), Operator ID.
+
+```bash
+python3 tools/remoteid_setup.py --id-type CAARegistrationID --uas-id FA3xxxxxxxxx \
+    --operator-id FA3xxxxxxxxx --self-id "4in quad" --enable    # persists in NVS
+python3 tools/remoteid_setup.py --status
+```
+
+Receivers: the OpenDroneID app on Android, or any F3411 WiFi-beacon scanner.
+On the sim twin the same element bytes go to UDP :9020 and
+`tools/remoteid_listen.py` decodes them like a receiver would; `--hex` decodes
+a captured element.
+
+**What this is and is not.** It is a correct, standards-shaped broadcast. It
+is not, on this airframe today, legal Remote ID: there is no GPS, so the
+Location message carries the standard's "unknown" encodings, and FAA Part 89
+requires position (and a Declaration of Compliance a home-built transmitter
+does not have). Put a GPS on the spare UART2 and the Location and System
+messages fill themselves in; the module never invents a position. Shipped in
+`firmware_remoteid.bin` (= the hovered build + this module, disabled until
+you run the setup tool). `firmware_normal_41hz.bin` remains the image that
+flew.
+
 ## Why this is worth doing
 
 CopterControl runs the same flight code at `PIOS_SENSOR_RATE 500.0f` on an

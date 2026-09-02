@@ -136,3 +136,11 @@ learns gyro bias during the arming second.
 
 `tools/flight_monitor.py` checks all of these and prints GO/NO-GO before you
 arm.
+
+## Remote ID
+
+Broadcast Remote ID rides on the ESP32's own WiFi: a soft-AP `RID-xxxxxx`
+carries the ASTM F3411 Message Pack in its beacons (`firmware_remoteid.bin`,
+configure with `tools/remoteid_setup.py`). To make it a complete broadcast
+add a GPS on the spare UART2 (GPIO16 RX / GPIO17 TX, 57600 default) - the
+Location and System messages fill in from `GPSPositionSensor` automatically.
