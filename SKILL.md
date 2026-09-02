@@ -106,6 +106,7 @@ Every power-up of the cal build recalibrates — never leave it flashed.
 python3 tools/bench_test.py            # board on battery, GCS closed
 python3 tools/orientation_check.py     # read-only: tip the REAL nose down -> must print NOSE DOWN
 python3 tools/bench_test.py --paced    # preferred: YOU press Enter to start each phase
+python3 tools/bench_test.py --quick    # ~1 min: one cycle at 15%, SAYS which motor pair rose per tilt
 python3 tools/bench_report.py ~/NinjaPilot-logs/bench_<stamp>.jsonl   # offline deep pass
 ```
 

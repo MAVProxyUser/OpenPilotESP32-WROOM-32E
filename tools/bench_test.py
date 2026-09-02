@@ -34,6 +34,7 @@ What it grades:
 
     python3 bench_test.py [--host 192.168.0.45] [--max 0.90] [--time 100]
     python3 bench_test.py --paced        # you press Enter to start each phase
+    python3 bench_test.py --quick        # one cycle at 15%: which motor pair rises per tilt
 """
 
 import argparse
@@ -124,11 +125,17 @@ def main():
                          "phase starts when YOU press Enter and is sampled for its "
                          "full duration - labels cannot lag your hands and the "
                          "still windows are truly still (--time is ignored)")
+    ap.add_argument("--quick", action="store_true",
+                    help="one paced cycle at 15%% throttle only (~1 min after arming): "
+                         "confirms which motor PAIR rises for each tilt, spoken, so you "
+                         "can see that the mixer's 'front' is the airframe's nose")
     ap.add_argument("--sim-sensors", action="store_true",
                     help="SIM ONLY: also feed level GyroSensor/AccelSensor so the "
                          "simwroom twin's attitude converges and it outputs PWM "
                          "(real hardware has real sensors - do not use there)")
     args = ap.parse_args()
+    if args.quick:
+        args.paced = True
     if args.quiet:
         _say_enabled[0] = False
 
@@ -613,7 +620,7 @@ def main():
     REACTION_S = 1.0    # hands need about this long after the words START
     paced = None
     if args.paced:
-        lv = sorted({round(x, 2) for x in (0.15, 0.35, 0.55, 0.75, args.max) if x <= args.max + 1e-6})
+        lv = [0.15] if args.quick else sorted({round(x, 2) for x in (0.15, 0.35, 0.55, 0.75, args.max) if x <= args.max + 1e-6})
         paced = {"levels": lv, "level_i": 0, "step_i": 0, "mode": "announce",
                  "wait_t0": 0.0, "hold_until": 0.0}
         say("Paced mode. Each step waits for you to press Enter.")
@@ -663,6 +670,26 @@ def main():
                             sim_tilt["roll"] = {"roll_left": -20.0, "roll_right": 20.0}.get(name, 0.0)
                             sim_tilt["pitch"] = {"nose_down": -20.0, "nose_up": 20.0}.get(name, 0.0)
                 elif paced["mode"] == "hold" and now >= paced["hold_until"]:
+                    # say which motor PAIR was high during this window, so the
+                    # pilot can look at the airframe and confirm the mixer's
+                    # idea of "front" is the nose (QuadX: M1 NW, M2 NE, M3 SE,
+                    # M4 SW). Expected: nose down -> front, nose up -> rear,
+                    # roll left -> left pair, roll right -> right pair.
+                    win = [r for r in samples if r["phase"] == name and r["t"] > now - t0 - dur - 0.5]
+                    if win and name in ("nose_down", "nose_up", "roll_left", "roll_right"):
+                        mp = [sum(r["pwm"][i] for r in win) / len(win) for i in range(4)]
+                        fr = (mp[0] + mp[1]) - (mp[2] + mp[3])
+                        lr = (mp[0] + mp[3]) - (mp[1] + mp[2])
+                        if name.startswith("nose"):
+                            seen = "front" if fr > 40 else "rear" if fr < -40 else "no clear"
+                            want = "front" if name == "nose_down" else "rear"
+                        else:
+                            seen = "left" if lr > 40 else "right" if lr < -40 else "no clear"
+                            want = "left" if name == "roll_left" else "right"
+                        verdict = "as expected" if seen == want else "NOT what the mixer expects" if seen != "no clear" else "too small to call"
+                        print("[motors] %-10s %s pair high (M1 %.0f M2 %.0f M3 %.0f M4 %.0f) - %s"
+                              % (name, seen, mp[0], mp[1], mp[2], mp[3], verdict), flush=True)
+                        say("%s motors were high. %s." % (seen.capitalize(), verdict.replace("NOT", "not")))
                     phase[0] = "transition"
                     paced["step_i"] += 1
                     if paced["step_i"] >= len(CYCLE):
