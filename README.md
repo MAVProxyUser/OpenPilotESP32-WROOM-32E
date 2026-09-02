@@ -80,8 +80,11 @@ Prebuilt images in the repo root, from this exact tree:
 
 - `firmware_normal_41hz.bin` - the flight build: 41Hz DLPF, self-leveling
   Stabilized3 defaults, Rate-yaw default (no AxisLock arming-gesture
-  windup), MotorsSpinWhileArmed default TRUE, onboard Flip module, and
-  4-inch-class Bank1 defaults (rate 0.0032/0.0075/0.00005, attitude Kp
+  windup), MotorsSpinWhileArmed default TRUE, GCS receiver bound as an
+  input source (lets tools/bench_test.py drive the throttle over UDP),
+  and 4-inch-class Bank1 defaults. The onboard Flip module is NOT in this
+  build (sim-twin only, per operator call - the FlipStatus object is
+  compiled but inert so the UAVO set still matches the sim) (rate 0.0032/0.0075/0.00005, attitude Kp
   3.2 - modest refinements inside the envelope CC3D-era 250s flew; the
   Autotune module is deliberately NOT built for the real board).
   Settings persistence: NVS-backed, keyed by object id + instance,
@@ -222,9 +225,10 @@ First-day results (2026-09-01, all GPS-only feedback at 10 Hz):
   with the guidance loop outside the firmware. (Caveat: gz navsat is
   ublox-grade clean; real GPS noise will widen that number.)
 
-**The backflip is now ONBOARD** - flip.pde came home to the board.
-`flight/modules/Flip` (compiled into BOTH the real ESP32 firmware and the
-sim twin) runs the whole maneuver at task rate against loop-fresh gyro
+**The backflip is now ONBOARD (sim twin only, for now)** - flip.pde came
+home to the board. `flight/modules/Flip` (compiled into the sim twin;
+deliberately NOT into the real ESP32 firmware until it has earned trust
+there) runs the whole maneuver at task rate against loop-fresh gyro
 data: the ground side writes `FlipStatus.Command = Flip` and the board
 owns punch, rotation (angle from the gyro integral - measured dt, never
 assumed), spin-kill, and catch, with stabilizedhandler deferring to the
