@@ -86,7 +86,12 @@
 /* PIOS_FLASHFS backed by NVS -- see pios/esp32/pios_flashfs_nvs.c. */
 #define PIOS_INCLUDE_FLASH
 
+/* DSM needs a UART of its own. The S2 has only two and, during bring-up,
+ * both are spoken for (console on UART0, PIOS telemetry on UART1), so the
+ * receiver is compiled out there. See the pin-map block in board_hw_defs.c. */
+#if !CONFIG_IDF_TARGET_ESP32S2
 #define PIOS_INCLUDE_DSM
+#endif
 /* A satellite reports 7 channels per frame; 12 covers the two-frame
  * (11ms) modes that interleave channels 8-11. */
 #define PIOS_DSM_NUM_INPUTS    12

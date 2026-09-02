@@ -85,6 +85,17 @@
  */
 extern uint32_t pios_esp32_task_create_failures;
 
+/*
+ * Which core flight tasks run on. Dual-core parts isolate flight on core 1;
+ * single-core parts (ESP32-S2) have only core 0. portNUM_PROCESSORS comes
+ * from the FreeRTOS port and already reflects CONFIG_FREERTOS_UNICORE.
+ */
+#if portNUM_PROCESSORS > 1
+#define PIOS_ESP32_FLIGHT_CORE 1
+#else
+#define PIOS_ESP32_FLIGHT_CORE 0
+#endif
+
 static inline BaseType_t pios_esp32_task_create(TaskFunction_t fn, const char *name,
                                                 uint32_t stack_words, void *param,
                                                 UBaseType_t prio, TaskHandle_t *handle)
@@ -95,19 +106,28 @@ static inline BaseType_t pios_esp32_task_create(TaskFunction_t fn, const char *n
      * at all. The conversion needed here is words-to-bytes on a 32-bit
      * machine, which is 4. */
     /*
-     * Words -> bytes (x4, see above) AND pinned to CORE 1.
+     * Words -> bytes (x4, see above) AND pinned to the FLIGHT CORE.
      *
-     * With SMP enabled, everything created through this shim -- every
-     * shared flight module, the callback schedulers, this port's own tasks
-     * -- lands on the application core. WiFi, lwIP and IDF housekeeping
-     * stay on core 0 (their Kconfig defaults plus explicit affinity in
-     * sdkconfig.defaults). The network stack can then never preempt a
-     * flight task at all: separation by silicon, not by priority
-     * negotiation. Anything that genuinely belongs on core 0 bypasses the
-     * shim by parenthesizing the call -- see pios_wifi.c.
+     * On a dual-core part (ESP32, S3) that is core 1: every shared flight
+     * module, the callback schedulers and this port's own tasks land on the
+     * application core, while WiFi, lwIP and IDF housekeeping stay on core 0
+     * (their Kconfig defaults plus explicit affinity in sdkconfig.defaults).
+     * The network stack can then never preempt a flight task at all:
+     * separation by silicon, not by priority negotiation. Anything that
+     * genuinely belongs on core 0 bypasses the shim by parenthesizing the
+     * call -- see pios_wifi.c.
+     *
+     * On a SINGLE-core part (the ESP32-S2) there is no second core to hide
+     * behind, so everything shares core 0 and the separation above simply
+     * does not exist -- WiFi and the flight loop contend, as they did on
+     * this port before SMP. Pinning to core 1 there is not merely useless,
+     * it FAILS: xTaskCreatePinnedToCore rejects a core id that the build
+     * has no CPU for, and the failure is silent at every PiOS call site
+     * (see the counter below). Hence PIOS_ESP32_FLIGHT_CORE.
      */
     BaseType_t rc = (xTaskCreatePinnedToCore)(fn, name, stack_words * 4,
-                                              param, prio, handle, 1);
+                                              param, prio, handle,
+                                              PIOS_ESP32_FLIGHT_CORE);
 
     /* PiOS ignores this return value at every call site, so a failed creation
      * is otherwise completely silent and only surfaces much later as a NULL

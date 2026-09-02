@@ -55,6 +55,42 @@ cd targets/esp32wroom/esp-idf && . ~/esp/esp-idf/export.sh && cmake -G Ninja -B 
 
 Point at a checkout elsewhere with `-DNINJAPILOT_ROOT=/path/to/NinjaPilot-15.02.ninja`.
 
+## Build for the ESP32-S2 (branch `esp32s2`, EXPERIMENTAL)
+
+```bash
+cd targets/esp32wroom/esp-idf && . ~/esp/esp-idf/export.sh && cmake -G Ninja -B build-s2 -DIDF_TARGET=esp32s2 -DSDKCONFIG=sdkconfig.s2 -DSDKCONFIG_DEFAULTS=sdkconfig.defaults.s2 -DPYTHON_DEPS_CHECKED=1 . && ninja -C build-s2
+python -m esptool --chip esp32s2 --port /dev/cu.usbserial-110 -b 115200 --before default_reset --after hard_reset write_flash @build-s2/flash_args
+```
+
+Separate `-DSDKCONFIG=` is REQUIRED: the ESP32 build's generated `sdkconfig`
+pins CONFIG_IDF_TARGET="esp32" and cmake refuses to retarget over it.
+
+What differs on the S2 and why (all forced by the silicon):
+- **No MCPWM.** `pios_servo.c` gains an LEDC backend, selected on
+  `SOC_MCPWM_SUPPORTED` rather than a chip name. 14-bit duty at 400Hz is
+  0.15us per step, finer than an ESC resolves. LEDC latches per channel at
+  its own period rather than MCPWM's shared TEZ, so channel skew is the few
+  microseconds Update() takes to walk them, not a period.
+- **Single core.** `PIOS_ESP32_FLIGHT_CORE` in pios_esp32.h resolves to 0
+  from `portNUM_PROCESSORS`; pinning flight tasks to core 1 there does not
+  merely waste effort, it FAILS and does so silently at every PiOS call
+  site. The flight/WiFi separation by silicon simply does not exist on an S2.
+- **GPIO 22-25 do not exist, 26-32 are the module's flash.** The IMU
+  data-ready pin moved 32 -> 33 and the motors moved to 1-4. The console
+  pins the ESP32 build uses (22/23) are not S2 pins at all.
+- **Two UARTs, not three.** Bring-up keeps the console on UART0 (readable
+  over the devkit bridge) and gives PIOS telemetry UART1, so DSM is compiled
+  out via a guard in `pios_board.h`. Swap console and telemetry once you
+  want the GCS to reach it.
+
+Status 2026-09-02: builds (852KB, 19% partition free), flashes, and boots on
+real S2 hardware. 60s soak: one boot, zero panics, zero task-watchdog trips
+with the WDT armed at 2s/panic, 100KB heap free (vs 280KB on the ESP32 --
+the S2 has 320KB of SRAM against 520KB). No IMU was wired, so the sensor and
+control path are UNVALIDATED; the board correctly reports the missing IMU and
+refuses to arm rather than wedging. The pin map is valid-and-conflict-free,
+NOT verified against a physical S2 Thing Plus silkscreen.
+
 ## Flash
 
 ```bash

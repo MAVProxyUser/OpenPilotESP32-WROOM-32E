@@ -28,6 +28,68 @@
  */
 
 #include "pios.h"
+
+/* ---------------------------------------------------------------------- *
+ * Board pin map: original ESP32 vs ESP32-S2
+ *
+ * ESP32-S2 facts that force the differences below (all from the IDF's own
+ * soc_caps for the part, not guesswork):
+ *   - GPIO 22-25 DO NOT EXIST.
+ *   - GPIO 26-32 are the WROOM module's SPI flash. Touching them bricks the
+ *     boot, which is why the IMU data-ready pin and two motors had to move.
+ *   - GPIO 46 is input-only.
+ *   - UART0's default pins are 43/44, which is where a devkit's USB-serial
+ *     bridge lands, and there are only TWO UARTs, not three.
+ *
+ * UART allocation on the S2 is therefore a bring-up compromise: the IDF
+ * console keeps UART0 so the boot log is readable over the bridge, PIOS
+ * telemetry takes UART1, and DSM is disabled for want of a third port (see
+ * pios_board.h). Once boot is proven the pair should swap, putting UAVTalk
+ * on UART0 where the GCS can reach it.
+ *
+ * NOT VERIFIED against a physical S2 Thing Plus silkscreen. These are valid,
+ * conflict-free GPIOs chosen so every driver initialises; treat them as a
+ * starting point for wiring, not as a wiring diagram.
+ * ---------------------------------------------------------------------- */
+#if CONFIG_IDF_TARGET_ESP32S2
+
+#define BOARD_PIN_LED        GPIO_NUM_13
+#define BOARD_PIN_IMU_CS     GPIO_NUM_14
+#define BOARD_PIN_SPI_MOSI   GPIO_NUM_18
+#define BOARD_PIN_SPI_MISO   GPIO_NUM_19
+#define BOARD_PIN_SPI_SCLK   GPIO_NUM_5
+#define BOARD_PIN_IMU_DRDY   GPIO_NUM_33   /* 32 is flash on an S2 module */
+#define BOARD_UART_TELEM     UART_NUM_1    /* console keeps UART0 for now */
+#define BOARD_PIN_TELEM_RX   GPIO_NUM_16
+#define BOARD_PIN_TELEM_TX   GPIO_NUM_17
+#define BOARD_UART_AUX       UART_NUM_1    /* defined, never initialised */
+#define BOARD_PIN_AUX_RX     GPIO_NUM_16
+#define BOARD_PIN_AUX_TX     GPIO_NUM_17
+#define BOARD_PIN_M1         GPIO_NUM_1
+#define BOARD_PIN_M2         GPIO_NUM_2
+#define BOARD_PIN_M3         GPIO_NUM_3
+#define BOARD_PIN_M4         GPIO_NUM_4
+
+#else  /* original ESP32 (SparkFun Thing Plus) */
+
+#define BOARD_PIN_LED        GPIO_NUM_13
+#define BOARD_PIN_IMU_CS     GPIO_NUM_14
+#define BOARD_PIN_SPI_MOSI   GPIO_NUM_18
+#define BOARD_PIN_SPI_MISO   GPIO_NUM_19
+#define BOARD_PIN_SPI_SCLK   GPIO_NUM_5
+#define BOARD_PIN_IMU_DRDY   GPIO_NUM_32
+#define BOARD_UART_TELEM     UART_NUM_0
+#define BOARD_PIN_TELEM_RX   GPIO_NUM_3
+#define BOARD_PIN_TELEM_TX   GPIO_NUM_1
+#define BOARD_UART_AUX       UART_NUM_2
+#define BOARD_PIN_AUX_RX     GPIO_NUM_16
+#define BOARD_PIN_AUX_TX     GPIO_NUM_17
+#define BOARD_PIN_M1         GPIO_NUM_15
+#define BOARD_PIN_M2         GPIO_NUM_33
+#define BOARD_PIN_M3         GPIO_NUM_27
+#define BOARD_PIN_M4         GPIO_NUM_12
+
+#endif
 #ifdef PIOS_INCLUDE_ICM20602
 #include <pios_sensors.h>
 #include <pios_icm20602.h>
@@ -45,7 +107,7 @@ static const struct pios_esp32_led board_leds[] = {
     {
         /* GPIO13 is the plain STAT LED on a Thing Plus. GPIO2 there drives a
          * WS2812 RGB LED, which will not respond to a simple level. */
-        .pin        = GPIO_NUM_13,
+        .pin        = BOARD_PIN_LED,
         .active_low = false,
     },
 };
@@ -72,7 +134,7 @@ static const struct pios_esp32_spi_slave board_spi_sensors_slaves[] = {
      * using it for the IMU would have the two devices fighting. GPIO5 is fine
      * on a bare WROOM-32 devkit with no SD slot. */
     {
-        .cs_pin         = GPIO_NUM_14,
+        .cs_pin         = BOARD_PIN_IMU_CS,
         .mode           = 3,
         /* The MPU6000 only tolerates 1MHz for register access; the burst
          * read of the sensor registers is allowed up to 20MHz. Keep the
@@ -93,9 +155,9 @@ const struct pios_esp32_spi_cfg pios_spi_sensors_cfg = {
      * 19/MISO. NOT the ESP32 VSPI defaults (18/23/19) -- and note the USB-C
      * revision of this board uses those defaults instead, so check the
      * silkscreen rather than the part name. GPIO23 here is 23/SDA. */
-    .mosi_pin   = GPIO_NUM_18,
-    .miso_pin   = GPIO_NUM_19,
-    .sclk_pin   = GPIO_NUM_5,
+    .mosi_pin   = BOARD_PIN_SPI_MOSI,
+    .miso_pin   = BOARD_PIN_SPI_MISO,
+    .sclk_pin   = BOARD_PIN_SPI_SCLK,
     .dma_channel = SPI_DMA_CH_AUTO,
     .slaves     = board_spi_sensors_slaves,
     .num_slaves = NELEMENTS(board_spi_sensors_slaves),
@@ -117,7 +179,7 @@ const struct pios_esp32_exti_cfg pios_exti_icm20602_cfg = {
     /* GPIO32. GPIO34 is the nicer choice where it exists (input-only, so it
      * cannot be driven by mistake) but it is not broken out on every board;
      * 32 is present on the Thing Plus headers. */
-    .pin           = GPIO_NUM_32,
+    .pin           = BOARD_PIN_IMU_DRDY,
     .vector        = PIOS_ICM20602_IRQHandler,
     .task_stack    = 3072,
     /* Above everything except the timer/IDF internals: a late gyro sample is
@@ -188,9 +250,9 @@ const struct pios_icm20602_cfg pios_icm20602_cfg = {
 #ifdef PIOS_INCLUDE_USART
 
 const struct pios_esp32_usart_cfg pios_usart_telem_cfg = {
-    .port           = UART_NUM_0,
-    .rx_pin         = GPIO_NUM_3,
-    .tx_pin         = GPIO_NUM_1,
+    .port           = BOARD_UART_TELEM,
+    .rx_pin         = BOARD_PIN_TELEM_RX,
+    .tx_pin         = BOARD_PIN_TELEM_TX,
     .init_baud      = 115200,
     .rx_buffer_size = 512,
     .tx_buffer_size = 512,
@@ -201,9 +263,9 @@ const struct pios_esp32_usart_cfg pios_usart_telem_cfg = {
  * For SBUS set .invert_rx = true -- the ESP32 UART inverts in hardware, so
  * no external inverter is needed. */
 const struct pios_esp32_usart_cfg pios_usart_aux_cfg = {
-    .port           = UART_NUM_2,
-    .rx_pin         = GPIO_NUM_16,
-    .tx_pin         = GPIO_NUM_17,
+    .port           = BOARD_UART_AUX,
+    .rx_pin         = BOARD_PIN_AUX_RX,
+    .tx_pin         = BOARD_PIN_AUX_TX,
     .init_baud      = 57600,
     .rx_buffer_size = 512,
     .tx_buffer_size = 256,
@@ -250,10 +312,10 @@ const struct pios_esp32_usart_cfg pios_usart_aux_cfg = {
  * GPIO12 is also JTAG MTDI, so using it here rules out JTAG on this board.
  */
 static const gpio_num_t board_servo_pins[] = {
-    GPIO_NUM_15,   /* M1 -- front-left  */
-    GPIO_NUM_33,   /* M2 -- front-right */
-    GPIO_NUM_27,   /* M3 -- rear-right  */
-    GPIO_NUM_12,   /* M4 -- rear-left, see the eFuse note above */
+    BOARD_PIN_M1,   /* M1 -- front-left  */
+    BOARD_PIN_M2,   /* M2 -- front-right */
+    BOARD_PIN_M3,   /* M3 -- rear-right  */
+    BOARD_PIN_M4,   /* M4 -- rear-left, see the eFuse note above */
 };
 
 const struct pios_esp32_servo_cfg pios_servo_cfg = {

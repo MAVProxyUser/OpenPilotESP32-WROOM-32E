@@ -1,0 +1,52 @@
+# NinjaPilot esp32wroom target, built for the ESP32-S2.
+#
+# A standalone defaults file, NOT a layer on sdkconfig.defaults: that one
+# pins CONFIG_IDF_TARGET="esp32" and carries dual-core options the S2 has no
+# CPU for. Build with:
+#   cmake -G Ninja -B build-s2 -DIDF_TARGET=esp32s2 \
+#         -DSDKCONFIG_DEFAULTS=sdkconfig.defaults.s2 -DPYTHON_DEPS_CHECKED=1 .
+#
+# Differences from the ESP32 build and why:
+#   - No core-affinity settings. The S2 is single-core, so the flight/network
+#     separation the ESP32 build relies on does not exist here; the
+#     xTaskCreate shim resolves PIOS_ESP32_FLIGHT_CORE to 0 by itself.
+#   - Console left on UART0 (default pins 43/44 = the USB-serial bridge) so
+#     the boot log is readable during bring-up. The ESP32 build moves it to
+#     UART1/GPIO22-23, pins that DO NOT EXIST on an S2.
+
+CONFIG_IDF_TARGET="esp32s2"
+
+# --- CPU ---------------------------------------------------------------
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_PM_ENABLE=n
+
+# --- Flash -------------------------------------------------------------
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_BOOTLOADER_LOG_LEVEL_WARN=y
+
+# --- Performance -------------------------------------------------------
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+CONFIG_SPI_MASTER_IN_IRAM=y
+
+# --- Watchdogs ---------------------------------------------------------
+CONFIG_ESP_TASK_WDT_INIT=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=2
+CONFIG_ESP_TASK_WDT_PANIC=y
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n
+CONFIG_ESP_INT_WDT=y
+
+# --- FreeRTOS ----------------------------------------------------------
+CONFIG_FREERTOS_HZ=1000
+CONFIG_FREERTOS_ENABLE_BACKWARD_COMPATIBILITY=y
+CONFIG_FREERTOS_USE_TRACE_FACILITY=y
+CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
+CONFIG_FREERTOS_CHECK_STACKOVERFLOW_CANARY=y
+
+# --- Diagnostics -------------------------------------------------------
+CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
+CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
+CONFIG_HEAP_POISONING_COMPREHENSIVE=y

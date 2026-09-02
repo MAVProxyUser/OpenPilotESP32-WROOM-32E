@@ -4,3 +4,6 @@ sdkconfig
 sdkconfig.old
 .DS_Store
 targets/esp32wroom/esp-idf/fw_version_info.h
+targets/esp32wroom/esp-idf/build-s2/
+targets/esp32wroom/esp-idf/sdkconfig.s2
+targets/esp32wroom/esp-idf/sdkconfig.s2.old
