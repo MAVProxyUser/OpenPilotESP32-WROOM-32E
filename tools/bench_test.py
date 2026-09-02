@@ -4,8 +4,8 @@ bench_test - supervised props-OFF bench characterization, driven by the tool.
 
 You hold the quad and tilt/roll it gently in all directions; this tool owns
 the throttle: it applies the recommended settings, temporarily takes control
-(GCS receiver mapping + Always Armed, in RAM ONLY - a power cycle restores
-your DSM/arming no matter what), arms, walks the throttle from idle to max
+(GCS receiver mapping, in RAM ONLY - a power cycle restores your DSM no
+matter what), arms with the yaw-right gesture, walks the throttle from idle to max
 over ~2 minutes with periodic HOLD-STILL windows, and samples the whole
 chain: gyro, attitude, accel, and per-motor PWM.
 
@@ -18,6 +18,11 @@ What it grades:
   vibration vs rpm     gyro/accel high-frequency noise per throttle step,
                        measured in the HOLD-STILL windows (flags resonant
                        throttle bands; with the 41Hz DLPF this stays low)
+
+  Rows are labeled from the moment each prompt is actually SPOKEN plus a
+  1 s reaction allowance, so a slow `say` queue cannot mislabel your hands.
+  Your radio can be on or off: every non-GCS channel group is parked on
+  None for the run. Afterwards: python3 bench_report.py <the jsonl>.
 
   PROPS OFF. Battery power (never USB with battery). No GCS, no
   flight_monitor running. Type PROPS OFF at the prompt to begin.
@@ -40,11 +45,17 @@ _say_q = queue.Queue()
 _say_enabled = [True]
 
 
+_spoken_at = {}   # tag -> wall time the worker actually STARTED speaking it
+
+
 def _say_worker():
     while True:
-        msg = _say_q.get()
-        if msg is None:
+        item = _say_q.get()
+        if item is None:
             return
+        msg, tag = item
+        if tag is not None:
+            _spoken_at[tag] = time.time()
         if _say_enabled[0]:
             try:
                 subprocess.run(["say", msg], timeout=15)
@@ -52,9 +63,14 @@ def _say_worker():
                 _say_enabled[0] = False
 
 
-def say(msg):
+def say(msg, tag=None):
+    """Queue a prompt. A `tag` lets the caller learn when the words really
+    started (_spoken_at[tag]). `say` takes 1-3 s per prompt and the queue
+    runs behind the scheduler; the 2026-09-01 23:54 log showed the pilot's
+    hands ~2 s behind the row labels for exactly that reason, which graded
+    a perfectly good estimator as FAIL on two axes."""
     print("[voice] %s" % msg, flush=True)
-    _say_q.put(msg)
+    _say_q.put((msg, tag))
 
 
 threading.Thread(target=_say_worker, daemon=True).start()
@@ -210,14 +226,21 @@ def main():
         save("ActuatorSettings")
         print("[apply] done (persisted)")
 
-    # ---- 2. take control: GCS mapping + Always Armed, RAM ONLY -----------
+    # ---- 2. take control: GCS receiver mapping, RAM ONLY -----------------
     mcs_orig = fetch("ManualControlSettings")
     fms_orig = fetch("FlightModeSettings")
-    print("[ctrl] remapping receiver to GCS + Always Armed (RAM only - a")
-    print("       power cycle restores your DSM/arming unconditionally)")
+    print("[ctrl] remapping receiver to GCS, other groups parked on None (RAM")
+    print("       only - a power cycle restores your DSM unconditionally)")
     mcs = dict(mcs_orig)
-    mcs["ChannelGroups"] = ["GCS"] * 5 + list(mcs_orig["ChannelGroups"][5:])
-    mcs["ChannelNumber"] = [1, 2, 3, 4, 5] + list(mcs_orig["ChannelNumber"][5:])
+    # Every group past the first five (Collective, Accessory0-2) is parked on
+    # None for the duration. receiver.c range-checks ANY channel whose group
+    # is not None, so leaving an Accessory on DSM with the transmitter off
+    # returns PIOS_RCVR_TIMEOUT for it and invalidates the whole input
+    # (Connected=False, Receiver=Warning) even though the GCS sticks are
+    # fine. That is exactly what happened on the 2026-09-01 23:4x run.
+    n_ch = len(mcs_orig["ChannelGroups"])
+    mcs["ChannelGroups"] = ["GCS"] * 5 + ["None"] * (n_ch - 5)
+    mcs["ChannelNumber"] = [1, 2, 3, 4, 5] + [0] * (n_ch - 5)
     mcs["ChannelMin"] = [1000] * 5 + list(mcs_orig["ChannelMin"][5:])
     mcs["ChannelNeutral"] = [1050, 1500, 1500, 1500, 1500] + list(mcs_orig["ChannelNeutral"][5:])
     mcs["ChannelMax"] = [2000] * 5 + list(mcs_orig["ChannelMax"][5:])
@@ -286,8 +309,8 @@ def main():
 
     # Confirm the GCS receiver is actually feeding control BEFORE arming -
     # this is the check whose absence let the old version narrate a state
-    # that never happened. If throttle is not reaching the flight side,
-    # arming (Always Armed = arm when throttle low) cannot occur.
+    # that never happened. If throttle is not reaching the flight side the
+    # yaw-right arming gesture cannot be seen either.
     mcc = fetch("ManualControlCommand")
     thr_in = mcc.get("Throttle")
     conn = mcc.get("Connected")
@@ -300,8 +323,23 @@ def main():
         print("[ABORT] GCS control not reaching the flight side.")
         print("        Throttle=%s (need < 0), Connected=%s" % (thr_in, conn))
         print("        alarms: %s" % (", ".join(bad) or "none"))
-        print("        This board needs the GCS-receiver firmware "
-              "(firmware_normal_41hz.bin rebuilt 2026-09-01 or later).")
+        # raw per-channel codes say WHICH channel the flight side rejects
+        codes = {65535: "INVALID(no mapping)", 65534: "TIMEOUT(no data)",
+                 65533: "NODRIVER(group unbound)"}
+        raw = mcc.get("Channel", [])
+        names = ["Throttle", "Roll", "Pitch", "Yaw", "FlightMode", "Collective",
+                 "Accessory0", "Accessory1", "Accessory2"]
+        for i, v in enumerate(raw[:len(names)]):
+            grp = mcs["ChannelGroups"][i] if i < len(mcs["ChannelGroups"]) else "?"
+            print("        %-10s group=%-5s raw=%s" % (names[i], grp, codes.get(int(v), v)))
+        print("        TIMEOUT = the flight side never got a fresh value for that")
+        print("        channel; INVALID/NODRIVER = firmware lacks the GCS receiver")
+        print("        binding (firmware_normal_41hz.bin from 2026-09-01 or later).")
+        try:
+            write_verify("ManualControlSettings", mcs_orig, ["ChannelGroups"])
+            print("        (your radio mapping has been restored)")
+        except SystemExit:
+            print("        (restore failed - power cycle to get your radio back)")
         raise SystemExit(1)
 
     # mixer/curve must be real or arming spins nothing (the simwroom sim's
@@ -384,13 +422,16 @@ def main():
 
     # repeating voice-directed motion cycle; each phase labels its samples
     CYCLE = [("nose_down", "Nose down.", 3.5),
-             ("nose_up", "Nose up.", 3.5),
+             ("nose_up", "Nose up. Above level.", 3.5),
              ("roll_left", "Roll left.", 3.5),
              ("roll_right", "Roll right.", 3.5),
-             ("level", "Back to level.", 2.0),
+             ("level", "Level.", 2.0),
              ("still", None, 4.0)]  # announced with throttle percentage
+    dur_of = {name: dur for name, _, dur in CYCLE}
+    REACTION_S = 1.0    # hands need about this long after the words START
     ramp_t0 = time.time()
-    phase = ["level"]
+    phase = ["level"]   # the label written to each row
+    pending = [None]    # (name, tag, queued_at): spoken/queued, not yet reacted to
     cyc_i = [0]
     phase_until = [0.0]
     try:
@@ -401,18 +442,32 @@ def main():
             if el > args.time + 4.0:
                 break
             throttle[0] = min(args.max, args.max * el / args.time)
-            if now >= phase_until[0]:
+            # A prompt becomes the row label only REACTION_S after the words
+            # actually started (the say queue may be seconds behind us), and
+            # its window is timed from then. Rows in between are labeled
+            # "transition" and excluded from the per-phase grades.
+            if pending[0] is not None:
+                name, tag, queued_at = pending[0]
+                spoken = _spoken_at.get(tag)
+                if spoken is None and now - queued_at > 10.0:
+                    spoken = now      # speech wedged: never stall the ramp
+                if spoken is not None and now - spoken >= REACTION_S:
+                    phase[0] = name
+                    phase_until[0] = spoken + REACTION_S + dur_of[name]
+                    pending[0] = None
+                    if args.sim_sensors:
+                        sim_tilt["roll"] = {"roll_left": -20.0, "roll_right": 20.0}.get(name, 0.0)
+                        sim_tilt["pitch"] = {"nose_down": -20.0, "nose_up": 20.0}.get(name, 0.0)
+            if pending[0] is None and now >= phase_until[0]:
                 name, prompt, dur = CYCLE[cyc_i[0] % len(CYCLE)]
                 cyc_i[0] += 1
-                phase[0] = name
-                phase_until[0] = now + dur
-                if args.sim_sensors:
-                    sim_tilt["roll"] = {"roll_left": -20.0, "roll_right": 20.0}.get(name, 0.0)
-                    sim_tilt["pitch"] = {"nose_down": -20.0, "nose_up": 20.0}.get(name, 0.0)
+                tag = "phase%d" % cyc_i[0]
+                pending[0] = (name, tag, now)
+                phase[0] = "transition"
                 if name == "still":
-                    say("Hold still at %d percent. Three. Two. One." % int(throttle[0] * 100))
+                    say("Hold still. %d percent." % int(throttle[0] * 100), tag=tag)
                 else:
-                    say(prompt)
+                    say(prompt, tag=tag)
             att = get("AttitudeState") or {}
             gyro = get("GyroState") or {}
             acc = get("AccelState") or {}
@@ -466,28 +521,37 @@ def main():
     print("\n===== bench report ===== (%d samples, log %s)" % (len(samples), outpath))
     move = [s for s in samples if s["phase"] not in ("still",) and s["thr"] > 0.05]
     # per-stimulus compliance + mixer direction, from the labeled phases
-    def phase_mean(ph, fn):
-        vals = [fn(s) for s in samples if s["phase"] == ph and 0.15 < s["thr"] < 0.85
-                and all(p > 900 for p in s["pwm"])]
-        return (sum(vals) / len(vals)) if len(vals) > 10 else None
+    def phase_excursion(ph, fn, op):
+        """Per labeled window, how far the estimate went in the commanded
+        direction; mean over windows. Extremes, not means: a hand that is
+        still moving at the start of the window must not drag the grade."""
+        ext, cur = [], None
+        for s in samples + [{"phase": None, "thr": 0}]:
+            if s["phase"] == ph and 0.10 < s["thr"] < 0.90:
+                cur = (cur or []) + [fn(s)]
+            elif cur is not None:
+                if len(cur) > 5:
+                    ext.append(min(cur) if op == "<" else max(cur))
+                cur = None
+        return (sum(ext) / len(ext), len(ext)) if ext else (None, 0)
     checks = [
-        ("nose_down", lambda s: s["att"][1], "<", -3, "estimate sees nose down"),
-        ("nose_up", lambda s: s["att"][1], ">", 3, "estimate sees nose up"),
-        ("roll_left", lambda s: s["att"][0], "<", -3, "estimate sees roll left"),
-        ("roll_right", lambda s: s["att"][0], ">", 3, "estimate sees roll right"),
+        ("nose_down", lambda s: s["att"][1], "<", -8, "estimate sees nose down"),
+        ("nose_up", lambda s: s["att"][1], ">", 8, "estimate sees nose up (above level)"),
+        ("roll_left", lambda s: s["att"][0], "<", -8, "estimate sees roll left"),
+        ("roll_right", lambda s: s["att"][0], ">", 8, "estimate sees roll right"),
     ]
     # (mixer-response DIRECTION is graded robustly below by correlation over
     # all motion - "pitch vs front-rear PWM" / "roll vs left-right PWM" -
     # rather than per-phase absolute PWM deltas, which are confounded by the
     # throttle-dependent baseline and the estimate's lag behind fast tilts)
     for ph, fn, op, thresh, desc in checks:
-        m = phase_mean(ph, fn)
+        m, n = phase_excursion(ph, fn, op)
         if m is None:
             print("  [ ?? ] %-38s insufficient samples" % desc)
         else:
             good = (m < thresh) if op == "<" else (m > thresh)
-            print("  [ %s ] %-38s mean %+.1f during '%s'"
-                  % ("ok".center(4) if good else "FAIL", desc, m, ph))
+            print("  [ %s ] %-38s mean extreme %+.1f deg over %d '%s' windows"
+                  % ("ok".center(4) if good else "FAIL", desc, m, n, ph))
     if len(move) > 50:
         d_att = []
         for a, b in zip(move, move[1:]):

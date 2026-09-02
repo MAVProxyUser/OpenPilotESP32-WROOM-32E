@@ -104,7 +104,18 @@ Every power-up of the cal build recalibrates — never leave it flashed.
 
 ```bash
 python3 tools/bench_test.py            # board on battery, GCS closed
+python3 tools/bench_report.py ~/NinjaPilot-logs/bench_<stamp>.jsonl   # offline deep pass
 ```
+
+Radio on or off does not matter: the tool parks every non-GCS channel group
+(Collective, Accessory0-2) on None for the run. It used to leave them on DSM,
+and receiver.c range-checks any group that is not None, so a transmitter
+that was off returned TIMEOUT on an Accessory and invalidated the whole
+input (Connected=False, Receiver=Warning) - the 2026-09-01 23:4x abort.
+Row labels come from when each prompt was actually spoken plus 1 s, so a
+slow `say` queue cannot mislabel your hands (the 23:54 log graded a good
+estimator FAIL on two axes purely from label lag; bench_report.py
+re-aligns older logs automatically).
 
 REQUIRES firmware built 2026-09-01 20:18 or later (firmware_normal_41hz.bin):
 earlier builds never bound the GCS receiver as an input source, so a UDP

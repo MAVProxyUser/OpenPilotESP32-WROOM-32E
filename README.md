@@ -81,7 +81,8 @@ Prebuilt images in the repo root, from this exact tree:
 - `firmware_normal_41hz.bin` - the flight build: 41Hz DLPF, self-leveling
   Stabilized3 defaults, Rate-yaw default (no AxisLock arming-gesture
   windup), MotorsSpinWhileArmed default TRUE, GCS receiver bound as an
-  input source (lets tools/bench_test.py drive the throttle over UDP),
+  input source (lets tools/bench_test.py drive the throttle over UDP;
+  grade its log offline with tools/bench_report.py),
   and 4-inch-class Bank1 defaults. The onboard Flip module is NOT in this
   build (sim-twin only, per operator call - the FlipStatus object is
   compiled but inert so the UAVO set still matches the sim) (rate 0.0032/0.0075/0.00005, attitude Kp
