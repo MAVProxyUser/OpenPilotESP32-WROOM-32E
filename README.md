@@ -97,6 +97,17 @@ HUMAN reference - tip the real nose - reveals a frame offset, and the first
 bench run's voice-lagged labels read it backwards; the paced/Enter-confirmed
 run and the direct five-ask check read it right.
 
+Second lesson from the same night (2026-09-02 01:28 bench): the CC estimator
+learns gyro bias with a 0.2 s time constant during its first ~7 s after
+power-up and again during the arming second (`ZeroDuringArming` TRUE). The
+tool armed while the quad was still being rolled back to level and learned
+-54 deg/s of roll rate as bias; the roll estimate wandered past 90 deg for the
+whole run while the accelerometer read the truth. Keep the quad still through
+power-up and arming; `bench_test.py` now waits for a quiet gyro, checks the
+resting bias before and after arming (limit 4 deg/s) and disarms if one was
+learned; `flight_monitor.py` fails preflight on a biased gyro and flags a bias
+that appears after any arming.
+
 Prebuilt images in the repo root, from this exact tree:
 
 - `firmware_normal_41hz.bin` - the flight build: 41Hz DLPF, self-leveling

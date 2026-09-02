@@ -58,6 +58,12 @@ on it. Second: estimate-vs-accel through the event (still a real class of
 fault). Corollary: the sim exonerates only the CONTROL code - its sensors
 are synthetic and its frame is by construction aligned.
 
+Third: a constant gyro mean of tens of deg/s with an accelerometer that reads
+gravity correctly is LEARNED BIAS, not motion and not vibration. The CC
+estimator zeroes gyros with a 0.2 s time constant for ~7 s after power-up and
+during the arming second (ZeroDuringArming). Any tool that arms must first
+wait for a quiet gyro and re-check the bias after arming (bench_test does).
+
 ## ESC range calibration cannot exist on this board -- do not reintroduce it
 
 The procedure requires the controller alive and holding max throttle

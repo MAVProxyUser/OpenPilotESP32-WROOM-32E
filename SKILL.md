@@ -109,6 +109,17 @@ python3 tools/bench_test.py --paced    # preferred: YOU press Enter to start eac
 python3 tools/bench_report.py ~/NinjaPilot-logs/bench_<stamp>.jsonl   # offline deep pass
 ```
 
+STILLNESS. The CC estimator learns gyro bias with a 0.2 s time constant during
+the first ~7 s after power-up AND during the arming second (ZeroDuringArming is
+TRUE here). Whatever rate the quad has then becomes "bias" for the session:
+the 01:28 bench armed two seconds after the left-arm dip and learned gyro.x
+-54 deg/s; the roll estimate wandered past 90 deg while the accel read the
+truth. Power up with the quad sitting still for 10 s; freeze when bench_test
+says "do not move it while I arm". bench_test waits for a quiet gyro, checks
+the resting bias before AND after arming (limit 4 deg/s) and disarms if it
+learned one; flight_monitor preflight fails on a biased gyro and shouts if a
+bias appears after any arming.
+
 ORIENTATION FIRST. The 2026-09-02 00:59 paced run read every commanded tilt
 with the opposite sign on both axes while the 23:54 run read them right - the
 board did not change, the hands did. `orientation_check.py` prints what the

@@ -427,6 +427,35 @@ def main():
         raise SystemExit(1)
     time.sleep(1.0)
 
+    # ---- gyro-bias gate: a board that moved in its first ~7 s after power-up
+    # has LEARNED that motion as gyro bias (CC attitude init: accelKp 1,
+    # bias rate 0.01/iter) and will drift its estimate for the whole session.
+    # The 2026-09-02 01:28 bench had gyro.x -54 deg/s in every window: the
+    # roll estimate wandered past 90 deg while the accel read the truth.
+    # Only a power cycle with the quad MOTIONLESS clears it. Refuse to arm.
+    say("Hold it still and level for three seconds.")
+    time.sleep(1.0)
+    gsum = [0.0, 0.0, 0.0]
+    gn = 0
+    for _ in range(8):
+        g = fetch("GyroState")
+        for i, k in enumerate(("x", "y", "z")):
+            gsum[i] += float(g.get(k, 0.0))
+        gn += 1
+        time.sleep(0.25)
+    gbias = [v / gn for v in gsum]
+    print("[check] gyro at rest: x %+.1f y %+.1f z %+.1f deg/s" % tuple(gbias), flush=True)
+    if max(abs(v) for v in gbias) > 4.0:
+        say("Stop. The gyro reads %d degrees per second at rest. The board learned motion as "
+            "bias at power up. Power cycle it and leave it still for ten seconds. Aborting."
+            % int(max(abs(v) for v in gbias)))
+        print("[ABORT] gyro bias at rest %s deg/s (limit 4). The board was moving during its" % [round(v, 1) for v in gbias])
+        print("        startup calibration window (~7 s after power-up). Power cycle with the quad")
+        print("        sitting still on the bench for 10 s, then re-run. (AttitudeSettings.")
+        print("        ZeroDuringArming=TRUE re-learns it at every arm - see apply_recommended.)")
+        write_verify("ManualControlSettings", mcs_orig, ["ChannelGroups"])
+        raise SystemExit(1)
+
     # ---- orientation gate: the board's nose must be the AIRFRAME's nose ----
     # The 2026-09-02 00:59 paced run read every commanded tilt with the
     # opposite sign on both axes; the 23:54 run on the same board read them
@@ -465,7 +494,7 @@ def main():
             say("I did not see a tilt. Continuing, but check the orientation line.")
             print("[WARN] orientation %s: no clear tilt (%+.0f deg) - check it by hand" % (axis, v))
     say("Orientation good. Back to level.")
-    time.sleep(2.0)
+    time.sleep(1.0)
 
     # Real arm gesture: throttle low + yaw right held for ArmingSequenceTime
     # (~1s). This runs the SAME path a transmitter uses, including okToArm()'s
@@ -474,7 +503,31 @@ def main():
     fms["Arming"] = "Yaw Right"
     write_verify("FlightModeSettings", fms, ["Arming"])
     throttle[0] = 0.0
-    say("Arming. Holding yaw right. Keep the throttle down for me.")
+    # ZeroDuringArming (TRUE on this tree) re-learns gyro bias DURING the ~1 s
+    # arming window with a 0.2 s time constant: whatever rate the quad has at
+    # that moment becomes "bias" for the whole session. The 2026-09-02 01:28
+    # run armed two seconds after the orientation gate's left-arm dip, while
+    # the pilot was still rolling it back to level -> gyro.x -54 deg/s bias,
+    # roll estimate past 90 deg all run. So: wait for a QUIET gyro first, tell
+    # the pilot to freeze, and verify the bias again right after arming.
+    say("Set it down or hold it perfectly still. Do not move it while I arm.")
+    quiet_since = None
+    q_end = time.time() + 30.0
+    while time.time() < q_end:
+        g = fetch("GyroState")
+        if max(abs(float(g.get(k, 0.0))) for k in ("x", "y", "z")) < 3.0:
+            quiet_since = quiet_since or time.time()
+            if time.time() - quiet_since > 2.0:
+                break
+        else:
+            quiet_since = None
+        time.sleep(0.2)
+    else:
+        say("It never held still. Aborting.")
+        print("[ABORT] gyro never quiet (< 3 deg/s for 2 s) within 30 s before arming")
+        write_verify("ManualControlSettings", mcs_orig, ["ChannelGroups"])
+        raise SystemExit(1)
+    say("Arming. Stay still.")
     yaw_cmd[0] = 2000   # full yaw right; pump sends it every cycle
     armed = False
     end = time.time() + 6.0
@@ -499,6 +552,40 @@ def main():
 
     # confirm motors actually idle (MotorsSpinWhileArmed) before ramping
     time.sleep(0.5)
+    # post-arm: did the arming window learn a bias anyway?
+    time.sleep(0.5)
+    gsum = [0.0, 0.0, 0.0]
+    for _ in range(6):
+        g = fetch("GyroState")
+        for i, k in enumerate(("x", "y", "z")):
+            gsum[i] += float(g.get(k, 0.0))
+        time.sleep(0.2)
+    gbias = [v / 6.0 for v in gsum]
+    print("[check] gyro at rest after arming: x %+.1f y %+.1f z %+.1f deg/s" % tuple(gbias), flush=True)
+    if max(abs(v) for v in gbias[:2]) > 4.0:
+        say("Stop. The gyro learned %d degrees per second of bias while arming. Disarming."
+            % int(max(abs(v) for v in gbias[:2])))
+        print("[ABORT] gyro bias after arming %s deg/s (limit 4): the quad moved during the"
+              % [round(v, 1) for v in gbias])
+        print("        arming window (ZeroDuringArming). Disarming; hold it still next time.")
+        try:
+            dfms = dict(fms_orig)
+            dfms["Arming"] = "Always Disarmed"
+            write_verify("FlightModeSettings", dfms, ["Arming"])
+            dend = time.time() + 3.0
+            while time.time() < dend:
+                fs = get("FlightStatus")
+                if fs and fs.get("Armed") == "Disarmed":
+                    break
+                time.sleep(0.1)
+            stop.set()
+            time.sleep(0.2)
+            write_verify("FlightModeSettings", fms_orig, ["Arming"])
+            write_verify("ManualControlSettings", mcs_orig, ["ChannelGroups"])
+            say("Disarmed. Your radio is back.")
+        except SystemExit:
+            say("Warning. Restore failed. Power cycle the board.")
+        raise SystemExit(1)
     ac = fetch("ActuatorCommand").get("Channel", [0] * 4)[:4]
     print("[check] armed. idle ActuatorCommand: %s" % ac, flush=True)
     if not any(c > 1050 for c in ac):

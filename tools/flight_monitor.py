@@ -69,7 +69,8 @@ ALARM_RANK = {"OK": 0, "Uninitialised": 0, "Warning": 1, "Error": 2, "Critical":
 
 PREFLIGHT_OBJECTS = ["FirmwareIAPObj", "MixerSettings", "ActuatorSettings",
                      "FlightModeSettings", "StabilizationSettingsBank1",
-                     "ManualControlSettings", "SystemSettings", "AttitudeSettings"]
+                     "ManualControlSettings", "SystemSettings", "AttitudeSettings",
+                     "GyroState"]
 
 # Build time of the firmware that first carried the 41Hz gyro DLPF (and the
 # GCS receiver binding). The DLPF was believed to be the 2026-09-01 flip fix;
@@ -232,6 +233,19 @@ def run_preflight(cfg):
             add("WARN", "board rotation", "BoardRotation %s - Yaw 180 ok, roll/pitch trim > 3 deg" % rot)
         else:
             add("OK", "board rotation", "Yaw 180 (IMU +x at tail, corrected) trims %s" % rot[:2])
+    gy = cfg.get("GyroState")
+    if gy:
+        gb = [float(gy.get(k, 0.0)) for k in ("x", "y", "z")]
+        # CC attitude learns gyro bias with a 0.2 s time constant during the
+        # first ~7 s after power-up AND during the arming second
+        # (ZeroDuringArming). A quad that was moving then carries that rate as
+        # bias all session: 2026-09-02 01:28 bench, gyro.x -54 deg/s, roll
+        # estimate wandering past 90 deg while the accel read the truth.
+        if max(abs(v) for v in gb[:2]) > 4.0:
+            add("FAIL", "gyro bias", "at rest x %+.1f y %+.1f deg/s - board moved during its startup "
+                "calibration; power cycle and keep it STILL for 10 s, and still while arming" % (gb[0], gb[1]))
+        else:
+            add("OK", "gyro bias", "at rest x %+.1f y %+.1f z %+.1f deg/s" % tuple(gb))
     sysx = cfg.get("SystemSettings")
     if sysx:
         af = sysx.get("AirframeType")
@@ -356,6 +370,31 @@ def main():
                 state["n_rx"] += 1
                 state["n_rx_win"] += 1
                 record(o.name, iid, d, now)
+
+                # armed-bias watchdog: ZeroDuringArming re-learns gyro bias in
+                # the arming second; average the resting gyro 0.5-3 s after
+                # arming and shout if the quad moved during that window.
+                if o.name == "FlightStatus":
+                    if d.get("Armed") == "Armed":
+                        if state.get("armed_at") is None:
+                            state["armed_at"] = now
+                            state["arm_bias"] = []
+                            state["arm_bias_done"] = False
+                    else:
+                        state["armed_at"] = None
+                if o.name == "GyroState" and state.get("armed_at") and not state.get("arm_bias_done"):
+                    dt_arm = now - state["armed_at"]
+                    if 0.5 < dt_arm < 3.0:
+                        state["arm_bias"].append((float(d.get("x", 0.0)), float(d.get("y", 0.0))))
+                    elif dt_arm >= 3.0 and state["arm_bias"]:
+                        state["arm_bias_done"] = True
+                        bx = sum(b[0] for b in state["arm_bias"]) / len(state["arm_bias"])
+                        by = sum(b[1] for b in state["arm_bias"]) / len(state["arm_bias"])
+                        if max(abs(bx), abs(by)) > 4.0:
+                            event(now, "GYRO BIAS", "learned during arming: x %+.1f y %+.1f deg/s - "
+                                  "DISARM NOW, hold the quad still, re-arm" % (bx, by))
+                        else:
+                            event(now, "gyro", "bias after arming ok: x %+.1f y %+.1f deg/s" % (bx, by))
 
                 if not state["pf_done"] and o.name in PREFLIGHT_OBJECTS:
                     state["pf_cfg"][o.name] = d
