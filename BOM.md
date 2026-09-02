@@ -10,14 +10,14 @@ were bought from.
 
 | # | Item | Part | Qty | Source | Notes |
 | --- | --- | --- | --- | --- | --- |
-| 1 | Flight controller | **SparkFun Thing Plus - ESP32 WROOM (USB-C)**, SKU **WRL-20168**, module ESP32-WROOM-32E (ESP32-D0WD-V3 rev 3.0) | 1 | https://www.sparkfun.com/products/20168 | 3.3 V logic, no USB peripheral (the USB-C is a UART bridge). Motor 4 on GPIO12 needs the one-way `XPD_SDIO_FORCE` eFuse burned (see README "Hardware"). |
+| 1 | Flight controller | **SparkFun Thing Plus - ESP32 WROOM (USB-C)**, SKU **WRL-20168**, module ESP32-WROOM-32E (ESP32-D0WD-V3 rev 3.0) | 1 | https://www.sparkfun.com/products/20168 (also https://www.amazon.com/dp/B0BC29D9QG) | 3.3 V logic, no USB peripheral (the USB-C is a UART bridge). Motor 4 on GPIO12 needs the one-way `XPD_SDIO_FORCE` eFuse burned (see README "Hardware"). |
 | 2a | IMU (evaluation board) | **TDK InvenSense EV-ICM-20602** | 1 | https://www.digikey.com/en/products/detail/tdk-invensense/EV-ICM-20602/6140300 | ICM-20602, SPI. Either 2a or 2b. |
 | 2b | IMU (breakout) | Generic **ICM-20602** SPI breakout | 1 | https://www.amazon.com/dp/B0FXWL157Q | Any ICM-20602 board with SCLK/MOSI/MISO/CS/INT broken out works. Not an ICM-20948 or BNO08x (different drivers). |
 | 3 | Motors | **T-Motor F40 2300KV** FPV series, sold as a set of 2 | 2 sets (4 motors) | https://www.getfpv.com/tiger-motor-f40-2300kv-fpv-series-motor-set-of-2.html | Two CW, two CCW as delivered in a set. |
 | 4 | ESC | Generic **4-in-1 ESC** (the tested unit was an unbranded one) | 1 | -- | Must accept standard PWM 1000-2000 us (the firmware has no DShot), rated for 4S and >= 25 A per motor for the F40 on 4x4.5, and provide a 5 V BEC. The BEC feeds the board's VUSB rail -- see "Power". |
 | 5 | Props | **HQProp 4x4.5 Bullnose** | 1 set (2 CW + 2 CCW) | https://www.amazon.com/dp/B07FN65Z8L | CW props on M1 (front-left) and M3 (rear-right); CCW props on M2 (front-right) and M4 (rear-left) -- see "Mixer and rotation". Re-check every prop against its motor's rotation after any refit. |
-| 6a | Battery | **Tattu 650 mAh 4S1P 75C 14.8 V, XT30** | 1+ | https://www.amazon.com/dp/B07219QLWG | The pack that hovered. |
-| 6b | Battery (alternate) | **Tattu 850 mAh 4S 75C 14.8 V, XT30** | -- | https://www.amazon.com/dp/B07218QR29 | Same electrics, 31 % more capacity and mass. |
+| 6a | Battery | **Tattu 650 mAh 4S1P 75C 14.8 V, XT30** | 1+ | https://www.amazon.com/dp/B07219QLWG | Tested. Mounted aft on this frame -- see "Center of gravity". |
+| 6b | Battery | **Tattu 850 mAh 4S 75C 14.8 V, XT30** | 1+ | https://www.amazon.com/dp/B07218QR29 | Also tested. Same electrics, 31 % more capacity and mass; either pack flies. |
 | 7 | RC receiver | **Spektrum DSMX satellite, SPM9745** | 1 | Spektrum | 3.3 V device: 3.3 V, GND, signal to GPIO16. Bind it to the transmitter beforehand (firmware auto-bind is off). |
 | 8 | Frame | 4-inch-class X frame, ~8 in diagonal motor-to-motor, ~6 in lateral | 1 | -- | Model not recorded. Battery was mounted AFT on the hovering build; see "Center of gravity". |
 | 9 | USB-C cable | any data cable | 1 | -- | Flashing only, at 115200 baud (460800 fails on this bridge). **Never with the battery connected.** |
