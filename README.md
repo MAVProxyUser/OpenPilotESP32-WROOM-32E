@@ -1,7 +1,11 @@
 # OpenPilotESP32
 
-An ESP32 port of the NinjaPilot flight code: a slim, rate-mode-only target for
-a bare **ESP32-WROOM-32E** module.
+An ESP32 port of the NinjaPilot flight code: a slim target for a bare
+**ESP32-WROOM-32E** module running the CC-class stack -- complementary-filter
+attitude plus the full Stabilization module (Rate, Attitude self-leveling,
+AxisLock, Rattitude and the rest; the first hover was flown in Attitude). What
+it leaves out is the navigation stack: no baro, mag or GPS, so no altitude or
+position modes.
 
 This project lives **outside** the NinjaPilot tree on purpose. It consumes that
 tree's flight code and does not modify it — the handful of upstream changes a

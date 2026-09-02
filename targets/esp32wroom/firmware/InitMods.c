@@ -11,8 +11,10 @@
  * KEEP IN SYNC with the NINJA_MODULE_SRCS list in esp-idf/main/CMakeLists.txt.
  * A module compiled in but missing here simply never starts, silently.
  *
- * Rate-mode-only build: Attitude is the standalone complementary filter
- * (modules/Attitude/attitude.c), not the StateEstimation chain.
+ * CC-class build: Attitude is the standalone complementary filter
+ * (modules/Attitude/attitude.c), not the StateEstimation chain. Every
+ * Stabilization mode (Rate, Attitude, AxisLock, Rattitude, ...) is available;
+ * what is absent is navigation (no baro/mag/GPS modules).
  * @see        The GNU Public License (GPL) Version 3
  *****************************************************************************/
 
