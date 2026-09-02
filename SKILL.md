@@ -104,9 +104,20 @@ Every power-up of the cal build recalibrates — never leave it flashed.
 
 ```bash
 python3 tools/bench_test.py            # board on battery, GCS closed
+python3 tools/orientation_check.py     # read-only: tip the REAL nose down -> must print NOSE DOWN
 python3 tools/bench_test.py --paced    # preferred: YOU press Enter to start each phase
 python3 tools/bench_report.py ~/NinjaPilot-logs/bench_<stamp>.jsonl   # offline deep pass
 ```
+
+ORIENTATION FIRST. The 2026-09-02 00:59 paced run read every commanded tilt
+with the opposite sign on both axes while the 23:54 run read them right - the
+board did not change, the hands did. `orientation_check.py` prints what the
+board believes several times a second: hold the airframe's real nose down and
+it must say NOSE DOWN; dip the left arm and it must say LEFT SIDE DOWN. If it
+says the opposite the board is mounted 180 deg from the airframe (positive
+feedback on both axes on a correct mixer - flips at liftoff): fix the mount or
+set AttitudeSettings.BoardRotation Yaw=180 and save. bench_test now runs this
+as a gate before arming and refuses if it fails.
 
 `--paced` steps the throttle 15/35/55/75/max % and, for every phase, speaks
 "Next: <move>. Press Enter when you are there." - the window is sampled only

@@ -19,6 +19,11 @@ What it grades:
                        measured in the HOLD-STILL windows (flags resonant
                        throttle bands; with the 41Hz DLPF this stays low)
 
+  Before arming it runs an ORIENTATION GATE: tip the airframe's nose down
+  and press Enter - the board must read NOSE DOWN (same for the left arm).
+  A board that reads the opposite is mounted 180 deg from the airframe and
+  would flip at liftoff; the tool refuses to arm and tells you the fix.
+
   Rows are labeled from the moment each prompt is actually SPOKEN plus a
   1 s reaction allowance, so a slow `say` queue cannot mislabel your hands.
   Your radio can be on or off: every non-GCS channel group is parked on
@@ -130,6 +135,24 @@ def main():
     print(__doc__.split("What it grades")[0])
     if input("type PROPS OFF to begin: ").strip().upper() != "PROPS OFF":
         sys.exit("aborted - props confirmation not given")
+    _enter_q = queue.Queue()   # every later Enter lands here (orientation gate, --paced)
+
+    def _stdin_reader():
+        for _line in sys.stdin:
+            _enter_q.put(1)
+    threading.Thread(target=_stdin_reader, daemon=True).start()
+
+    def wait_enter(timeout):
+        while not _enter_q.empty():          # only presses AFTER the prompt count
+            _enter_q.get()
+        t_end = time.time() + timeout
+        while time.time() < t_end:
+            if not _enter_q.empty():
+                while not _enter_q.empty():
+                    _enter_q.get()
+                return True
+            time.sleep(0.05)
+        return False
 
     db = uavtalk.UAVObjectDB(default_xml_dir())
     client = UAVTalkClient(UdpTransport(args.host, args.port), db)
@@ -403,6 +426,47 @@ def main():
         write_verify("ManualControlSettings", mcs_orig, ["ChannelGroups"])
         raise SystemExit(1)
     time.sleep(1.0)
+
+    # ---- orientation gate: the board's nose must be the AIRFRAME's nose ----
+    # The 2026-09-02 00:59 paced run read every commanded tilt with the
+    # opposite sign on both axes; the 23:54 run on the same board read them
+    # right. Only the human reference can have changed between the two, and
+    # the difference is not academic: a board whose +x points at the tail is
+    # positive feedback on both axes on a correct mixer - it flips the instant
+    # the wheels get light. Physical truth beats inference: ask, read, refuse.
+    ORIENT = (("pitch", "Pitch", "NOSE DOWN", "NOSE UP",
+               "Orientation check. Tip the airframe's nose down - the end you fly "
+               "forward, where the old arrow pointed. Press Enter while holding it."),
+              ("roll", "Roll", "LEFT SIDE DOWN", "RIGHT SIDE DOWN",
+               "Now dip the left arm - left as seen from behind, flying forward. "
+               "Press Enter while holding it."))
+    for axis, key, name_neg, name_pos, prompt in ORIENT:
+        say(prompt)
+        if not wait_enter(60.0):
+            say("No Enter. Skipping the orientation check.")
+            print("[WARN] orientation check skipped on %s (no Enter)" % axis)
+            break
+        time.sleep(0.4)
+        v = float(fetch("AttitudeState").get(key, 0.0))
+        seen = name_neg if v < -8 else name_pos if v > 8 else "LEVEL"
+        print("[check] orientation %s: you tipped %s, board reads %s (%+.0f deg)"
+              % (axis, name_neg.lower(), seen, v), flush=True)
+        if v > 8:
+            say("Stop. The board reads %s. Its nose is not your nose. Aborting." % name_pos.lower())
+            print("[ABORT] board orientation does not match the airframe on %s." % axis)
+            print("        A board whose forward axis points at the tail is positive feedback")
+            print("        on both axes and flips at liftoff. Fix the mount, or set")
+            print("        AttitudeSettings.BoardRotation Yaw=180 (both axes inverted) /")
+            print("        Roll or Pitch=180 (one axis inverted), save, power cycle, re-run.")
+            print("        BoardRotation now: %s" % (fetch("AttitudeSettings").get("BoardRotation"),))
+            write_verify("ManualControlSettings", mcs_orig, ["ChannelGroups"])
+            raise SystemExit(1)
+        if abs(v) <= 8:
+            say("I did not see a tilt. Continuing, but check the orientation line.")
+            print("[WARN] orientation %s: no clear tilt (%+.0f deg) - check it by hand" % (axis, v))
+    say("Orientation good. Back to level.")
+    time.sleep(2.0)
+
     # Real arm gesture: throttle low + yaw right held for ArmingSequenceTime
     # (~1s). This runs the SAME path a transmitter uses, including okToArm()'s
     # alarm gate - a better test than the Always-Armed bypass.
@@ -459,12 +523,6 @@ def main():
         lv = sorted({round(x, 2) for x in (0.15, 0.35, 0.55, 0.75, args.max) if x <= args.max + 1e-6})
         paced = {"levels": lv, "level_i": 0, "step_i": 0, "mode": "announce",
                  "wait_t0": 0.0, "hold_until": 0.0}
-        _enter_q = queue.Queue()
-
-        def _stdin_reader():
-            for _line in sys.stdin:
-                _enter_q.put(1)
-        threading.Thread(target=_stdin_reader, daemon=True).start()
         say("Paced mode. Each step waits for you to press Enter.")
     ramp_t0 = time.time()
     phase = ["level"]   # the label written to each row
