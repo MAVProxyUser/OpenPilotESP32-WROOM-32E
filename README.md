@@ -185,6 +185,15 @@ messages fill themselves in; the module never invents a position. Shipped in
 you run the setup tool). `firmware_normal_41hz.bin` remains the image that
 flew.
 
+## Other targets
+
+An experimental **ESP32-S2** port lives on the `esp32s2` branch: it builds,
+flashes and boots on real S2 silicon, with an LEDC servo backend (the S2 has no
+MCPWM), core-count-aware task creation, and a relocated pin map. Nothing on the
+sensor or control path is validated there. See [ESP32-S2.md](ESP32-S2.md) for
+the full set of differences, traps and next steps -- and for why the S3, not
+the S2, is the target to pick if you are moving off the original ESP32.
+
 ## Why this is worth doing
 
 CopterControl runs the same flight code at `PIOS_SENSOR_RATE 500.0f` on an
