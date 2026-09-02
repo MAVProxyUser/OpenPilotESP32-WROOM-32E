@@ -71,9 +71,10 @@ PREFLIGHT_OBJECTS = ["FirmwareIAPObj", "MixerSettings", "ActuatorSettings",
                      "FlightModeSettings", "StabilizationSettingsBank1",
                      "ManualControlSettings", "SystemSettings", "AttitudeSettings"]
 
-# Build time of the firmware that first carried the 41Hz gyro-DLPF fix -
-# the fix for the vibration-corrupted attitude estimate that caused both
-# real-flight flips. A board built before this is running the 176Hz filter.
+# Build time of the firmware that first carried the 41Hz gyro DLPF (and the
+# GCS receiver binding). The DLPF was believed to be the 2026-09-01 flip fix;
+# the real cause was the IMU mounted yaw-180 (see the BoardRotation check
+# below). The 41Hz filter stays as good practice for a 4-inch frame.
 DLPF_FIX_BUILD_UNIX = 1788044400  # 2026-09-01 ~17:00 local
 
 QUADX_MIXER = {1: [64, 64, -64], 2: [-64, 64, 64], 3: [-64, -64, -64], 4: [64, -64, 64]}
@@ -219,12 +220,18 @@ def run_preflight(cfg):
 
     att = cfg.get("AttitudeSettings")
     if att:
-        rot = att.get("BoardRotation", [0, 0, 0])
-        level = att.get("BoardLevelTrim", [0, 0])
-        if any(abs(float(r)) > 0.5 for r in rot):
-            add("WARN", "board rotation", "BoardRotation %s - nonzero; confirm deliberate" % rot)
+        rot = [float(r) for r in att.get("BoardRotation", [0, 0, 0])]
+        # This airframe's IMU is mounted with its +x at the TAIL (orientation_check
+        # 2026-09-02: nose down read NOSE UP 45 deg, left arm read RIGHT SIDE DOWN
+        # 48 deg, raw accel agreed). Yaw=180 is the fix; Yaw=0 is the
+        # 2026-09-01 flip: positive feedback on both axes at liftoff.
+        if abs(abs(rot[2]) - 180.0) > 0.5:
+            add("FAIL", "board rotation", "BoardRotation %s - Yaw must be 180 on this frame "
+                "(IMU +x points at the tail; Yaw 0 flips at liftoff). Run orientation_check.py." % rot)
+        elif any(abs(r) > 3.0 for r in rot[:2]):
+            add("WARN", "board rotation", "BoardRotation %s - Yaw 180 ok, roll/pitch trim > 3 deg" % rot)
         else:
-            add("OK", "board rotation", "zero (IMU frame = body frame)")
+            add("OK", "board rotation", "Yaw 180 (IMU +x at tail, corrected) trims %s" % rot[:2])
     sysx = cfg.get("SystemSettings")
     if sysx:
         af = sysx.get("AirframeType")

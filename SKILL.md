@@ -117,7 +117,9 @@ it must say NOSE DOWN; dip the left arm and it must say LEFT SIDE DOWN. If it
 says the opposite the board is mounted 180 deg from the airframe (positive
 feedback on both axes on a correct mixer - flips at liftoff): fix the mount or
 set AttitudeSettings.BoardRotation Yaw=180 and save. bench_test now runs this
-as a gate before arming and refuses if it fails.
+as a gate before arming and refuses if it fails. CONFIRMED 2026-09-02 on this
+quad: both axes inverted -> `python3 tools/apply_recommended_settings.py
+--board-rotation 0,0,180`, power cycle, re-check. This was the flip cause.
 
 `--paced` steps the throttle 15/35/55/75/max % and, for every phase, speaks
 "Next: <move>. Press Enter when you are there." - the window is sampled only

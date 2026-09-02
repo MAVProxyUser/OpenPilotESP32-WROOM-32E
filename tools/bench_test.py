@@ -11,8 +11,8 @@ chain: gyro, attitude, accel, and per-motor PWM.
 
 What it grades:
   gyro vs attitude     the estimate must follow the gyro (sign + gain)
-  accel vs attitude    the estimate must agree with gravity - the exact
-                       divergence that caused the 2026-09-01 flips, live
+  accel vs attitude    the estimate must agree with gravity (a vibration-
+                       walked estimate shows up here, live)
   motor response       tilt a side down -> that side's motors must rise
                        (pitch: front pair vs rear; roll: left pair vs right)
   vibration vs rpm     gyro/accel high-frequency noise per throttle step,

@@ -41,6 +41,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", default="192.168.0.45")
     ap.add_argument("--port", type=int, default=9000)
+    ap.add_argument("--board-rotation", default=None, metavar="ROLL,PITCH,YAW",
+                    help="write AttitudeSettings.BoardRotation (deg) and persist it, "
+                         "e.g. 0,0,180 when orientation_check.py reports both axes "
+                         "inverted (board nose at the airframe tail)")
     ap.add_argument("--neutral", type=int, default=None,
                     help="set all four ChannelNeutral to this (AFTER ESC cal)")
     args = ap.parse_args()
@@ -146,6 +150,15 @@ def main():
     # -- ActuatorSettings: spin while armed (+ optional equal neutrals) ----
     act = fetch("ActuatorSettings")
     act["MotorsSpinWhileArmed"] = "TRUE"
+    if args.board_rotation is not None:
+        rot = [float(x) for x in args.board_rotation.split(",")]
+        assert len(rot) == 3, "--board-rotation wants ROLL,PITCH,YAW"
+        att_s = fetch("AttitudeSettings")
+        print("[note] AttitudeSettings.BoardRotation %s -> %s" % (att_s.get("BoardRotation"), rot))
+        att_s["BoardRotation"] = rot
+        write_verify("AttitudeSettings", att_s, ["BoardRotation"])
+        save("AttitudeSettings")
+        print("[note] BoardRotation persisted - POWER CYCLE, then re-run orientation_check.py")
     if args.neutral is not None:
         act["ChannelNeutral"] = [args.neutral] * 4 + list(act["ChannelNeutral"][4:])
         print("[note] all four ChannelNeutral -> %d" % args.neutral)

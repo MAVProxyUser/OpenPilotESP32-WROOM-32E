@@ -59,22 +59,43 @@ stay on core 0.
 **Not yet done:** no baro / mag / GPS (rate and attitude flight only), no
 DShot, no flight testing off the bench.
 
-## The 2026-09-01 flip: root cause and fix
+## The 2026-09-01 flip: root cause and fix (corrected 2026-09-02)
 
-Two real flights ended in a flip at first liftoff thrust. The GCS auto-log
-plus five sim falsification experiments exonerated, in order: the Stab3
-flight-mode config, the mixer table, the motor order, the PIDs, and the
-controller itself (which commanded the correct recovery to saturation both
-times). The AccelState trace then convicted the sensor path: during
-spool-up the attitude estimate drifted nose-DOWN while its own
-accelerometer read nose-UP - 9 degrees apart - with |accel| thrashing
-7.6-13.4 m/s^2. Motor vibration (200-500Hz on a 4-inch frame) was walking
-through the gyro's 176Hz DLPF and rectifying into phantom rates; the FC
-tipped a LEVEL vehicle chasing them. A CC3D flying the same frame never
-cared because the MPU6000's internal ODR is 8kHz; the ICM-20602 at any
-DLPF>bypass runs 1kHz. Fix: gyro+accel DLPF now 41Hz
-(`board_hw_defs.c`), ~6ms of group delay for ~20dB+ of vibration
-rejection.
+Two real flights ended in a flip at first liftoff thrust. **Root cause: the
+IMU is mounted with its +x axis pointing at the airframe's TAIL** (yaw 180
+from the frame). Confirmed on the quad with `tools/orientation_check.py`:
+airframe nose down -> board reads NOSE UP 45 deg (raw acc.x +7.0); left arm
+down -> RIGHT SIDE DOWN 48 deg (acc.y -7.5); level -> acc.z -9.8, so z is
+fine and only x/y are reversed. With a correct QuadX mixer (M1/M2 on the
+airframe's front, CC3D heritage) that is positive feedback on both axes:
+the FC raises the pair on ITS low side, which is the airframe's HIGH side,
+so every correction pushed the tilt further over and the quad went the
+moment it had enough thrust to follow the command.
+
+**Fix: `AttitudeSettings.BoardRotation = (0, 0, 180)`**, saved, power cycle,
+then `orientation_check.py` must read straight:
+
+```bash
+python3 tools/apply_recommended_settings.py --board-rotation 0,0,180
+```
+
+`flight_monitor.py` preflight FAILs unless Yaw is 180; `bench_test.py` runs
+an orientation gate (tip the nose down, press Enter, must read NOSE DOWN)
+before it will arm. Re-level afterwards (roll/pitch trims were computed in
+the old frame and are zeroed). Yaw control is unaffected (z unchanged;
+M1<->M3 and M2<->M4 keep their spin directions).
+
+What the first investigation got wrong, and why it matters: every
+board-side consistency check - estimate vs gyro, estimate vs accel, mixer
+vs estimate - PASSES on a backwards board, because they are all in the
+board's own frame. The 9-degree estimate/accel gap in the crash log was the
+complementary filter lagging a fast forced rotation, a symptom, not the
+cause; "vibration through the 176 Hz DLPF" was an inference on top of it.
+Props-off vibration measured 1-2 deg/s gyro delta at every throttle band.
+The 41 Hz DLPF stays (right for a 4-inch frame) but fixed nothing. Only a
+HUMAN reference - tip the real nose - reveals a frame offset, and the first
+bench run's voice-lagged labels read it backwards; the paced/Enter-confirmed
+run and the direct five-ask check read it right.
 
 Prebuilt images in the repo root, from this exact tree:
 

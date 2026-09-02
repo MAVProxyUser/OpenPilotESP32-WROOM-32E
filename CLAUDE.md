@@ -38,20 +38,25 @@ was blank -- each discovered one user complaint at a time until a full
 grep of getBoardModel() closed the rest. If a board id ever changes or a
 new target appears, audit every call site in one pass instead.
 
-## RULE: on any real-flight attitude anomaly, check estimate-vs-accel FIRST
+## RULE: on a flip at liftoff, check BOARD ORIENTATION against the airframe FIRST
 
-The 2026-09-01 flips were called wrong three times (flight mode, mixer
-geometry, prop strike) before the one-line check that settled it: plot
-AttitudeState pitch against the pitch implied by AccelState's gravity
-vector, through the event. They disagreed by 9 degrees and DIVERGED - the
-estimate was integrating vibration-rectified gyro phantoms (176Hz DLPF on
-a 4-inch frame's 200-500Hz spectrum) while the accelerometer told the
-truth. When the estimator contradicts its own sensor input, no amount of
-control-side analysis (PIDs, mixer, authority budgets) can be conclusive.
-The GCS auto-log carries both objects for every flight; the check costs
-minutes. Corollary: the sim exonerates only the CONTROL code - its
-sensors are synthetic and clean, so sensor-path defects (DLPF, aliasing,
-vibration, driver axis maps) are invisible to it by construction.
+The 2026-09-01 flips were called wrong FOUR times (flight mode, mixer
+geometry, prop strike, then "vibration through the 176 Hz DLPF") before a
+five-second physical check settled it: tip the airframe's real nose down
+and read what the board says. It said NOSE UP. The IMU's +x points at the
+tail (BoardRotation Yaw=180 is the fix, see README). Every board-frame
+consistency check - estimate vs gyro, estimate vs accel, mixer vs estimate,
+"controller commanded the correct recovery" - PASSES on a backwards board,
+because all of them live in the board's own frame; the 9-degree
+estimate/accel gap in the crash log was the complementary filter lagging a
+fast forced rotation, a symptom. Only a human reference reveals a frame
+offset, and it must be an unambiguous one: the first bench run's
+voice-lagged labels read the inversion backwards. Use
+`tools/orientation_check.py` (five asks, Enter-confirmed) after any
+board/IMU rework and before the first hover; `bench_test.py` gates arming
+on it. Second: estimate-vs-accel through the event (still a real class of
+fault). Corollary: the sim exonerates only the CONTROL code - its sensors
+are synthetic and its frame is by construction aligned.
 
 ## ESC range calibration cannot exist on this board -- do not reintroduce it
 
