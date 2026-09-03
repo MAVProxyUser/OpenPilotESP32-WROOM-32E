@@ -256,10 +256,35 @@ twin of this board. Rules learned building it:
 - **The sensor registry is not in the posix wildcard.** `PIOS_SENSORS_Register`
   lives in `flight/pios/common/pios_sensors.c`; the simwroom Makefile adds it
   explicitly, same as the ESP32 CMake build does.
-- **New flight-tree files must be `git add`ed (staged, not committed)** in the
-  NinjaPilot checkout, or `git diff` misses them and they never reach
-  `patches/ninjapilot-shared-changes.patch`. The patch is regenerated as
-  `git diff > patch; git diff --cached >> patch`.
+- **The patch is regenerated against a BASE COMMIT, not the index** (changed
+  2026-09-02):
+
+  ```bash
+  cd /path/to/NinjaPilot-15.02.ninja
+  git diff ed51f146d2cfff2622c6c24567ed0b02d52e595d -- . ':(exclude)**/__pycache__/**' \
+      > /path/to/OpenPilotESP32/patches/ninjapilot-shared-changes.patch
+  ```
+
+  It used to be `git diff > patch; git diff --cached >> patch`, which read
+  only UNCOMMITTED state. That worked while every shared change sat staged or
+  modified, and it is why new files had to be `git add`ed but never committed.
+  The moment any of that work was committed on the `claude` branch the two
+  diffs went empty for those files and the patch silently SHED them -- measured:
+  83 files before the commit, 48 after, with simwroom, Flip and Remote ID
+  simply gone. A patch that quietly loses a board target is worse than one
+  that fails loudly.
+
+  `ed51f14` is the anchor: NinjaPilot as it stood before that work was
+  committed. It does not move. Anything committed after it is still captured,
+  so work may now be committed on `claude` freely.
+
+  Exclude `__pycache__`: a tracked `.pyc` in that tree lands in the patch as a
+  binary hunk and makes `git apply` fail with "cannot apply binary patch
+  without full index line".
+
+  Verify a regenerated patch before trusting it:
+  `git apply --check -R patches/ninjapilot-shared-changes.patch` from the
+  NinjaPilot checkout. Clean reverse-apply means the patch matches the tree.
 - The twin advertises the REAL scale factors (±2000 dps → 1/16.4, ±8 g →
   g/4096). If board_hw_defs.c ever changes the configured ranges, change
   `pios_icm20602_sim.c` to match — the pair drifting apart silently skews
