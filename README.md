@@ -185,6 +185,21 @@ messages fill themselves in; the module never invents a position. Shipped in
 you run the setup tool). `firmware_normal_41hz.bin` remains the image that
 flew.
 
+## Other targets
+
+An experimental **ESP32-S2** port lives on the
+[`esp32s2`](https://github.com/MAVProxyUser/OpenPilotESP32-WROOM-32E/tree/esp32s2)
+branch. It builds, flashes and boots on real S2 silicon, with an LEDC servo
+backend (the S2 has no MCPWM at all), core-count-aware task creation (it is a
+single-core part), and a relocated pin map (GPIO 22-25 do not exist there and
+26-32 are the module's flash). Nothing on the sensor or control path is
+validated on it -- no IMU was wired.
+
+[ESP32-S2.md](ESP32-S2.md) carries the full set of differences, traps and next
+steps, and explains why the **S3**, not the S2, is the target to pick if you are
+moving off the original ESP32. That file is on `main` deliberately; the code it
+describes is only on the branch.
+
 ## Why this is worth doing
 
 CopterControl runs the same flight code at `PIOS_SENSOR_RATE 500.0f` on an
