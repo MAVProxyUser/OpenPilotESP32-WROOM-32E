@@ -200,6 +200,21 @@ steps, and explains why the **S3**, not the S2, is the target to pick if you are
 moving off the original ESP32. That file is on `main` deliberately; the code it
 describes is only on the branch.
 
+A **LiteWing (ESP32-S3)** port is in progress on the
+[`litewing`](https://github.com/MAVProxyUser/NinjaPilot-15.02.ninja/tree/litewing)
+branch of the *NinjaPilot* repo — it is a flight-tree board target, not an
+ESP-IDF project, which is why it lives there rather than here. The posix twin
+builds and its output model is verified; no hardware has run it. The S3 keeps
+the dual core and MCPWM that the S2 threw away, so it is a retarget rather than
+a rewrite. The substantive difference is that LiteWing drives **brushed**
+coreless motors through MOSFETs, so the output is a 0–100 % duty cycle rather
+than a 1000–2000 µs servo pulse — which incidentally removes the idle-thrust
+tip-over described above.
+
+[LITEWING.md](LITEWING.md) carries the schematic-derived pin map, the brushed
+output model with measured figures, and four traps worth reading before wiring
+anything.
+
 ## Why this is worth doing
 
 CopterControl runs the same flight code at `PIOS_SENSOR_RATE 500.0f` on an
