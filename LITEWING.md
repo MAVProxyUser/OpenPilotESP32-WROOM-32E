@@ -7,9 +7,10 @@
 > file sits on `main` here so the findings are discoverable instead of buried
 > on a side branch.
 
-Status 2026-09-03: **the posix twin builds, its output model and its control
-loop are both verified, and the flight firmware compiles clean for ESP32-S3
-silicon with zero source changes.** No LiteWing hardware has run any of it.
+Status 2026-09-03: **the twin hovers in Gazebo on a physically-real LiteWing
+model, its output model and control loop are verified, and the flight firmware
+compiles clean for ESP32-S3 silicon with zero source changes.** No LiteWing
+hardware has run any of it.
 
 ### The S3 compiles as-is
 
@@ -131,6 +132,55 @@ tilt injected via the sensor stream at 50 % throttle, reading
 Each correction raises the dropped side, which is the whole game. The rail-to-
 rail saturation is expected: nothing feeds vehicle dynamics back, so a sustained
 20° error winds the integrator exactly as it does props-off on real hardware.
+
+## It flies in Gazebo
+
+`ground/gazebo_bridge/worlds/litewing.sdf` on the branch is generated from the
+airframe's real numbers, not copied from the X3: 55 g, motors at ±35 mm for a
+99 mm diagonal, `motorConstant` 2.4e-08 so a 720 coreless on a 55 mm prop makes
+~22 g at 3000 rad/s — **thrust-to-weight 1.60**. `tools/litewing_bridge.py`
+closes the loop: Gazebo's IMU becomes GyroSensor/AccelSensor, the firmware's
+brushed `ActuatorCommand` drives the rotors, and only the collective is the
+bridge's — every attitude correction comes from the firmware.
+
+macOS needs the server and GUI as separate processes (gz-sim#44); run both
+under `GZ_PARTITION` so another Gazebo on the machine is undisturbed.
+
+```
+  t     alt      vz     roll   pitch   ActuatorCommand
+  1.0   0.015   +0.09    +0.0    +0.0   [692, 694, 692, 694]
+  5.1   0.966   +0.06    +0.0    -0.0   [644, 644, 644, 644]
+ 11.2   1.038   +0.00    -0.0    -0.0   [647, 647, 647, 647]
+ 25.4   1.039   +0.00    +0.0    +0.0   [647, 647, 647, 647]
+ 39.5   1.039   +0.00    +0.0    +0.0   [646, 647, 648, 647]
+```
+
+Thirty-plus seconds at 1.039 m, `vz` 0.00, roll and pitch pinned at ±0.0°, all
+four motors within ±1. The model predicts hover at **624** duty from first
+principles; the aircraft hovers at **647** — agreement to 4 %, so the brushed
+0..1000 duty model and the physics are consistent.
+
+### The retune, measured rather than asserted
+
+Bank1's stock 4-inch-class gains **do** diverge on a 55 g airframe: a
+rock-steady ten-second hover, then the rails, reproducibly at t≈17 s. A nano
+has a fraction of the inertia for comparable authority.
+
+| | stock (4-inch) | LiteWing |
+| --- | --- | --- |
+| Roll/Pitch rate Kp | 0.0032 | **0.0012** |
+| rate Ki | 0.0075 | **0.0022** |
+| rate Kd | 0.00005 | **0.00002** |
+| attitude Kp | 3.2 | **2.5** |
+
+`LITEWING_STOCK_GAINS=1` reproduces the divergence.
+
+### One trap that costs an afternoon
+
+`ActuatorCommand`'s flight telemetry is **periodic at 1000 ms**. Publishing the
+cached value drove Gazebo's rotors at 1 Hz against 1 kHz physics: the airframe
+pogoed floor-to-6 m and flipped. It reads exactly like a tuning problem and is
+not one. Poll the object explicitly at loop rate.
 
 ## Traps
 
