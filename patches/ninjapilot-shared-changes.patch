@@ -1,3 +1,20 @@
+diff --git a/.gitignore b/.gitignore
+index 796c801db..c49b1a622 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -98,3 +98,12 @@ ground/openpilotgcs/**/*.o
+ ground/openpilotgcs/share/openpilotgcs/translations/phony_target*/
+ ground/openpilotgcs/src/libs/qwt/examples/bin/
+ ground/openpilotgcs/src/libs/qwt/playground/bin/
++
++# Python bytecode caches (a tracked .pyc lands in the shared patch as a
++# binary hunk and makes git apply fail: "cannot apply binary patch without
++# full index line")
++__pycache__/
++*.pyc
++
++# Qt/qwt build output
++ground/openpilotgcs/src/libs/qwt/lib/qwt.framework/
 diff --git a/Makefile b/Makefile
 index b0e3ca3b4..aa688a65b 100644
 --- a/Makefile
