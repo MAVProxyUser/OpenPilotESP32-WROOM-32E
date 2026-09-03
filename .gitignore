@@ -7,3 +7,6 @@ targets/esp32wroom/esp-idf/fw_version_info.h
 targets/esp32wroom/esp-idf/build-s2/
 targets/esp32wroom/esp-idf/sdkconfig.s2
 targets/esp32wroom/esp-idf/sdkconfig.s2.old
+targets/esp32wroom/esp-idf/build-s3/
+targets/esp32wroom/esp-idf/sdkconfig.s3
+targets/esp32wroom/esp-idf/sdkconfig.s3.old

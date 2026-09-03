@@ -7,10 +7,37 @@
 > file sits on `main` here so the findings are discoverable instead of buried
 > on a side branch.
 
-Status 2026-09-03: **the posix simulation twin builds and its output model is
-verified.** No LiteWing hardware has run this firmware. There is no ESP-IDF
-target yet — this is the develop-in-simulation stage, deliberately, the way
-`simwroom` preceded the ESP32 board.
+Status 2026-09-03: **the posix twin builds, its output model and its control
+loop are both verified, and the flight firmware compiles clean for ESP32-S3
+silicon with zero source changes.** No LiteWing hardware has run any of it.
+
+### The S3 compiles as-is
+
+```bash
+cd targets/esp32wroom/esp-idf
+cmake -G Ninja -B build-s3 -DIDF_TARGET=esp32s3 \
+      -DSDKCONFIG_DEFAULTS=sdkconfig.defaults -DSDKCONFIG=sdkconfig.s3 \
+      -DPYTHON_DEPS_CHECKED=1 . && ninja -C build-s3
+```
+
+Configures and builds with **no errors and no source edits**: an 879,696-byte
+image. That is the concrete version of the claim above — the S2 needed an LEDC
+servo backend, core-count-aware task creation and a relocated pin map before it
+would even build, and the S3 needed nothing.
+
+It is emphatically **not** a flashable LiteWing firmware. It compiles; it has
+never run. What it still carries:
+
+- the **Thing Plus pin map**, so motors are on GPIO 15/33/27/12 instead of
+  LiteWing's 5/6/3/4, and GPIO 26–32 are flash/PSRAM territory on S3 modules;
+- the **console on GPIO 22/23, which do not exist on the S3 at all** —
+  `SOC_GPIO_VALID_GPIO_MASK` in the IDF masks out bits 22–25;
+- **brushless servo-pulse output**, not the brushed duty model below;
+- the **ICM-20602 SPI** sensor path, not MPU6050 over I2C.
+
+So the remaining work to a real LiteWing image is the pin map, the brushed LEDC
+backend, an MPU6050 I2C transport and the console pins — not an architecture
+fight.
 
 ## Why the S3 is portable when the S2 is not
 
@@ -88,6 +115,22 @@ Measured on the twin:
 | armed, throttle down | `[0, 0, 0, 0]` |
 | 50 % | `[469, 469, 469, 469]` — 46.9 % duty |
 | 100 % | `[992, 992, 992, 992]` — 99.2 % duty |
+
+The control loop drives that model in the right direction on both axes too —
+tilt injected via the sensor stream at 50 % throttle, reading
+`ActuatorCommand` (M1 NW, M2 NE, M3 SE, M4 SW):
+
+| stimulus | ActuatorCommand | result |
+| --- | --- | --- |
+| level | `[456, 483, 456, 483]` | balanced |
+| nose down | `[956, 983, 0, 0]` | front pair up |
+| nose up | `[0, 0, 956, 983]` | rear pair up |
+| roll left | `[708, 0, 204, 1000]` | left pair (M1/M4) up |
+| roll right | `[0, 729, 1000, 236]` | right pair (M2/M3) up |
+
+Each correction raises the dropped side, which is the whole game. The rail-to-
+rail saturation is expected: nothing feeds vehicle dynamics back, so a sustained
+20° error winds the integrator exactly as it does props-off on real hardware.
 
 ## Traps
 
