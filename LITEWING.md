@@ -46,12 +46,20 @@ publish the motor pins):
 | Battery sense ADC_BAT | 2 |
 | LEDs blue / red / green | 7 / 8 / 9 |
 | Buzzer BUZ1 / BUZ2 | 38 / 39 |
-| VL53L1X ToF (I2C1) SDA1 / SCL1 | 40 / 41 |
-| PMW3901 flow (SPI) MOSI / CLK / MISO / CS | 35 / 36 / 37 / 42 |
+| I2C1 header (for a ToF module) SDA1 / SCL1 | 40 / 41 |
+| SPI header (for a flow module) MOSI / CLK / MISO / CS | 35 / 36 / 37 / 42 |
 | UART0 (CH340K bridge) | TXD0 / RXD0 |
 
 Expansion header also brings out nine free GPIOs (1, 13, 15–20, 48), UART0,
 both I2C buses, the flow SPI, 3V3 and VBUS.
+
+**The base board carries exactly one sensor: the MPU6050.** The V2.6.C
+schematic contains no PMW3901, VL53L1X, MS5611 or HMC5883 symbol — only bare
+connectors (`Conn_01x06`, `Conn_01x09`) where such parts would attach. The
+last two rows of that table are *header pinouts*, not fitted devices. The ToF
+and optical flow live on a separate **LiteWing Drone Positioning Module**
+(its own board and schematic in the same hardware repo); baro and mag would go
+on I2C0 via the expansion header. Plan for a bare IMU and add from there.
 
 ## The real work: a brushed output model
 
@@ -96,8 +104,9 @@ Measured on the twin:
   reported servo values on a brushed board. Both sites must agree.
 - **GPIO 35/36/37 are the octal-PSRAM pins** on ESP32-S3-WROOM-1 variants that
   carry PSRAM — the schematic brackets them "PSRAM" for exactly this reason —
-  and this board uses them for the optical-flow SPI. A module with octal PSRAM
-  cannot drive that sensor. Check the module suffix; do not enable PSRAM.
+  and this board routes them to the SPI header the flow module plugs into. A
+  part with octal PSRAM cannot drive that header at all. Check the module
+  suffix; do not enable PSRAM.
 - **Which physical corner is MOT_1 is NOT in the schematic.** The netlist gives
   gate-to-GPIO only; the corner assignment is on the PCB silkscreen. The mixer
   in the twin is the stock OpenPilot QuadX convention as an explicit
@@ -116,12 +125,14 @@ Already in the flight tree, so these are *enable-and-wire*, not *write*:
 - `pios_i2c.c` already exists in the ESP32 port.
 
 The LiteWing expansion header lists MS5611 and HMC5883 as intended I2C0
-devices (they are **not populated** on the base board — only the MPU6050 is).
-So altitude hold and magnetic heading are reachable on this airframe in a way
-they are not on the Thing Plus build, which is rate-and-attitude only.
+devices. So altitude hold and magnetic heading are reachable on this airframe
+in a way they are not on the Thing Plus build, which is rate-and-attitude
+only — provided you fit the parts, because nothing but the MPU6050 is on the
+base board.
 
 Not in the tree, and would need writing: **VL53L1X** (ToF) and **PMW3901**
-(optical flow).
+(optical flow) — both of which are on the separate Positioning Module anyway,
+so they are two purchases and two drivers away, not one `#define`.
 
 Also still to do: an **MPU6050-over-I2C** transport. The driver logic largely
 survives — our MPU/ICM driver already accepts `WHO_AM_I` 0x68, which is the

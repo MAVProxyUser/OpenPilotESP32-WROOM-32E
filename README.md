@@ -213,7 +213,9 @@ tip-over described above.
 
 [LITEWING.md](LITEWING.md) carries the schematic-derived pin map, the brushed
 output model with measured figures, and four traps worth reading before wiring
-anything.
+anything. Note the base board carries only the MPU6050 — the baro, mag, ToF
+and optical flow are all add-ons, the last two on a separate positioning
+module.
 
 ## Why this is worth doing
 
