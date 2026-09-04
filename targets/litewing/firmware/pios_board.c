@@ -250,37 +250,53 @@ static void board_apply_default_airframe(void)
     }
     act.MotorsSpinWhileArmed = ACTUATORSETTINGS_MOTORSSPINWHILEARMED_FALSE;
     /*
-     * Point the sticks at the DSM satellite. Standard Spektrum channel order:
-     * 1 throttle, 2 aileron, 3 elevator, 4 rudder, 5 gear. Endpoints are left
-     * at their defaults -- those are per-transmitter and have to be calibrated
-     * from the GCS, which will not survive a reboot on this target either.
+     * Point the sticks at the GCS receiver, over WiFi.
      *
-     * Change these to ..._PPM to fly off the PPM input on GPIO21 instead;
-     * both receivers are built and running, and this is the only thing that
-     * decides which one ManualControl actually reads.
+     * This board has NO radio receiver. The V2.6.C schematic has no satellite
+     * connector and no PPM input -- LiteWing is flown over WiFi, which is the
+     * whole idea of the airframe. The DSM mapping inherited from the ESP32
+     * quad therefore pointed all five channels at hardware that does not
+     * exist, ManualControlCommand sat at Connected=FALSE with every channel
+     * reading 65535, and the board could never arm no matter what was done to
+     * it.
+     *
+     * PIOS_GCSRCVR is already built and registered into pios_rcvr_group_map
+     * under CHANNELGROUPS_GCS, so the GCSReceiver UAVObject IS the radio here.
+     * It rides whatever telemetry link is up -- WiFi UDP in flight, USB serial
+     * on the bench -- so the same mapping works for both.
+     *
+     * Endpoints are the conventional 1000/1500/2000 microsecond stick range.
+     * That is the RECEIVER side and is unrelated to the brushed 0..1000 duty
+     * on the actuator side; ManualControl normalises to -1..+1 in between.
+     * Throttle neutral sits at its minimum, as it must for a throttle.
      */
     {
         ManualControlSettingsData mc;
 
         ManualControlSettingsGet(&mc);
-        mc.ChannelGroups.Throttle   = MANUALCONTROLSETTINGS_CHANNELGROUPS_DSMMAINPORT;
-        mc.ChannelGroups.Roll       = MANUALCONTROLSETTINGS_CHANNELGROUPS_DSMMAINPORT;
-        mc.ChannelGroups.Pitch      = MANUALCONTROLSETTINGS_CHANNELGROUPS_DSMMAINPORT;
-        mc.ChannelGroups.Yaw        = MANUALCONTROLSETTINGS_CHANNELGROUPS_DSMMAINPORT;
-        mc.ChannelGroups.FlightMode = MANUALCONTROLSETTINGS_CHANNELGROUPS_DSMMAINPORT;
+        mc.ChannelGroups.Throttle   = MANUALCONTROLSETTINGS_CHANNELGROUPS_GCS;
+        mc.ChannelGroups.Roll       = MANUALCONTROLSETTINGS_CHANNELGROUPS_GCS;
+        mc.ChannelGroups.Pitch      = MANUALCONTROLSETTINGS_CHANNELGROUPS_GCS;
+        mc.ChannelGroups.Yaw        = MANUALCONTROLSETTINGS_CHANNELGROUPS_GCS;
+        mc.ChannelGroups.FlightMode = MANUALCONTROLSETTINGS_CHANNELGROUPS_GCS;
         mc.ChannelNumber.Throttle   = 1;
         mc.ChannelNumber.Roll       = 2;
         mc.ChannelNumber.Pitch      = 3;
         mc.ChannelNumber.Yaw        = 4;
         mc.ChannelNumber.FlightMode = 5;
+        mc.ChannelMin.Throttle = 1000; mc.ChannelNeutral.Throttle = 1000; mc.ChannelMax.Throttle = 2000;
+        mc.ChannelMin.Roll = 1000; mc.ChannelNeutral.Roll = 1500; mc.ChannelMax.Roll = 2000;
+        mc.ChannelMin.Pitch = 1000; mc.ChannelNeutral.Pitch = 1500; mc.ChannelMax.Pitch = 2000;
+        mc.ChannelMin.Yaw = 1000; mc.ChannelNeutral.Yaw = 1500; mc.ChannelMax.Yaw = 2000;
+        mc.ChannelMin.FlightMode = 1000; mc.ChannelNeutral.FlightMode = 1500; mc.ChannelMax.FlightMode = 2000;
         ManualControlSettingsSet(&mc);
         UAVObjSave(ManualControlSettingsHandle(), 0);
     }
 
-    /* 50Hz is the rate every analogue ESC understands. The MCPWM driver
-     * applies one rate to all channels (see PIOS_Servo_SetHz), so this is
-     * effectively a single global setting -- raise it once you know what the
-     * ESCs accept. */
+    /* Meaningless on this board and left only so the field is not a stray 0:
+     * the outputs are LEDC duty at a fixed 24 kHz carrier, and
+     * PIOS_Servo_SetHz() is a no-op in brushed mode. There is no ESC whose
+     * frame rate this could describe. */
     act.BankUpdateFreq[0] = 50;
     ActuatorSettingsSet(&act);
 
