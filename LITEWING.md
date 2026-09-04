@@ -1,16 +1,119 @@
 # LiteWing (ESP32-S3) — brushed nano quad port
 
-> **The code described here is not in this repository, and not on `claude`.**
-> It lives on the [`litewing`](https://github.com/MAVProxyUser/NinjaPilot-15.02.ninja/tree/litewing)
-> branch of the **NinjaPilot** repo, because the work is a flight-tree board
-> target (`flight/targets/boards/simlitewing/`), not an ESP-IDF project. This
-> file sits on `main` here so the findings are discoverable instead of buried
-> on a side branch.
+> Two repositories are involved. The **ESP-IDF board target** and its tools are
+> here on the [`litewing`](https://github.com/MAVProxyUser/OpenPilotESP32-WROOM-32E/tree/litewing)
+> branch (`targets/litewing/`). The **posix twin** and the ground-side tooling
+> are on the [`litewing`](https://github.com/MAVProxyUser/NinjaPilot-15.02.ninja/tree/litewing)
+> branch of **NinjaPilot** (`flight/targets/boards/simlitewing/`,
+> `ground/pyuavtalk/`, and the GCS config plugin).
 
-Status 2026-09-03: **the twin hovers in Gazebo on a physically-real LiteWing
-model, its output model and control loop are verified, and the flight firmware
-compiles clean for ESP32-S3 silicon with zero source changes.** No LiteWing
-hardware has run any of it.
+Status 2026-09-04: **the firmware runs on real LiteWing hardware.** It boots,
+the MPU6050 streams, all four motors drive, the GCS knows the board, and the
+control path is closed — `ManualControlCommand.Connected = True` with sticks
+arriving over the link. The twin also still hovers in Gazebo.
+
+Not yet done, and honest about it: **no barometer is fitted and no altitude
+hold is compiled in**; the motor-to-corner mapping and prop directions are
+**unconfirmed**; the accel wants its six-point calibration; and it has not
+flown.
+
+### Verified on hardware
+
+| | |
+| --- | --- |
+| Boot + telemetry | 25 objects streaming, UAVTalk 57600 on UART0 |
+| Alarms | Sensors, Attitude, Actuator, Telemetry, ManualControl all **OK** |
+| Gyro at rest | x +0.028  y −0.010  z −0.025 °/s, σ 0.05 — quiet |
+| Accel | −101 mg Z offset, gain +1.7 % (inside ±3 % spec; needs calibration) |
+| Motors | M1–M4 individually **and all four together** at 12.5 % and 25 % duty |
+| Control | `Connected = True`, channels echo 1000/1500/1500/1500/1500 |
+| Disarmed output | `ActuatorCommand = [0, 0, 0, 0]` |
+
+### Flashing
+
+```bash
+cd targets/litewing/esp-idf
+idf.py -p /dev/cu.wchusbserial8320 -b 115200 flash
+```
+
+460800 fails on the CH340K; use 115200.
+
+**A reflash does not fix stored settings.** `board_apply_default_airframe()`
+returns early on a provisioned board, deliberately, so it never overwrites what
+you saved. A board first flashed before the GCS-receiver change keeps the old
+DSM mapping and will not arm. Push the fix over the link instead of erasing
+everything:
+
+```bash
+python3 ../../../NinjaPilot-15.02.ninja/ground/pyuavtalk/persist_gcs_receiver.py \
+        --serial /dev/cu.wchusbserial8320
+```
+
+### There is no receiver on this board
+
+The V2.6.C schematic has no satellite connector and no PPM input — LiteWing is
+flown over WiFi, which is the point of the airframe. All five channels come
+from the **GCS receiver** (`GCSReceiver` UAVObject) and ride the telemetry
+link, so the same mapping works over WiFi UDP in flight and USB serial on the
+bench.
+
+This was the one thing standing between the firmware and a hover. The mapping
+inherited from the ESP32 quad pointed at `DSMMAINPORT`, so
+`ManualControlCommand` sat at `Connected=FALSE` with every channel at 65535 and
+the board could not arm no matter what else was right.
+
+### Power, read off the schematic
+
+```
+USB-C VBUS ─> +5V ─┬─ D1 SS34 ─> VBUS ─> U2 SPX3819 ─> +3V3 ─> ESP32
+                   ├─ U1 AO3401A gate   (P-channel power path)
+                   └─ IC1 TP4056 VCC ─> BAT ─> +BATT ─┬─> J2 battery
+                                                      └─> motors J7–J10
+```
+
+**USB and the battery may be connected at the same time — that is how it
+charges.** U1 isolates the battery from VBUS whenever USB is present, and its
+body diode blocks VBUS→+BATT. This is the *opposite* of the ESP32 quad's rule,
+where an ESC BEC and USB meet on one VUSB rail; do not carry that rule over.
+
+On USB alone the motor rail is still live, fed by the TP4056's BAT pin and
+capped by Rprog = R5 = 1.2 kΩ at `1100/1.2 ≈ 917 mA` for all four motors. Four
+720-size coreless motors want 0.8–1.0 A *each*, so the props spin but cannot
+lift. With no battery the TP4056 also cycles, so that rail is not a clean
+supply. R22–R25 are 10 k gate pulldowns, so the motors are held off by hardware
+before the ESP32 drives a pin.
+
+### Bench tools
+
+```bash
+# one motor, or all four in turn then together. Nothing is armed. PROPS OFF.
+python3 tools/litewing_motor_test.py --all --duty 250 --seconds 2
+
+# accel: turn the board over in your hands, it stops on its own
+python3 ../../NinjaPilot-15.02.ninja/ground/pyuavtalk/accel_calibrate.py \
+        --serial /dev/cu.wchusbserial8320 --apply --save
+```
+
+The motor test switches `ActuatorCommand` to flight-read-only, which is the
+mechanism the GCS Output tab uses: `actuator.c` computes its mixer output, has
+`ActuatorCommandSet()` refused, re-reads the object and pushes *our* value to
+the pins. No mixer, no stabilization, no arming anywhere in the path. It reads
+the channel back off the board to prove the override took, and counts link
+drops so a brownout is reported rather than inferred.
+
+### The GCS knows this board
+
+Board id **0x1302**. `devicedescriptorstruct.h` names it, and
+`configgadgetwidget.cpp` has a `0x1300` branch giving it the CC-style attitude
+widget (where the six-point accel calibration lands) plus a fixed-function
+hardware card.
+
+One trap worth knowing, because it is armed and waiting on any brushed board:
+`outputchannelform.cpp` had `MINOUTPUT_VALUE = 500`, a sane floor in
+*microseconds*. Here a channel value is tenths of a percent *duty*, so a 500
+floor cannot represent 0 — opening the Output tab would have silently clamped
+`ChannelMin` from 0 up to 500, which is **50 % throttle on all four motors at
+rest**. The bounds now follow the board.
 
 ### The S3 compiles as-is
 
@@ -273,10 +376,19 @@ Not in the tree, and would need writing: **VL53L1X** (ToF) and **PMW3901**
 (optical flow) — both of which are on the separate Positioning Module anyway,
 so they are two purchases and two drivers away, not one `#define`.
 
-Also still to do: an **MPU6050-over-I2C** transport. The driver logic largely
-survives — our MPU/ICM driver already accepts `WHO_AM_I` 0x68, which is the
-MPU6050, and the register map is MPU6000-family for everything it touches —
-but the existing path is SPI.
+**Done:** the MPU6050-over-I2C transport. Rather than fork 770 lines,
+`pios_icm20602.c` gained an I2C branch in the three functions that actually
+touch the bus — the family is register-compatible for everything the driver
+uses, so only the transport differs. Blocking I2C is safe there because the
+data-ready path runs in a task, not an ISR, and the I2C burst lands at
+`buffer[1]` so sample offsets match the SPI layout (byte 0 there is the
+address-echo dummy). SPI-only targets get constant-false stubs and are
+unchanged.
+
+One trap that came with it: `board_hw_defs.c` had inherited
+`.User_ctl = USERCTL_DIS_I2C`. That is bit 4, `I2C_IF_DIS` — it would have hung
+up the bus mid-configuration on a part we talk to *over* I2C, and the MPU6050
+datasheet marks it "always write 0" regardless.
 
 **I2C budget caution.** Baro and mag would share I2C0 with the IMU. A 15-byte
 read at 400 kHz costs ~390 µs, about 19 % of a 500 Hz period, and MS5611
@@ -345,21 +457,48 @@ the Remote ID broadcast from standards-shaped into actually compliant.
 
 ### What altitude hold actually requires
 
-Having a baro driver is necessary and not sufficient. This twin's module list
-is `ManualControl Stabilization Attitude Telemetry Actuator Receiver Logging
-Flip RemoteID` — there is **no Sensors module and no AltitudeHold**, so nothing
-would consume a barometer even if one were fitted. Closing that loop means
-compiling both modules in plus a simulated baro feeding `BaroSensor` from
-Gazebo's altitude, the same trick `pios_icm20602_sim.c` plays for the IMU.
-That is a piece of work, not a `#define`.
+Having a baro driver is necessary and not sufficient, and this applies to the
+**real target too**, not just the twin. Neither module list contains a
+`Sensors` module or `AltitudeHold`, so nothing would consume a barometer even
+with one fitted. The BMP280 driver and the AltFilter estimator exist in the
+NinjaPilot tree but are not compiled into `targets/litewing`.
+
+That work was deliberately left until a part is physically on the bus, because
+none of it can be tested otherwise.
+
+**Where to fit the BMP280** — I2C1 on the expansion header, deliberately *not*
+I2C0, which carries the MPU6050 at 500 Hz and should not share bus time with
+the critical sensor path:
+
+| BMP280 | LiteWing |
+| --- | --- |
+| SDA | **GPIO40** (SDA1) |
+| SCL | **GPIO41** (SCL1) |
+| VCC | 3V3 |
+| GND | GND |
+
+Address is `0x76` with SDO low, `0x77` with SDO high. The boot-time I2C scan
+already probes both and prints what answers, so it will tell you which one you
+have.
 
 ## Next steps
 
-1. Confirm the MOT_n → physical corner mapping from the PCB.
-2. Confirm the module's PSRAM suffix before trusting the flow SPI pins.
-3. MPU6050 I2C transport.
-4. Re-tune Bank1 for 45 g — the current gains are 4-inch-class and meaningless
-   here. Do it on the twin.
-5. Sensors + AltitudeHold modules and a simulated baro, to close the altitude
-   loop in the twin before any hardware carries a BMP280.
-6. Only then an ESP-IDF target for the S3.
+Before it flies:
+
+1. **Confirm motor corner order and prop rotation.** The schematic gives pins,
+   not geometry, and this is deliberately *not* assumed anywhere in the mixer.
+   Drive one motor at a time from the GCS Output tab (or
+   `tools/litewing_motor_test.py --motor N`) and note which arm responds. If
+   the order is wrong, reorder `ChannelAddr` — not the mixer.
+2. **Six-point accel calibration.** Measured −101 mg on Z with gain inside
+   spec, so the part is fine, but AltFilter integrates accel and an
+   uncorrected offset walks the altitude estimate.
+3. **Re-tune Bank1 for 45 g.** The current gains are 4-inch-class and
+   meaningless here. Do it on the twin first.
+
+After that:
+
+4. Fit the BMP280 on I2C1, then compile in `Sensors` + `AltitudeHold` and close
+   the altitude loop — on the twin first, with a simulated baro feeding
+   `BaroSensor` the way `pios_icm20602_sim.c` feeds the IMU.
+5. Confirm the module's PSRAM suffix before trusting the flow SPI pins.

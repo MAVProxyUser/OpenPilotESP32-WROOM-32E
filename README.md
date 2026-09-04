@@ -200,22 +200,31 @@ steps, and explains why the **S3**, not the S2, is the target to pick if you are
 moving off the original ESP32. That file is on `main` deliberately; the code it
 describes is only on the branch.
 
-A **LiteWing (ESP32-S3)** port is in progress on the
-[`litewing`](https://github.com/MAVProxyUser/NinjaPilot-15.02.ninja/tree/litewing)
-branch of the *NinjaPilot* repo — it is a flight-tree board target, not an
-ESP-IDF project, which is why it lives there rather than here. The posix twin
-builds and its output model is verified; no hardware has run it. The S3 keeps
-the dual core and MCPWM that the S2 threw away, so it is a retarget rather than
-a rewrite. The substantive difference is that LiteWing drives **brushed**
-coreless motors through MOSFETs, so the output is a 0–100 % duty cycle rather
-than a 1000–2000 µs servo pulse — which incidentally removes the idle-thrust
-tip-over described above.
+A **LiteWing (ESP32-S3)** port **runs on hardware** — see `targets/litewing/`
+on the [`litewing`](https://github.com/MAVProxyUser/OpenPilotESP32-WROOM-32E/tree/litewing)
+branch here, with the posix twin and ground tooling on the matching branch of
+the *NinjaPilot* repo. It boots, the MPU6050 streams over I2C, all four motors
+drive, the GCS recognises the board, and the control path is closed. It has not
+flown: motor corner order and prop rotation are unconfirmed, there is no
+barometer fitted and no altitude hold compiled in.
 
-[LITEWING.md](LITEWING.md) carries the schematic-derived pin map, the brushed
-output model with measured figures, and four traps worth reading before wiring
-anything. Note the base board carries only the MPU6050 — the baro, mag, ToF
-and optical flow are all add-ons, the last two on a separate positioning
-module.
+The S3 keeps the dual core and MCPWM the S2 threw away, so it is a retarget
+rather than a rewrite. The substantive difference is that LiteWing drives
+**brushed** coreless motors through MOSFETs, so the output is a 0–100 % duty
+cycle rather than a 1000–2000 µs servo pulse — which incidentally removes the
+idle-thrust tip-over described above. That reinterpretation makes the actuator
+endpoints safety-critical: `ChannelMin = 1000` means "ESC stop" on a brushless
+board and **100 % throttle** here, so the defaults are 0/0/1000 and the
+firmware refuses a stored config that looks brushless.
+
+It also has **no radio receiver at all** — the airframe is flown over WiFi, so
+all five channels come from the GCS receiver over the telemetry link.
+
+[LITEWING.md](LITEWING.md) carries the schematic-derived pin map and power tree,
+the brushed output model with measured figures, what was verified on hardware,
+and the traps worth reading before wiring anything. Note the base board carries
+only the MPU6050 — the baro, mag, ToF and optical flow are all add-ons, the last
+two on a separate positioning module.
 
 ## Why this is worth doing
 
