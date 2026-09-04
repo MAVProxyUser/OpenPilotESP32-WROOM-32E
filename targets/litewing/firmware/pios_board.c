@@ -83,10 +83,17 @@ static uint32_t pios_i2c_sensors_id;
  * meaning here (ESP-IDF's bootloader and partition table own the flash map).
  * Define it directly instead.
  *
- * board_rev MUST stay 0x02 -- see the comment in board-info.mk. */
+ * board_rev MUST stay 0x02 -- see the comment in board-info.mk.
+ *
+ * board_type MUST match BOARD_TYPE in board-info.mk. Nothing checks that they
+ * agree: board-info.mk feeds the build system, this struct is what the
+ * firmware actually PUBLISHES (FirmwareIAPObj.BoardType, and byte 12 of the
+ * firmware description). When this was left at the ESP32 quad's 0x12 while
+ * board-info.mk said 0x13, the GCS obediently identified a LiteWing as a
+ * SparkFun Thing Plus and showed it that board's hardware page and pin map. */
 const struct pios_board_info pios_board_info_blob = {
     .magic      = PIOS_BOARD_INFO_BLOB_MAGIC,
-    .board_type = 0x12,
+    .board_type = 0x13,
     .board_rev  = 0x02,
     .bl_rev     = 0x00,   /* no PiOS bootloader on this target */
     .hw_type    = 0x00,
