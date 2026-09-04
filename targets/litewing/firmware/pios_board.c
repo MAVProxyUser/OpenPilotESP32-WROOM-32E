@@ -193,18 +193,46 @@ static void board_apply_default_airframe(void)
      * (xMixer in configmultirotorwidget.cpp), scaled by 127. Yaw is negative
      * for a CW prop and positive for CCW, so the diagonals pair up:
      *
-     *   M1  MOT_1  GPIO5   pitch +1  roll +1  yaw -1
-     *   M2  MOT_2  GPIO6   pitch +1  roll -1  yaw +1
-     *   M3  MOT_3  GPIO3   pitch -1  roll -1  yaw -1
-     *   M4  MOT_4  GPIO4   pitch -1  roll +1  yaw +1
+     * The mixer rows stay the textbook quad X. What changes is which PIN each
+     * row drives, via ChannelAddr below -- reordering outputs rather than
+     * rewriting the mixer keeps the GCS mixer tab showing the conventional
+     * table an operator expects.
      *
-     * The schematic gives the PINS; it does not say which physical corner
-     * each motor sits in or which way its prop turns. That mapping is not
-     * assumed here -- verify it on the bench, PROPS OFF, by commanding one
-     * motor at a time and watching which arm responds, then reorder
-     * ChannelAddr (not the mixer) to match. Unlike the ESP32 quad, the IMU
-     * here is soldered to the board rather than on flying leads, so "front"
-     * is fixed by the frame, but the corner order still has to be confirmed.
+     * Corner geometry is read off the PCB (LieWingV2.6.C.kicad_pcb), not
+     * guessed. Motor connector placements, KiCad coordinates with Y down:
+     *
+     *   J7   MOT_1  GPIO5   x 177.7  y  62.3   right, toward the "top" edge
+     *   J8   MOT_2  GPIO6   x 179.1  y 124.4   right, toward the "bottom"
+     *   J9   MOT_3  GPIO3   x 117.1  y 125.9   left,  toward the "bottom"
+     *   J10  MOT_4  GPIO4   x 115.6  y  63.9   left,  toward the "top"
+     *
+     * Prop rotation comes off the silkscreen, which marks each position A or
+     * B and prints the motor wire colours beside it:
+     *
+     *   J7  = B (black/white)      J8  = A (red/blue)
+     *   J9  = B (black/white)      J10 = A (red/blue)
+     *
+     * A and B fall on opposite diagonals, which is exactly the quad X rule,
+     * and it confirms the diagonal PAIRING is J7+J9 against J8+J10. Note it
+     * does NOT fix which edge is the nose: the pattern is symmetric under a
+     * 180 degree rotation, so both "top is front" and "bottom is front" fit
+     * it. Taking the top edge as the nose:
+     *
+     *   mixer row 1  front-left   -> MOT_4  GPIO4   A  CW
+     *   mixer row 2  front-right  -> MOT_1  GPIO5   B  CCW
+     *   mixer row 3  rear-right   -> MOT_2  GPIO6   A  CW
+     *   mixer row 4  rear-left    -> MOT_3  GPIO3   B  CCW
+     *
+     * The previous mapping had ChannelAddr 0,1,2,3, i.e. it treated MOT_1 as
+     * front-left. The PCB says MOT_1 is on the RIGHT, so that was a quarter
+     * turn out -- roll and pitch would both have been wrong while the yaw
+     * pairing happened to survive.
+     *
+     * STILL TO CONFIRM: which edge is the nose, which is the same question as
+     * which way the MPU6050's +X points. Settle it before flying, props off:
+     * tilt the board nose-down and watch AttitudeState -- pitch should go
+     * NEGATIVE. If it goes positive the frame is 180 degrees out, and the fix
+     * is to swap the diagonal pairs (ChannelAddr 1,2,3,0 becomes 3,0,1,2).
      */
     mixer.Mixer1Type = MIXERSETTINGS_MIXER1TYPE_MOTOR;
     mixer.Mixer1Vector.ThrottleCurve1 = 127;
@@ -238,8 +266,15 @@ static void board_apply_default_airframe(void)
 
     ActuatorSettingsGet(&act);
     for (uint8_t i = 0; i < 4; i++) {
+        /* Mixer row -> output pin. See the corner geometry above:
+         *   row 1 front-left  -> MOT_4 (index 3)
+         *   row 2 front-right -> MOT_1 (index 0)
+         *   row 3 rear-right  -> MOT_2 (index 1)
+         *   row 4 rear-left   -> MOT_3 (index 2)   */
+        static const uint8_t motor_addr[4] = { 3, 0, 1, 2 };
+
         act.ChannelType[i]    = ACTUATORSETTINGS_CHANNELTYPE_PWM;
-        act.ChannelAddr[i]    = i;
+        act.ChannelAddr[i]    = motor_addr[i];
         /* BRUSHED endpoints -- tenths of a percent duty, NOT microseconds.
          *
          * This is the single most dangerous number on the board. The output
