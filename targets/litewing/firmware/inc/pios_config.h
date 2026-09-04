@@ -76,6 +76,11 @@
 
 /* --- Sensors ---------------------------------------------------------- */
 /* ICM-20602, which is NOT an MPU6000 -- see pios/esp32/pios_icm20602.c */
+/* Publish the RAW AccelSensor/GyroSensor objects (with die temperature) from
+ * attitude.c, which the Revo path gets from sensors.c and this one otherwise
+ * never produces. The GCS thermal calibration fits drift against those, so
+ * without them the wizard samples nothing. */
+#define PIOS_INCLUDE_RAW_SENSORS
 #define PIOS_INCLUDE_ICM20602
 /* WiFi telemetry: active only when credentials exist in NVS (see
  * tools/wifi_setup.py). Bench feature; erase credentials before flight. */

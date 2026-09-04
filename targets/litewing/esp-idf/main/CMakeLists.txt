@@ -378,6 +378,11 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE
 # Keep this list in step with UAVO_SYNTH_SRCS above.
 target_compile_definitions(${COMPONENT_LIB} PRIVATE
     UAVOBJ_INIT_accelgyrosettings=1
+    UAVOBJ_INIT_accelsensor=1
+    UAVOBJ_INIT_gyrosensor=1
+    UAVOBJ_INIT_barosensor=1
+    UAVOBJ_INIT_revosettings=1
+    UAVOBJ_INIT_homelocation=1
     UAVOBJ_INIT_flipstatus=1
     UAVOBJ_INIT_remoteidsettings=1
     UAVOBJ_INIT_remoteidstatus=1
