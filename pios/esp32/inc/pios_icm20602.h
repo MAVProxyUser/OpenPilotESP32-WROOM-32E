@@ -179,6 +179,8 @@ struct pios_icm20602_cfg {
 };
 
 /* Public Functions */
+/* MPU6050 on LiteWing sits on I2C0; same register map, different bus. */
+extern int32_t PIOS_ICM20602_InitI2C(uint32_t i2c_id, uint8_t i2c_addr, const struct pios_icm20602_cfg *cfg);
 extern int32_t PIOS_ICM20602_Init(uint32_t spi_id, uint32_t slave_num, const struct pios_icm20602_cfg *new_cfg);
 extern int32_t PIOS_ICM20602_ConfigureRanges(enum pios_icm20602_range gyroRange, enum pios_icm20602_accel_range accelRange, enum pios_icm20602_filter filterSetting);
 extern int32_t PIOS_ICM20602_ReadID();

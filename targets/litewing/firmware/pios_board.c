@@ -63,6 +63,9 @@ uint32_t pios_rcvr_group_map[MANUALCONTROLSETTINGS_CHANNELGROUPS_NONE];
 
 /* Sensor bus handles. */
 static uint32_t pios_spi_sensors_id;
+#ifdef PIOS_INCLUDE_I2C
+static uint32_t pios_i2c_sensors_id;
+#endif
 
 /* ---------------------------------------------------------------------- *
  * Placeholders for the settings filesystem, which this target does not have
@@ -183,14 +186,18 @@ static void board_apply_default_airframe(void)
      * (xMixer in configmultirotorwidget.cpp), scaled by 127. Yaw is negative
      * for a CW prop and positive for CCW, so the diagonals pair up:
      *
-     *   M1  front-left   GPIO15   pitch +1  roll +1  yaw -1   CW
-     *   M2  front-right  GPIO33   pitch +1  roll -1  yaw +1   CCW
-     *   M3  rear-right   GPIO27   pitch -1  roll -1  yaw -1   CW
-     *   M4  rear-left    GPIO12   pitch -1  roll +1  yaw +1   CCW
+     *   M1  MOT_1  GPIO5   pitch +1  roll +1  yaw -1
+     *   M2  MOT_2  GPIO6   pitch +1  roll -1  yaw +1
+     *   M3  MOT_3  GPIO3   pitch -1  roll -1  yaw -1
+     *   M4  MOT_4  GPIO4   pitch -1  roll +1  yaw +1
      *
-     * "Front" is whichever way the IMU's +X points, NOT the ESP32 board --
-     * the sensor is on flying leads, so fix its orientation to the frame
-     * before trusting any of this.
+     * The schematic gives the PINS; it does not say which physical corner
+     * each motor sits in or which way its prop turns. That mapping is not
+     * assumed here -- verify it on the bench, PROPS OFF, by commanding one
+     * motor at a time and watching which arm responds, then reorder
+     * ChannelAddr (not the mixer) to match. Unlike the ESP32 quad, the IMU
+     * here is soldered to the board rather than on flying leads, so "front"
+     * is fixed by the frame, but the corner order still has to be confirmed.
      */
     mixer.Mixer1Type = MIXERSETTINGS_MIXER1TYPE_MOTOR;
     mixer.Mixer1Vector.ThrottleCurve1 = 127;
@@ -226,13 +233,22 @@ static void board_apply_default_airframe(void)
     for (uint8_t i = 0; i < 4; i++) {
         act.ChannelType[i]    = ACTUATORSETTINGS_CHANNELTYPE_PWM;
         act.ChannelAddr[i]    = i;
-        /* Min == Neutral means the motors sit at their stop when armed.
-         * MotorsSpinWhileArmed stays FALSE. Raise Neutral only after the
-         * ESCs have been calibrated against these endpoints. */
-        act.ChannelMin[i]     = 1000;
-        act.ChannelNeutral[i] = 1000;
-        act.ChannelMax[i]     = 2000;
+        /* BRUSHED endpoints -- tenths of a percent duty, NOT microseconds.
+         *
+         * This is the single most dangerous number on the board. The output
+         * backend is LEDC duty (pios_servo.c, cfg->brushed), so a channel
+         * value of 1000 is 100% throttle, not "1000us = ESC stop". Carrying
+         * the brushless 1000/1000/2000 defaults across from the ESP32 quad
+         * would put all four motors at FULL POWER the moment Actuator ran,
+         * armed or not, because a disarmed board outputs ChannelMin.
+         *
+         * There is no ESC to keep alive, so Neutral is 0 and a brushed motor
+         * at 0 duty is simply stopped. */
+        act.ChannelMin[i]     = 0;      /*   0.0 % duty -- motor stopped */
+        act.ChannelNeutral[i] = 0;      /*   no ESC idle to hold         */
+        act.ChannelMax[i]     = 1000;   /* 100.0 % duty                  */
     }
+    act.MotorsSpinWhileArmed = ACTUATORSETTINGS_MOTORSSPINWHILEARMED_FALSE;
     /*
      * Point the sticks at the DSM satellite. Standard Spektrum channel order:
      * 1 throttle, 2 aileron, 3 elevator, 4 rudder, 5 gear. Endpoints are left
@@ -564,6 +580,36 @@ void PIOS_Board_Init(void)
      * function for why this is not left to the GCS. */
     board_apply_default_airframe();
 
+    /* ------------------------------------------------------------------
+     * Brushed-endpoint sanity gate.
+     *
+     * board_apply_default_airframe() bails out early on a provisioned board,
+     * so STORED settings reach the outputs untouched -- and a board that was
+     * ever provisioned against a brushless target carries ChannelMin = 1000.
+     * On this target that is not "ESC stop", it is 100% duty on a coreless
+     * motor with no ESC in the way: four motors at full power on a disarmed
+     * board. The stored value is not silently rewritten (that is the
+     * operator's data), but it is refused: BootFault blocks arming and the
+     * reason goes out over telemetry.
+     * ------------------------------------------------------------------ */
+    {
+        ActuatorSettingsData chk;
+        ActuatorSettingsGet(&chk);
+        for (uint8_t i = 0; i < 4; i++) {
+            if (chk.ChannelMin[i] > 100 || chk.ChannelNeutral[i] > 100) {
+                printf("[BOARD] REFUSING OUTPUTS: channel %u has Min=%d Neutral=%d. "
+                       "These are BRUSHED duty units (0..1000 = 0..100%%), so that is "
+                       "%d%% throttle at rest -- almost certainly brushless settings "
+                       "(1000/1000/2000) left over from another target. Set Min and "
+                       "Neutral to 0 and Max to 1000.\n",
+                       (unsigned)i, (int)chk.ChannelMin[i], (int)chk.ChannelNeutral[i],
+                       (int)(chk.ChannelMin[i] / 10));
+                AlarmsSet(SYSTEMALARMS_ALARM_BOOTFAULT, SYSTEMALARMS_ALARM_CRITICAL);
+                break;
+            }
+        }
+    }
+
     /* The GCS identifies the board through FirmwareIAPObj (board model =
      * type<<8 | revision -- the Setup Wizard switches on it). The stock
      * FirmwareIAP module is bootloader plumbing this target has no use
@@ -672,10 +718,34 @@ void PIOS_Board_Init(void)
                with_pd, with_pu, verdict);
     }
 
-    /* --- Sensor bus --------------------------------------------------- */
+    /* --- Sensor bus ---------------------------------------------------
+     * LiteWing's IMU is an MPU6050 on I2C0 (SCL 10 / SDA 11), not an
+     * ICM-20602 on SPI. The SPI bus is still brought up because the
+     * expansion header carries it for an optional PMW3901 flow module. */
+#ifdef PIOS_INCLUDE_I2C
+    if (PIOS_ESP32_I2C_Init(&pios_i2c_sensors_id, &pios_i2c_sensors_cfg) != 0) {
+        PIOS_Assert(0);
+    }
+#endif
     if (PIOS_ESP32_SPI_Init(&pios_spi_sensors_id, &pios_spi_sensors_cfg) != 0) {
         PIOS_Assert(0);
     }
+
+#ifdef PIOS_INCLUDE_I2C
+    /* Cheap and worth its bytes: a bus scan turns "the IMU is dead" into
+     * "nothing answers at all" vs "the IMU answers but WHO_AM_I is wrong",
+     * and it also finds a baro/mag added to the expansion header. */
+    {
+        static const uint8_t scan[] = { 0x68, 0x69, 0x76, 0x77, 0x1E, 0x0D };
+        printf("[BOARD] I2C0 scan (SCL=10 SDA=11):");
+        for (unsigned i = 0; i < NELEMENTS(scan); i++) {
+            if (PIOS_ESP32_I2C_Probe(pios_i2c_sensors_id, scan[i])) {
+                printf(" 0x%02X", scan[i]);
+            }
+        }
+        printf("\n");
+    }
+#endif
 
 
 #ifdef PIOS_INCLUDE_ICM20602
@@ -697,7 +767,8 @@ void PIOS_Board_Init(void)
      *    arm is far more useful than one that silently wedges, so register
      *    unconditionally and let the alarm carry the bad news.
      */
-    PIOS_ICM20602_Init(pios_spi_sensors_id, 0, &pios_icm20602_cfg);
+    /* 0x68: MPU6050 with AD0 low, which is how LiteWing wires it. */
+    PIOS_ICM20602_InitI2C(pios_i2c_sensors_id, 0x68, &pios_icm20602_cfg);
 
     /* The first SPI read after a soft restart can return garbage while
      * the sensor is perfectly healthy -- a single misread here latched a
@@ -710,7 +781,7 @@ void PIOS_Board_Init(void)
     }
 
     if (imu_id != 0x68 && imu_id != 0x70 && imu_id != 0x12) {
-        printf("[BOARD] no usable IMU on SPI3 (SCLK=5 MOSI=18 MISO=19 CS=14): WHO_AM_I=0x%02X "
+        printf("[BOARD] no usable IMU on I2C0 (SCL=10 SDA=11 addr 0x68): WHO_AM_I=0x%02X "
                "(expect 0x68 MPU6000/6050, 0x70 MPU6500, 0x12 ICM-20602; "
                "0x00/0xFF means nothing is answering)\n", (unsigned)imu_id);
         AlarmsSet(SYSTEMALARMS_ALARM_BOOTFAULT, SYSTEMALARMS_ALARM_CRITICAL);

@@ -104,6 +104,22 @@ const struct pios_esp32_spi_cfg pios_spi_sensors_cfg = {
 #endif /* PIOS_INCLUDE_SPI */
 
 /* ---------------------------------------------------------------------- *
+ * I2C0 -- the MPU6050 lives here on LiteWing (schematic V2.6.C).
+ * 400 kHz: a 15-byte sample burst costs ~390 us, about 19% of a 500 Hz
+ * period. That is the price of an I2C IMU and it is why the Thing Plus board
+ * puts its ICM-20602 on SPI instead (~15 us). Both work at 500 Hz.
+ * The same bus is brought out on the expansion header for a baro/mag.
+ * ---------------------------------------------------------------------- */
+#ifdef PIOS_INCLUDE_I2C
+const struct pios_esp32_i2c_cfg pios_i2c_sensors_cfg = {
+    .port     = I2C_NUM_0,
+    .sda_pin  = GPIO_NUM_11,
+    .scl_pin  = GPIO_NUM_10,
+    .speed_hz = 400000,
+};
+#endif /* PIOS_INCLUDE_I2C */
+
+/* ---------------------------------------------------------------------- *
  * ICM-20602 data-ready
  *
  * GPIO34 is input-only on the ESP32, which makes it a good choice for an
@@ -138,7 +154,11 @@ const struct pios_icm20602_cfg pios_icm20602_cfg = {
     .Smpl_rate_div_dlp    = 1,     /* 1kHz internal / (1+1) = 500Hz          */
     .interrupt_cfg        = PIOS_ICM20602_INT_CLR_ANYRD,
     .interrupt_en         = PIOS_ICM20602_INTEN_DATA_RDY,
-    .User_ctl             = PIOS_ICM20602_USERCTL_DIS_I2C,
+    /* MUST be 0 here. USERCTL_DIS_I2C is bit 4 = I2C_IF_DIS, which on the
+     * SPI boards forces the part SPI-only. LiteWing's MPU6050 is ON I2C, so
+     * setting it would hang up the bus mid-configuration -- and the MPU6050
+     * datasheet marks that bit "always write 0" in any case. */
+    .User_ctl             = 0,
     .Pwr_mgmt_clk         = PIOS_ICM20602_PWRMGMT_PLL_X_CLK,
     .accel_range          = PIOS_ICM20602_ACCEL_8G,
     .gyro_range           = PIOS_ICM20602_SCALE_2000_DEG,
@@ -259,9 +279,14 @@ static const gpio_num_t board_servo_pins[] = {
 const struct pios_esp32_servo_cfg pios_servo_cfg = {
     .pins            = board_servo_pins,
     .num_pins        = NELEMENTS(board_servo_pins),
-    /* 400Hz suits multirotor ESCs. Actuator settings can change this at
-     * runtime via PIOS_Servo_SetHz(). */
+    /* Unused in brushed mode -- kept so the field is not a surprise 0. */
     .default_rate_hz = 400,
+    /* LiteWing's four 720-size coreless motors hang off low-side MOSFETs with
+     * no ESC in between, so the output is a duty cycle at a fixed carrier.
+     * PIOS_Servo_Set() then takes 0..1000 per mille, which is exactly the
+     * actuator endpoint range this board is configured with (0 / 0 / 1000). */
+    .brushed         = true,
+    .brushed_freq_hz = 24000,
 };
 
 #endif /* PIOS_INCLUDE_SERVO */

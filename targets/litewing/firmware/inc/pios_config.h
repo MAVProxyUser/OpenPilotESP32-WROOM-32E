@@ -92,7 +92,7 @@
  * MPU6050 (0x68) works as-is. */
 /* #define PIOS_INCLUDE_HMC5X83 */
 /* #define PIOS_INCLUDE_MS5611 */
-/* #define PIOS_INCLUDE_I2C */
+#define PIOS_INCLUDE_I2C
 /* #define PIOS_INCLUDE_ADC */
 /* #define PIOS_INCLUDE_GPS */
 

@@ -101,6 +101,65 @@ typedef union {
 static struct icm20602_dev *dev;
 volatile bool icm20602_configured = false;
 static icm20602_data_t icm20602_data;
+
+/* ---------------------------------------------------------------------------
+ * Optional I2C transport.
+ *
+ * This part family is register-compatible across MPU6000 / MPU6050 / MPU6500 /
+ * ICM-20602 for everything this driver touches -- the same WHO_AM_I gate, the
+ * same config registers, the same 14-byte burst from ACCEL_XOUT_H. Only the
+ * bus differs. LiteWing carries an MPU6050 on I2C0 (SCL 10 / SDA 11) where the
+ * Thing Plus has an ICM-20602 on SPI, so rather than fork 770 lines of
+ * data-ready task, queue handling, scaling and sanity checks, the three
+ * functions that actually touch the bus dispatch on a transport flag.
+ *
+ * Blocking I2C here is fine: the data-ready path on this port runs in a TASK,
+ * not an ISR (see pios/esp32/pios_exti.c for why).
+ * ------------------------------------------------------------------------- */
+#ifdef PIOS_INCLUDE_I2C
+static bool     icm_use_i2c;
+static uint32_t icm_i2c_id;
+static uint8_t  icm_i2c_addr;
+
+static int32_t PIOS_ICM20602_I2C_Write(uint8_t reg, uint8_t data)
+{
+    uint8_t buf[2] = { reg, data };
+    const struct pios_i2c_txn txn_list[] = {
+        { .info = __func__, .addr = icm_i2c_addr, .rw = PIOS_I2C_TXN_WRITE,
+          .len = sizeof(buf), .buf = buf },
+    };
+
+    return PIOS_I2C_Transfer(icm_i2c_id, txn_list, NELEMENTS(txn_list));
+}
+
+static int32_t PIOS_ICM20602_I2C_Read(uint8_t reg, uint8_t *dst, uint8_t len)
+{
+    const struct pios_i2c_txn txn_list[] = {
+        { .info = __func__, .addr = icm_i2c_addr, .rw = PIOS_I2C_TXN_WRITE,
+          .len = 1, .buf = &reg },
+        { .info = __func__, .addr = icm_i2c_addr, .rw = PIOS_I2C_TXN_READ,
+          .len = len, .buf = dst },
+    };
+
+    return PIOS_I2C_Transfer(icm_i2c_id, txn_list, NELEMENTS(txn_list));
+}
+#else  /* !PIOS_INCLUDE_I2C -- SPI-only target; no I2C symbols to link against */
+/* The transport branches below are compiled but never taken: icm_use_i2c is a
+ * constant false, so the optimiser drops them. They still have to PARSE, so
+ * the helpers need declarations that resolve to nothing. */
+#define icm_use_i2c false
+static inline int32_t PIOS_ICM20602_I2C_Write(uint8_t reg, uint8_t data)
+{
+    (void)reg; (void)data;
+    return -1;
+}
+static inline int32_t PIOS_ICM20602_I2C_Read(uint8_t reg, uint8_t *dst, uint8_t len)
+{
+    (void)reg; (void)dst; (void)len;
+    return -1;
+}
+#endif /* PIOS_INCLUDE_I2C */
+
 static PIOS_SENSORS_3Axis_SensorsWithTemp *queue_data = 0;
 #define SENSOR_COUNT     2
 #define SENSOR_DATA_SIZE (sizeof(PIOS_SENSORS_3Axis_SensorsWithTemp) + sizeof(Vector3i16) * SENSOR_COUNT)
@@ -163,6 +222,28 @@ static int32_t PIOS_ICM20602_Validate(struct icm20602_dev *vdev)
  * @brief Initialize the ICM20602 3-axis gyro sensor.
  * @return 0 for success, -1 for failure
  */
+#ifdef PIOS_INCLUDE_I2C
+/**
+ * @brief Initialise this part over I2C instead of SPI (MPU6050 on LiteWing).
+ * @param[in] i2c_id   the I2C adapter the part sits on
+ * @param[in] i2c_addr 0x68 with AD0 low, 0x69 with AD0 high
+ */
+int32_t PIOS_ICM20602_InitI2C(uint32_t i2c_id, uint8_t i2c_addr, const struct pios_icm20602_cfg *cfg)
+{
+    icm_use_i2c  = true;
+    icm_i2c_id   = i2c_id;
+    icm_i2c_addr = i2c_addr ? i2c_addr : 0x68;
+
+    dev = PIOS_ICM20602_alloc(cfg);
+    if (dev == NULL) {
+        return -1;
+    }
+    dev->cfg = cfg;
+    PIOS_ICM20602_Config(cfg);
+    return 0;
+}
+#endif /* PIOS_INCLUDE_I2C */
+
 int32_t PIOS_ICM20602_Init(uint32_t spi_id, uint32_t slave_num, const struct pios_icm20602_cfg *cfg)
 {
     dev = PIOS_ICM20602_alloc(cfg);
@@ -476,6 +557,12 @@ static int32_t PIOS_ICM20602_GetReg(uint8_t reg)
 {
     uint8_t data;
 
+    if (icm_use_i2c) {
+        if (PIOS_ICM20602_I2C_Read(reg, &data, 1) != 0) {
+            return -1;
+        }
+        return data;
+    }
     if (PIOS_ICM20602_ClaimBus(false) != 0) {
         return -1;
     }
@@ -497,6 +584,9 @@ static int32_t PIOS_ICM20602_GetReg(uint8_t reg)
  */
 static int32_t PIOS_ICM20602_SetReg(uint8_t reg, uint8_t data)
 {
+    if (icm_use_i2c) {
+        return PIOS_ICM20602_I2C_Write(reg, data);
+    }
     if (PIOS_ICM20602_ClaimBus(false) != 0) {
         return -1;
     }
@@ -732,6 +822,14 @@ static bool PIOS_ICM20602_ReadSensor(bool *woken)
 {
     const uint8_t icm20602_send_buf[1 + PIOS_ICM20602_SAMPLES_BYTES] = { PIOS_ICM20602_SENSOR_FIRST_REG | 0x80 };
 
+    if (icm_use_i2c) {
+        /* SPI leaves buffer[0] as the address-echo dummy and the samples land
+         * at [1..]; I2C has no such byte, so read straight into [1] to keep
+         * GET_SENSOR_DATA's offsets identical for both transports. */
+        return PIOS_ICM20602_I2C_Read(PIOS_ICM20602_SENSOR_FIRST_REG,
+                                      &icm20602_data.buffer[1],
+                                      PIOS_ICM20602_SAMPLES_BYTES) == 0;
+    }
     if (PIOS_ICM20602_ClaimBusISR(woken, true) != 0) {
         return false;
     }

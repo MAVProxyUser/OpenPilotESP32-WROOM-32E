@@ -117,6 +117,12 @@ struct pios_esp32_servo_cfg {
     const gpio_num_t *pins;
     uint8_t num_pins;
     uint16_t default_rate_hz;
+    /* Coreless brushed motors driven through low-side MOSFETs (LiteWing)
+     * want a DUTY CYCLE, not a 1000-2000us servo pulse. Set this and the
+     * backend switches from MCPWM pulse generation to LEDC, and PIOS_Servo_Set
+     * takes 0..1000 per mille of full throttle instead of microseconds. */
+    bool brushed;
+    uint32_t brushed_freq_hz;   /* 0 -> SERVO_BRUSHED_DEFAULT_HZ */
 };
 
 extern int32_t PIOS_ESP32_Servo_Init(const struct pios_esp32_servo_cfg *cfg);

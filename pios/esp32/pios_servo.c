@@ -41,10 +41,31 @@
 #ifdef PIOS_INCLUDE_SERVO
 
 #include "driver/mcpwm_prelude.h"
+#include "driver/ledc.h"
 
 #define SERVO_TIMEBASE_HZ       1000000UL   /* 1 tick == 1us */
 #define SERVO_DEFAULT_RATE_HZ   400
 #define SERVO_GENERATORS_PER_TIMER 2
+
+/* ---------------------------------------------------------------------------
+ * Brushed backend.
+ *
+ * A coreless motor on a low-side MOSFET has no ESC to decode a pulse width --
+ * the gate is either on or off and the motor sees the average. So this backend
+ * drives LEDC at a fixed carrier and varies duty. 24 kHz is above hearing and
+ * comfortably inside what these little MOSFETs switch cleanly; at 10-bit
+ * resolution the LEDC divider works out to 80MHz/(1024*24k) = 3.26, which is
+ * legal, and 1024 steps maps almost 1:1 onto the 0..1000 command range.
+ *
+ * The command unit is per mille of full throttle. That matches the actuator
+ * endpoints this board ships with (min 0 / neutral 0 / max 1000), so a
+ * disarmed board holds 0% duty and the motors are genuinely off -- not
+ * "idling below the arming threshold" the way a servo-pulse ESC would be.
+ * ------------------------------------------------------------------------- */
+#define SERVO_BRUSHED_DEFAULT_HZ 24000UL
+#define SERVO_BRUSHED_RES        LEDC_TIMER_10_BIT
+#define SERVO_BRUSHED_MAX_DUTY   ((1u << 10) - 1u)
+#define SERVO_BRUSHED_FULL_SCALE 1000u
 
 struct servo_chan {
     mcpwm_cmpr_handle_t comparator;
@@ -58,11 +79,53 @@ static mcpwm_timer_handle_t servo_timers[PIOS_ESP32_SERVO_MAX_CHANNELS / SERVO_G
 static uint8_t servo_num_chans;
 static uint8_t servo_num_timers;
 static uint16_t servo_rate_hz = SERVO_DEFAULT_RATE_HZ;
+static bool servo_brushed;
+
+static int32_t PIOS_ESP32_Servo_InitBrushed(const struct pios_esp32_servo_cfg *cfg)
+{
+    ledc_timer_config_t tcfg = {
+        .speed_mode      = LEDC_LOW_SPEED_MODE,
+        .duty_resolution = SERVO_BRUSHED_RES,
+        .timer_num       = LEDC_TIMER_0,
+        .freq_hz         = cfg->brushed_freq_hz ? cfg->brushed_freq_hz
+                                                : SERVO_BRUSHED_DEFAULT_HZ,
+        .clk_cfg         = LEDC_AUTO_CLK,
+    };
+
+    if (ledc_timer_config(&tcfg) != ESP_OK) {
+        return -1;
+    }
+
+    for (uint8_t ch = 0; ch < cfg->num_pins; ch++) {
+        ledc_channel_config_t ccfg = {
+            .gpio_num   = cfg->pins[ch],
+            .speed_mode = LEDC_LOW_SPEED_MODE,
+            .channel    = (ledc_channel_t)ch,
+            .timer_sel  = LEDC_TIMER_0,
+            .duty       = 0,    /* motors off from the first instruction */
+            .hpoint     = 0,
+        };
+
+        if (ledc_channel_config(&ccfg) != ESP_OK) {
+            return -1;
+        }
+    }
+
+    servo_num_chans  = cfg->num_pins;
+    servo_num_timers = 1;
+    servo_brushed    = true;
+
+    return 0;
+}
 
 int32_t PIOS_ESP32_Servo_Init(const struct pios_esp32_servo_cfg *cfg)
 {
     PIOS_Assert(cfg);
     PIOS_Assert(cfg->num_pins <= PIOS_ESP32_SERVO_MAX_CHANNELS);
+
+    if (cfg->brushed) {
+        return PIOS_ESP32_Servo_InitBrushed(cfg);
+    }
 
     servo_rate_hz = cfg->default_rate_hz ? cfg->default_rate_hz : SERVO_DEFAULT_RATE_HZ;
 
@@ -157,6 +220,11 @@ void PIOS_Servo_SetHz(const uint16_t *speeds, __attribute__((unused)) const uint
     if (rate == 0) {
         return;
     }
+    if (servo_brushed) {
+        /* The LEDC carrier has nothing to do with the actuator update rate;
+         * the mixer's "PWM rate" is meaningless for a MOSFET gate. */
+        return;
+    }
     servo_rate_hz = rate;
 
     const uint32_t period_ticks = SERVO_TIMEBASE_HZ / rate;
@@ -182,6 +250,19 @@ void PIOS_Servo_Update(void)
             continue;
         }
         servo_chans[ch].position_us = servo_chans[ch].pending_us;
+
+        if (servo_brushed) {
+            uint32_t cmd = servo_chans[ch].position_us;
+
+            if (cmd > SERVO_BRUSHED_FULL_SCALE) {
+                cmd = SERVO_BRUSHED_FULL_SCALE;
+            }
+            uint32_t duty = (cmd * SERVO_BRUSHED_MAX_DUTY) / SERVO_BRUSHED_FULL_SCALE;
+
+            ledc_set_duty(LEDC_LOW_SPEED_MODE, (ledc_channel_t)ch, duty);
+            ledc_update_duty(LEDC_LOW_SPEED_MODE, (ledc_channel_t)ch);
+            continue;
+        }
         /* update_cmp_on_tez means this lands at the next period boundary,
          * so all channels move together and no pulse is ever truncated
          * mid-flight. */
@@ -199,7 +280,11 @@ void PIOS_Servo_SetBankMode(__attribute__((unused)) uint8_t bank,
 uint8_t PIOS_Servo_GetPinBank(uint8_t pin)
 {
     /* Channels are paired onto timers, and a "bank" in PiOS terms is a set
-     * of pins that must share a rate. */
+     * of pins that must share a rate. Brushed channels all hang off one LEDC
+     * timer and have no meaningful rate, so they are one bank. */
+    if (servo_brushed) {
+        return 0;
+    }
     return pin / SERVO_GENERATORS_PER_TIMER;
 }
 
