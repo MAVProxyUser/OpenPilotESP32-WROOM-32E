@@ -108,6 +108,23 @@ Board id **0x1302**. `devicedescriptorstruct.h` names it, and
 widget (where the six-point accel calibration lands) plus a fixed-function
 hardware card.
 
+**The board must actually SAY it is a LiteWing.** `board-info.mk` feeds the
+build system, but `pios_board_info_blob` in `pios_board.c` is what the firmware
+*publishes* — through `FirmwareIAPObj.BoardType` and byte 12 of the firmware
+description — and nothing checks that the two agree. Left at the ESP32 quad's
+`0x12` while `board-info.mk` said `0x13`, the GCS obediently identified this
+board as a Thing Plus and showed that board's hardware page, pin map and motor
+badges. Every LiteWing branch in the GCS was correct and simply never ran.
+Confirm with `FirmwareIAPObj`: BoardType `0x13`, BoardRevision `0x02`.
+
+Board-specific pin names live in three separate places in the GCS, and all
+three needed teaching: the hardware card (`configgadgetwidget.cpp`), the Output
+tab labels (`outputchannelform.cpp`) and the mixer channel dropdown
+(`cfg_vehicletypes/vehicleconfig.cpp`). The motor badges painted on the airframe
+picture were a fourth, and worse — they were baked *inside* the `quad-x` group
+in `multirotor-shapes.svg`, so a static asset was asserting one board's pin
+numbers for every board. They are now separate groups selected at runtime.
+
 One trap worth knowing, because it is armed and waiting on any brushed board:
 `outputchannelform.cpp` had `MINOUTPUT_VALUE = 500`, a sane floor in
 *microseconds*. Here a channel value is tenths of a percent *duty*, so a 500
