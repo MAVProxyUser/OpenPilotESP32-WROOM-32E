@@ -100,6 +100,10 @@ typedef union {
 // ! Global structure for this device device
 static struct icm20602_dev *dev;
 volatile bool icm20602_configured = false;
+/* WHO_AM_I of the part actually found. Selects the temperature slope, which is
+ * part-specific across this otherwise register-compatible family. 0 until
+ * PIOS_ICM20602_ReadID() has run. */
+static uint8_t icm_whoami;
 static icm20602_data_t icm20602_data;
 
 /* ---------------------------------------------------------------------------
@@ -637,6 +641,10 @@ int32_t PIOS_ICM20602_ReadID()
 {
     int32_t icm20602_id = PIOS_ICM20602_GetReg(PIOS_ICM20602_WHOAMI);
 
+    if (icm20602_id >= 0) {
+        icm_whoami = (uint8_t)icm20602_id;
+    }
+
     if (icm20602_id < 0) {
         return -1;
     }
@@ -799,19 +807,34 @@ static bool PIOS_ICM20602_HandleData()
     queue_data->sample[1].z = -1 - (GET_SENSOR_DATA(icm20602_data, Gyro_Z));
     const int16_t temp = GET_SENSOR_DATA(icm20602_data, Temperature);
     /*
-     * ICM-20602 temperature, centidegrees C. Datasheet: degC = raw/326.8 + 25.
+     * Temperature in centidegrees C. The slope and offset are PART-SPECIFIC,
+     * and this driver now serves three of them:
      *
-     * The MPU6000 driver this was derived from used 3500 + (raw+512)/3.4 --
-     * that part's 340 LSB/degC and +36.53degC offset. Different slope AND an
-     * 11.5degC offset error here.
+     *   ICM-20602 (0x12)  degC = raw/326.8  + 25.00
+     *   MPU6500   (0x70)  degC = raw/333.87 + 21.00
+     *   MPU6000   (0x68)  degC = raw/340    + 36.53
+     *   MPU6050   (0x68)  ditto
      *
-     * It looks harmless because gyro_temp_coeff defaults to zero so nothing
-     * reads it. It stops being harmless the moment someone runs a temperature
-     * calibration: attitude.c fits gyro_temp_bias against this value and
-     * stores temp_calibrated_extent in the same units, so the entire fit
-     * would be anchored to a wrong axis, silently.
+     * Using one formula for all of them is wrong by up to 11.5 degC in offset
+     * and 4% in slope. It LOOKS harmless because every temp coefficient
+     * defaults to zero so nothing reads this. It stops being harmless the
+     * moment someone runs a temperature calibration: attitude.c fits
+     * gyro_temp_bias against this value and stores temp_calibrated_extent in
+     * the same units, so the whole fit would be anchored to a wrong axis,
+     * silently. Pick by WHO_AM_I rather than by transport -- the bus a part
+     * sits on says nothing about which part it is.
      */
-    queue_data->temperature = 2500 + (float)temp * (100.0f / 326.8f);
+    switch (icm_whoami) {
+    case 0x68:  /* MPU6000 / MPU6050 */
+        queue_data->temperature = 3653 + (float)temp * (100.0f / 340.0f);
+        break;
+    case 0x70:  /* MPU6500 */
+        queue_data->temperature = 2100 + (float)temp * (100.0f / 333.87f);
+        break;
+    default:    /* 0x12 ICM-20602 */
+        queue_data->temperature = 2500 + (float)temp * (100.0f / 326.8f);
+        break;
+    }
 
     BaseType_t higherPriorityTaskWoken;
     xQueueSendToBackFromISR(dev->queue, (void *)queue_data, &higherPriorityTaskWoken);
