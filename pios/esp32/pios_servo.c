@@ -67,6 +67,25 @@
 #define SERVO_BRUSHED_MAX_DUTY   ((1u << 10) - 1u)
 #define SERVO_BRUSHED_FULL_SCALE 1000u
 
+/* Snap the last 1% at each end to fully off / fully on.
+ *
+ * A MOSFET is only cheap to drive when it is saturated or cut off; the
+ * transition is where it dissipates. At a 24 kHz carrier the period is 41.7 us,
+ * so a 0.1% command is a 42 ns gate pulse -- comparable to the IRLML6344's own
+ * switching time, which means the part never fully enhances. It heats, and the
+ * motor does not turn: all loss, no thrust. The same is true inverted at the
+ * top, where a 99.9% command leaves a 42 ns off-notch that buys nothing and
+ * costs a switching edge every cycle.
+ *
+ * Nothing is lost by rounding those away. 1% duty on a 720-size coreless motor
+ * is far below breakaway torque, so the commands being discarded could not
+ * have produced thrust anyway -- and the actuator endpoints already put the
+ * disarmed state at exactly 0. esp-fc does the same thing on its brushed path
+ * (EscDriverEsp8266.cpp: "do not generate brushed pulses if duty < ~0.2%",
+ * "set brushed output hi if duty > ~99.8%"); this is a slightly wider band,
+ * chosen from the switching time above rather than from a round number. */
+#define SERVO_BRUSHED_DEADBAND   (SERVO_BRUSHED_FULL_SCALE / 100u)   /* 1% */
+
 struct servo_chan {
     mcpwm_cmpr_handle_t comparator;
     mcpwm_gen_handle_t  generator;
@@ -253,11 +272,19 @@ void PIOS_Servo_Update(void)
 
         if (servo_brushed) {
             uint32_t cmd = servo_chans[ch].position_us;
+            uint32_t duty;
 
             if (cmd > SERVO_BRUSHED_FULL_SCALE) {
                 cmd = SERVO_BRUSHED_FULL_SCALE;
             }
-            uint32_t duty = (cmd * SERVO_BRUSHED_MAX_DUTY) / SERVO_BRUSHED_FULL_SCALE;
+
+            if (cmd <= SERVO_BRUSHED_DEADBAND) {
+                duty = 0;                          /* gate hard off */
+            } else if (cmd >= SERVO_BRUSHED_FULL_SCALE - SERVO_BRUSHED_DEADBAND) {
+                duty = SERVO_BRUSHED_MAX_DUTY;     /* gate hard on  */
+            } else {
+                duty = (cmd * SERVO_BRUSHED_MAX_DUTY) / SERVO_BRUSHED_FULL_SCALE;
+            }
 
             ledc_set_duty(LEDC_LOW_SPEED_MODE, (ledc_channel_t)ch, duty);
             ledc_update_duty(LEDC_LOW_SPEED_MODE, (ledc_channel_t)ch);
