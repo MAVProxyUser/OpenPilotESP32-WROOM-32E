@@ -57,6 +57,7 @@ struct dsm_dev {
     uint16_t channels[PIOS_DSM_NUM_INPUTS];
     uint32_t last_frame_ms;
     uint32_t frames;
+    uint32_t bytes;      /* diagnostic: raw bytes seen on the UART */
     /* 10-bit (DSM2 1024) or 11-bit (2048). The receiver does not announce
      * which, so it is inferred from the data -- see dsm_unroll(). */
     uint8_t  resolution;
@@ -182,11 +183,17 @@ static int dsm_unroll(const uint8_t *frame, uint8_t depth)
         }
         if (seen & (1u << ch)) {
             /* Duplicate channel: we are decoding 10-bit data as 11-bit. */
+            if (dsm.cfg->resolution) {
+                return -1;      /* forced: drop the bad frame, keep the setting */
+            }
             dsm.resolution = 10;
             return dsm_unroll(frame, depth + 1);
         }
         if ((seen & 0xff) == 0x55) {
             /* This pattern only appears when 11-bit data is read as 10. */
+            if (dsm.cfg->resolution) {
+                return -1;
+            }
             dsm.resolution = 11;
             return dsm_unroll(frame, depth + 1);
         }
@@ -209,6 +216,7 @@ static void dsm_task(__attribute__((unused)) void *arg)
                                   DSM_FRAME_BYTES - have, pdMS_TO_TICKS(4));
 
         if (got > 0) {
+            dsm.bytes += (uint32_t)got;
             have += (uint8_t)got;
             if (have == DSM_FRAME_BYTES) {
                 if (dsm_unroll(frame, 0) == 0) {
@@ -248,7 +256,7 @@ int32_t PIOS_ESP32_DSM_Init(uint32_t *dsm_id, const struct pios_esp32_dsm_cfg *c
     }
 
     dsm.cfg        = cfg;
-    dsm.resolution = 11;
+    dsm.resolution = cfg->resolution ? cfg->resolution : 11;
 
     for (uint8_t i = 0; i < PIOS_DSM_NUM_INPUTS; i++) {
         dsm.channels[i] = PIOS_RCVR_TIMEOUT;
@@ -273,6 +281,12 @@ int32_t PIOS_ESP32_DSM_Init(uint32_t *dsm_id, const struct pios_esp32_dsm_cfg *c
  * from the init task -- this path deliberately does no printing itself. */
 void PIOS_ESP32_DSM_GetState(uint32_t *frames, bool *bind_attempted)
 {
+    /* dsm.bytes counts raw UART bytes and dsm.frames counts frames that
+     * decoded. The pair separates the three failure modes that otherwise look
+     * identical from outside: no bytes at all is wiring, power or pin; bytes
+     * without frames is baud, framing or resync; both climbing means the
+     * transport is fine and the problem is downstream. Worth having on a board
+     * whose console is not reachable over its USB connector. */
     if (frames) {
         *frames = dsm.frames;
     }

@@ -170,6 +170,17 @@ struct pios_esp32_dsm_cfg {
      * satellite's bind window closes shortly after it powers up.
      */
     uint16_t    listen_ms;
+    /* 0 = detect from the data (the historical behaviour), or force 10 or 11.
+     *
+     * Detection works by spotting a repeated channel number, which means the
+     * value was read one bit too far left. That inference is sound on a clean
+     * frame and wrong on a corrupted one, and it LATCHES: a single garbled
+     * frame during power-up flips an 11-bit DSMX link to 10 and it never
+     * recovers. The symptom is not silence, which would be obvious, but a
+     * plausible-looking stream frozen at stale values, because the channel
+     * numbers then decode from the wrong bit position and land in the wrong
+     * slots. Force it when the satellite is known. */
+    uint8_t resolution;
 };
 
 extern int32_t PIOS_ESP32_DSM_Init(uint32_t *dsm_id,

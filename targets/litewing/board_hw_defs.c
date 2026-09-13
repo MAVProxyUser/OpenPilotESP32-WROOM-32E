@@ -353,6 +353,10 @@ const struct pios_esp32_dsm_cfg pios_dsm_cfg = {
      * its bind window shortly after its own supply comes up, and a software
      * reset of the ESP32 never drops the 3.3V feeding it.
      */
+    /* SPM9745 is DSMX and always 11-bit, so say so rather than inferring it
+     * every power-up. Auto-detect latched to 10 on some boots here, which
+     * decoded as a frozen but plausible-looking stream. */
+    .resolution  = 11,
     .bind_pulses = 0,
     .listen_ms   = 250,
 };
