@@ -63,6 +63,12 @@
  * bench_test.py to own the throttle for props-off characterization. */
 /* Spektrum DSMX satellite (SPM9745) on the expansion header.
  * Signal to IO15, power from 3V3 -- a satellite is a 3.3V device. */
+/* Outputs are LEDC duty into MOSFET gates, not ESC pulses. Makes actuator.c
+ * refuse any resting endpoint above PIOS_ACTUATOR_BRUSHED_REST_MAX, whatever
+ * client wrote it -- see the comment at ActuatorSettingsUpdatedCb(). */
+#define PIOS_ACTUATOR_BRUSHED_OUTPUTS
+#define PIOS_ACTUATOR_BRUSHED_REST_MAX 100   /* 10% duty; a real rest is 0 */
+
 #define PIOS_INCLUDE_DSM
 #define PIOS_INCLUDE_GCSRCVR
 #define PIOS_INCLUDE_RID_WIFI   /* Remote ID as a beacon vendor element (pios_rid_wifi.c) */
