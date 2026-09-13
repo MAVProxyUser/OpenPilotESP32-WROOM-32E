@@ -17,12 +17,19 @@ What it sets, and why each value is what it is:
             J8  MOT_2 GPIO6  x 179.1 y 124.4   right, bottom
             J9  MOT_3 GPIO3  x 117.1 y 125.9   left,  bottom
             J10 MOT_4 GPIO4  x 115.6 y  63.9   left,  top
-        MOT_1 is on the RIGHT, so the stock 0,1,2,3 -- which treats MOT_1 as
-        front-left -- is a quarter turn out. Taking the top edge as the nose:
-            row 1 front-left  -> MOT_4 (3)
-            row 2 front-right -> MOT_1 (0)
-            row 3 rear-right  -> MOT_2 (1)
-            row 4 rear-left   -> MOT_3 (2)
+        The PCB gives relative geometry but does not say which EDGE is the
+        nose, and the first guess (top = front) was 180 degrees out. Confirmed
+        on the bench: driving mixer row 1 spun the back-right motor, so GPIO4 --
+        PCB left+top -- is physically rear-right, meaning PCB-top is the rear
+        and PCB-left is the right. So:
+            MOT_1 GPIO5  rear-left     row 4 -> 0
+            MOT_2 GPIO6  front-left    row 1 -> 1
+            MOT_3 GPIO3  front-right   row 2 -> 2
+            MOT_4 GPIO4  rear-right    row 3 -> 3
+        Self-checks against the silkscreen: A falls on front-left and
+        rear-right, B on front-right and rear-left -- opposite diagonals, which
+        is what quad X requires. The IMU is NOT rotated; the HUD tracks the
+        airframe correctly, so only the output map was wrong.
         Prop rotation is on the silkscreen: J7/J9 are B (black/white), J8/J10
         are A (red/blue), which puts A and B on opposite diagonals exactly as
         quad X requires.
@@ -52,7 +59,7 @@ sys.path.insert(0, os.path.join(NINJAPILOT_ROOT, "ground", "pyuavtalk"))
 import uavtalk                                                # noqa: E402
 import uavtalk_client                                         # noqa: E402
 
-MOTOR_ADDR = [3, 0, 1, 2]      # mixer row -> output pin index
+MOTOR_ADDR = [1, 2, 3, 0]      # mixer row -> output pin index
 
 
 def main():

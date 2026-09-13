@@ -267,11 +267,13 @@ static void board_apply_default_airframe(void)
     ActuatorSettingsGet(&act);
     for (uint8_t i = 0; i < 4; i++) {
         /* Mixer row -> output pin. See the corner geometry above:
-         *   row 1 front-left  -> MOT_4 (index 3)
-         *   row 2 front-right -> MOT_1 (index 0)
-         *   row 3 rear-right  -> MOT_2 (index 1)
-         *   row 4 rear-left   -> MOT_3 (index 2)   */
-        static const uint8_t motor_addr[4] = { 3, 0, 1, 2 };
+         *   row 1 front-left  -> MOT_2 GPIO6 (index 1)
+         *   row 2 front-right -> MOT_3 GPIO3 (index 2)
+         *   row 3 rear-right  -> MOT_4 GPIO4 (index 3)
+         *   row 4 rear-left   -> MOT_1 GPIO5 (index 0)
+         * Bench-confirmed: the PCB fixes the geometry but not which edge is
+         * the nose, and top-is-front was 180 degrees out. */
+        static const uint8_t motor_addr[4] = { 1, 2, 3, 0 };
 
         act.ChannelType[i]    = ACTUATORSETTINGS_CHANNELTYPE_PWM;
         act.ChannelAddr[i]    = motor_addr[i];

@@ -13,9 +13,8 @@ control path is closed — `ManualControlCommand.Connected = True` with sticks
 arriving over the link. The twin also still hovers in Gazebo.
 
 Not yet done, and honest about it: **no barometer is fitted and no altitude
-hold is compiled in**; the motor-to-corner mapping and prop directions are
-**unconfirmed**; the accel wants its six-point calibration; and it has not
-flown.
+hold is compiled in**; the accel wants its six-point calibration; the Bank1 PID
+gains are still 4-inch-class and meaningless at 45 g; and it has not flown.
 
 ### Verified on hardware
 
@@ -28,6 +27,9 @@ flown.
 | Motors | M1–M4 individually **and all four together** at 12.5 % and 25 % duty |
 | Control | `Connected = True`, channels echo 1000/1500/1500/1500/1500 |
 | Disarmed output | `ActuatorCommand = [0, 0, 0, 0]` |
+| RC receiver | SPM9745 DSMX satellite on IO15, sticks reaching ManualControl |
+| IMU orientation | HUD tracks the airframe in roll and pitch, so `BoardRotation` 0/0/0 |
+| Motor corners | all four walked on the bench and matched after correction |
 
 ### Flashing
 
@@ -107,6 +109,35 @@ Board id **0x1302**. `devicedescriptorstruct.h` names it, and
 `configgadgetwidget.cpp` has a `0x1300` branch giving it the CC-style attitude
 widget (where the six-point accel calibration lands) plus a fixed-function
 hardware card.
+
+**The board must actually SAY it is a LiteWing, and the GCS must have its own
+entry for it.** Board-specific handling now lives in five places on the ground
+side plus the setup wizard's controller type, and LiteWing has its own
+`CONTROLLER_LITEWING` rather than borrowing the Thing Plus's. Sharing a type
+works right up until the two boards need different behaviour, and then applies
+one board's assumptions to the other silently -- which is exactly what would
+have happened with `ChannelAddr`: the wizard resets it to identity, correct
+wherever a mis-ordered motor is fixed by moving an ESC lead, and wrong here
+where the motors are soldered and `ChannelAddr` IS the corner mapping.
+
+**The corner mapping is `1,2,3,0`**, derived from the PCB and then confirmed by
+driving each mixer row on the bench:
+
+| Net | Pin | PCB position | Physical |
+| --- | --- | --- | --- |
+| MOT_1 | GPIO5 | right, top | rear-left |
+| MOT_2 | GPIO6 | right, bottom | front-left |
+| MOT_3 | GPIO3 | left, bottom | front-right |
+| MOT_4 | GPIO4 | left, top | rear-right |
+
+The PCB gives relative geometry but does not by itself say which EDGE is the
+nose -- except that it does, and it was missed: `U7` (the MPU6050), `U8` (the
+ESP32) and `J1` (USB-C) are **all placed at rot=180**, four parts agreeing that
+the board's logical orientation is a half turn from the KiCad canvas. Guessing
+top-is-front instead of reading that field produced a mapping 180 degrees out,
+caught only when driving mixer row 1 spun the back-right motor. The IMU itself
+was never wrong: the HUD tracks the airframe in roll and pitch, so
+`BoardRotation` stays 0/0/0.
 
 **The board must actually SAY it is a LiteWing.** `board-info.mk` feeds the
 build system, but `pios_board_info_blob` in `pios_board.c` is what the firmware
@@ -502,20 +533,17 @@ have.
 
 Before it flies:
 
-1. **Confirm motor corner order and prop rotation.** The schematic gives pins,
-   not geometry, and this is deliberately *not* assumed anywhere in the mixer.
-   Drive one motor at a time from the GCS Output tab (or
-   `tools/litewing_motor_test.py --motor N`) and note which arm responds. If
-   the order is wrong, reorder `ChannelAddr` — not the mixer.
-2. **Six-point accel calibration.** Measured −101 mg on Z with gain inside
-   spec, so the part is fine, but AltFilter integrates accel and an
-   uncorrected offset walks the altitude estimate.
-3. **Re-tune Bank1 for 45 g.** The current gains are 4-inch-class and
-   meaningless here. Do it on the twin first.
+1. **Six-point accel calibration.** Measured -101 mg on Z with gain inside
+   spec, so the part is fine, but it is uncorrected and AltFilter integrates
+   accel.
+2. **Re-tune Bank1 for 45 g.** The current gains are 4-inch-class. This will
+   not flip the airframe the way a bad output map does -- it shows up as
+   oscillation or mush once airborne, so be ready to put it down rather than
+   fight it.
 
 After that:
 
-4. Fit the BMP280 on I2C1, then compile in `Sensors` + `AltitudeHold` and close
-   the altitude loop — on the twin first, with a simulated baro feeding
-   `BaroSensor` the way `pios_icm20602_sim.c` feeds the IMU.
-5. Confirm the module's PSRAM suffix before trusting the flow SPI pins.
+3. Fit the BMP388 (better than the BMP280 for this job -- see below), then
+   compile in `Sensors` + `AltitudeHold` and close the altitude loop on the
+   twin first, with a simulated baro feeding `BaroSensor`.
+4. Confirm the module's PSRAM suffix before trusting the flow SPI pins.
