@@ -45,8 +45,25 @@ NVS_OFFSET = "0x9000"
 NVS_SIZE = "0x6000"
 
 
-def esptool(args, port):
-    cmd = [idf_python(), "-m", "esptool", "--chip", "esp32",
+def autodetect_port():
+    """First USB-serial device that looks like a board, or None."""
+    for pattern in ("/dev/cu.wchusbserial*", "/dev/cu.usbserial-*", "/dev/ttyUSB*"):
+        hits = sorted(glob.glob(pattern))
+        if hits:
+            return hits[0]
+    return None
+
+
+def esptool(args, port, chip="auto"):
+    """Run esptool against `port`.
+
+    chip defaults to "auto" rather than a hardcoded "esp32". The original
+    hardcoded it, which silently made this tool ESP32-only: on a LiteWing --
+    an ESP32-S3 -- every write ended in "flash write failed" with nothing
+    saying the chip was wrong. Detection costs one extra handshake and removes
+    a whole class of confusing failure.
+    """
+    cmd = [idf_python(), "-m", "esptool", "--chip", chip,
            "--port", port, "-b", "115200"] + args
     return subprocess.call(cmd)
 
@@ -57,8 +74,18 @@ def main():
     ap.add_argument("mode", choices=["set", "erase", "check"])
     ap.add_argument("--ssid")
     ap.add_argument("--password", default="")
-    ap.add_argument("--serial", default="/dev/cu.usbserial-210")
+    ap.add_argument("--serial", default=None,
+                    help="serial port; autodetected if omitted")
+    ap.add_argument("--chip", default="auto",
+                    help="esp32 / esp32s3 / auto (default: auto)")
     args = ap.parse_args()
+
+    if not args.serial:
+        args.serial = autodetect_port()
+        if not args.serial and args.mode != "check":
+            sys.exit("no USB-serial port found; pass --serial explicitly")
+        if args.serial:
+            print("using %s" % args.serial)
 
     if args.mode == "set":
         if not args.ssid:
