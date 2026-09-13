@@ -219,7 +219,11 @@ const struct pios_esp32_usart_cfg pios_usart_telem_cfg = {
 
 /* Spare port: GPS, a second telemetry link, or serial RC.
  * For SBUS set .invert_rx = true -- the ESP32 UART inverts in hardware, so
- * no external inverter is needed. */
+ * no external inverter is needed.
+ *
+ * NOTE: UART_NUM_2 is also named by pios_dsm_cfg, which is the one actually
+ * initialised on this board. Nothing brings this port up; if you ever do,
+ * move one of them to a different UART first. */
 const struct pios_esp32_usart_cfg pios_usart_aux_cfg = {
     .port           = UART_NUM_2,
     .rx_pin         = GPIO_NUM_18,  /* free expansion pin  */
@@ -316,11 +320,23 @@ const struct pios_esp32_ppm_cfg pios_ppm_cfg = {
 #ifdef PIOS_INCLUDE_DSM
 
 const struct pios_esp32_dsm_cfg pios_dsm_cfg = {
-    /* GPIO16, silkscreened 16/RX1 on the Thing Plus. Three wires from the
-     * satellite: 3.3V (NOT 5V -- a satellite is a 3.3V device), ground, and
-     * signal to this pin. */
+    /* IO15 on the expansion header -- the bottom pin of the right-hand
+     * column, about 6mm to the right of the RESET button. Three wires from
+     * the satellite: 3.3V (NOT 5V, a satellite is a 3.3V device), ground, and
+     * signal to this pin.
+     *
+     * NOT GPIO18, which is what the ESP32 quad used: on LiteWing that pin is
+     * the console UART's RX, and DSM frames would fight boot chatter.
+     *
+     * GPIO15 is XTAL_32K_P on the S3, so it would be spoken for if a 32 kHz
+     * crystal were fitted. None is -- the board has no crystal and the RTC
+     * runs from the internal RC (CONFIG_RTC_CLK_SRC_INT_RC) -- so it is a
+     * plain GPIO here.
+     *
+     * UART2 is shared with pios_usart_aux_cfg on paper. Only one can own it,
+     * and nothing initialises the aux port on this target, so DSM has it. */
     .port        = UART_NUM_2,
-    .rx_pin      = GPIO_NUM_18,
+    .rx_pin      = GPIO_NUM_15,
     /*
      * Auto-bind is OFF. The receiver on this airframe is already bound, and
      * leaving it armed is a bad trade: a bound satellite is silent when the

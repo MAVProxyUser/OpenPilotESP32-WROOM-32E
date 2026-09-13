@@ -61,6 +61,9 @@
  * flight - it is only an INPUT SOURCE, active only when ManualControlSettings
  * maps a channel group to GCS; the DSM stays the default. Enables tools/
  * bench_test.py to own the throttle for props-off characterization. */
+/* Spektrum DSMX satellite (SPM9745) on the expansion header.
+ * Signal to IO15, power from 3V3 -- a satellite is a 3.3V device. */
+#define PIOS_INCLUDE_DSM
 #define PIOS_INCLUDE_GCSRCVR
 #define PIOS_INCLUDE_RID_WIFI   /* Remote ID as a beacon vendor element (pios_rid_wifi.c) */
 /* PPM disabled: the RMT receiver on an unconnected pin collects coupled
