@@ -68,6 +68,7 @@
  * client wrote it -- see the comment at ActuatorSettingsUpdatedCb(). */
 #define PIOS_ACTUATOR_BRUSHED_OUTPUTS
 #define PIOS_ACTUATOR_BRUSHED_REST_MAX 100   /* 10% duty; a real rest is 0 */
+#define PIOS_ACTUATOR_BRUSHED_CHANNELS 4     /* channels that reach a pin */
 
 #define PIOS_INCLUDE_DSM
 #define PIOS_INCLUDE_GCSRCVR
