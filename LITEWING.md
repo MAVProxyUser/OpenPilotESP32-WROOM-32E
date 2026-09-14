@@ -420,7 +420,9 @@ in a way they are not on the Thing Plus build, which is rate-and-attitude
 only — provided you fit the parts, because nothing but the MPU6050 is on the
 base board.
 
-Not in the tree, and would need writing: **VL53L1X** (ToF) and **PMW3901**
+Written for this board: **BMP388** (`flight/pios/common/pios_bmp388.c`), which
+also drives a BMP390. Not in the tree, and would need writing: **VL53L1X**
+(ToF) and **PMW3901**
 (optical flow) — both of which are on the separate Positioning Module anyway,
 so they are two purchases and two drivers away, not one `#define`.
 
@@ -503,31 +505,70 @@ The GPS side is the easy half: `modules/GPS` already has `UBX.c` and
 `ubx_autoconfig.c`, so a u-blox M9N is enable-and-wire. GPS is also what turns
 the Remote ID broadcast from standards-shaped into actually compliant.
 
-### What altitude hold actually requires
+### Altitude hold -- fitted and working
 
-Having a baro driver is necessary and not sufficient, and this applies to the
-**real target too**, not just the twin. Neither module list contains a
-`Sensors` module or `AltitudeHold`, so nothing would consume a barometer even
-with one fitted. The BMP280 driver and the AltFilter estimator exist in the
-NinjaPilot tree but are not compiled into `targets/litewing`.
+A barometer is on the expansion header and the chain behind it is compiled in.
+Wiring, on the pads next to the VL53L1X footprint:
 
-That work was deliberately left until a part is physically on the bus, because
-none of it can be tested otherwise.
-
-**Where to fit the BMP280** — I2C1 on the expansion header, deliberately *not*
-I2C0, which carries the MPU6050 at 500 Hz and should not share bus time with
-the critical sensor path:
-
-| BMP280 | LiteWing |
+| Baro | LiteWing |
 | --- | --- |
 | SDA | **GPIO40** (SDA1) |
 | SCL | **GPIO41** (SCL1) |
-| VCC | 3V3 |
+| VCC | 3V3 (the pad is silkscreened VIN -- meter it before trusting it) |
 | GND | GND |
 
-Address is `0x76` with SDO low, `0x77` with SDO high. The boot-time I2C scan
-already probes both and prints what answers, so it will tell you which one you
-have.
+I2C1, deliberately *not* I2C0: that bus carries the MPU6050 at 500 Hz, where a
+15-byte burst already costs ~19% of a period, and a barometer has no business
+taking time from the only sensor the aircraft cannot fly without. The ToF's
+`IO1` pad is an interrupt line and stays unconnected.
+
+**The part is identified at boot, not chosen at build time.** This matters more
+than it sounds. The I2C address does not identify a barometer -- 0x76 and 0x77
+are shared by the BMP280, BME280, BMP388 and BMP390, and every breakout brings
+out an ADDR/SDO pad that moves its part between them, so a board silkscreened
+"default 0x77" can perfectly well answer at 0x76. The chip ID does identify it,
+but it lives at a *different register per family*: 0x00 on a BMP388/BMP390,
+0xD0 on a BMP280/BME280. A BMP280 cannot answer a BMP388 probe, and the result
+looks exactly like a dead sensor.
+
+So `PIOS_Board_Init` probes both addresses, reads both ID registers, prints the
+raw bytes, and starts whichever driver matches:
+
+```
+[BOARD] I2C1 scan (SCL=41 SDA=40): 0x76
+[BOARD] baro at 0x76: reg0x00=0x00 reg0xD0=0x58
+[BOARD] BMP280 at 0x76 initialised
+[BOARD] BMP280 sample 0: 98614.52 Pa  22.28 C  (~228.1 m)
+```
+
+Measured spread across consecutive samples is ~0.2 Pa, about 1.5 cm of
+altitude. `pios_bmp388.c` was written for this board (the BMP280 driver already
+existed); both are compiled, and either part works in the socket.
+
+**Reading the outcome without a console.** The IDF console is on UART1
+(GPIO17/18) because UART0 carries UAVTalk, so those prints need an adapter
+clipped to the expansion header. The same news arrives over telemetry as the
+`I2C` system alarm, and the severity says which failure it is:
+
+| Alarm | Meaning |
+| --- | --- |
+| OK | barometer found and initialised |
+| Warning | bus is up, nothing answered -- wiring, power, or an address that is neither 0x76 nor 0x77 |
+| Critical | something answered but is not a part we can drive -- read the printed chip IDs |
+| Error | right part, rejected the configuration |
+
+`modules/AltFilter` consumes whatever registers as a
+`PIOS_SENSORS_TYPE_1AXIS_BARO`, publishes `BaroSensor`, and runs the 3-state
+altitude Kalman that fills `PositionState.Down` / `VelocityState.Down`. It is
+in both the module list and `InitMods.c` -- a module in one and not the other
+never starts, silently.
+
+The filter is **held in reset while disarmed**, re-zeroing its reference every
+pass, so `PositionState.Down` reading exactly 0.0 on the bench is correct
+rather than a fault: altitude hold references the point you armed at. The CC
+complementary filter also needs several seconds to converge, and integrating
+its output before then puts the estimate metres from the truth while the
+airframe sits still.
 
 ## Next steps
 

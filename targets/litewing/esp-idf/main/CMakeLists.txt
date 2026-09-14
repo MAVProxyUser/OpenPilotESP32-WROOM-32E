@@ -68,6 +68,8 @@ set(PIOS_COMMON_SRCS
     # ICM-20602, not MPU6000 -- see the header of this file for why it is
     # a separate driver rather than an exception in the shared one.
     ${ESP32PORT}/pios/esp32/pios_icm20602.c
+    ${FLIGHT}/pios/common/pios_bmp388.c
+    ${FLIGHT}/pios/common/pios_bmp280.c
     ${FLIGHT}/pios/common/pios_notify.c
 )
 
@@ -121,6 +123,11 @@ set(NINJA_MODULE_SRCS
     ${FLIGHT}/modules/Telemetry/telemetry.c
     ${FLIGHT}/modules/RemoteID/remoteid.c
     ${FLIGHT}/modules/System/systemmod.c
+    # Altitude estimator. Polls whatever PIOS_SENSORS baro is registered (the
+    # BMP388 on I2C1), publishes BaroSensor, and runs the 3-state Kalman that
+    # produces PositionState/VelocityState Down. The CC complementary filter in
+    # modules/Attitude owns AttitudeState; this owns only the vertical channel.
+    ${FLIGHT}/modules/AltFilter/altfilter.c
 )
 
 # --- Board -------------------------------------------------------------
@@ -293,6 +300,7 @@ idf_component_register(
         ${FLIGHT}/modules/RemoteID/inc
         ${FLIGHT}/libraries/opendroneid
         ${FLIGHT}/modules/System/inc
+        ${FLIGHT}/modules/AltFilter/inc
         ${UAVOSYNTH}
         # pios_instrumentation.h and friends include "FreeRTOS.h" without
         # the freertos/ prefix IDF normally requires.

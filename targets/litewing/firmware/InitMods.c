@@ -25,6 +25,7 @@ extern unsigned int ReceiverInitialize(void);
 extern unsigned int ManualControlInitialize(void);
 extern unsigned int TelemetryInitialize(void);
 extern unsigned int RemoteIDInitialize(void);
+extern unsigned int AltFilterInitialize(void);
 
 extern unsigned int AttitudeStart(void);
 extern unsigned int StabilizationStart(void);
@@ -33,6 +34,7 @@ extern unsigned int ReceiverStart(void);
 extern unsigned int ManualControlStart(void);
 extern unsigned int TelemetryStart(void);
 extern unsigned int RemoteIDStart(void);
+extern unsigned int AltFilterStart(void);
 
 void InitModules(void)
 {
@@ -43,6 +45,7 @@ void InitModules(void)
     ManualControlInitialize();
     TelemetryInitialize();
     RemoteIDInitialize();
+    AltFilterInitialize();
 }
 
 void StartModules(void)
@@ -54,4 +57,5 @@ void StartModules(void)
     ManualControlStart();
     TelemetryStart();
     RemoteIDStart();
+    AltFilterStart();
 }

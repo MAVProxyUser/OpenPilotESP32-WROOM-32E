@@ -108,6 +108,16 @@
 /* #define PIOS_INCLUDE_HMC5X83 */
 /* #define PIOS_INCLUDE_MS5611 */
 #define PIOS_INCLUDE_I2C
+
+/* BMP388 barometer on I2C1 (expansion header SDA1/SCL1 = GPIO40/41).
+ * Feeds modules/AltFilter, which publishes BaroSensor and runs the altitude
+ * Kalman. Without AltFilter compiled in, the driver would register with
+ * PIOS_SENSORS and nothing would ever poll it. */
+#define PIOS_INCLUDE_BMP388
+/* ...and the BMP280, because the two are indistinguishable by I2C address.
+ * Which one is fitted is decided at boot from the chip ID, not from a build
+ * flag -- see the probe in pios_board.c. */
+#define PIOS_INCLUDE_BMP280
 /* #define PIOS_INCLUDE_ADC */
 /* #define PIOS_INCLUDE_GPS */
 

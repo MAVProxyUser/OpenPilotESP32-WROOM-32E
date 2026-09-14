@@ -38,6 +38,7 @@
 #include <firmwareiapobj.h>
 #include "fw_version_info.h"
 #include "esp_timer.h"
+#include <math.h>   /* powf(), for the barometer sanity print at boot */
 #include <flightstatus.h>
 #include <systemalarms.h>
 #include "driver/gpio.h"
@@ -65,6 +66,26 @@ uint32_t pios_rcvr_group_map[MANUALCONTROLSETTINGS_CHANNELGROUPS_NONE];
 static uint32_t pios_spi_sensors_id;
 #ifdef PIOS_INCLUDE_I2C
 static uint32_t pios_i2c_sensors_id;
+#ifdef PIOS_INCLUDE_I2C
+/* Second bus, expansion header SDA1/SCL1. Kept separate from the IMU bus --
+ * see the config in board_hw_defs.c for why. */
+static uint32_t pios_i2c_baro_id;
+/* Whichever barometer driver the boot probe settled on, NULL if none. */
+static const PIOS_SENSORS_Driver *baro_driver;
+
+/* One-byte register read on the barometer bus. The parts disagree about where
+ * their chip ID lives, so identification has to happen before any driver is
+ * chosen -- which means it cannot use a driver's own read helper. */
+static int32_t baro_read_reg(uint8_t addr, uint8_t reg, uint8_t *out)
+{
+    const struct pios_i2c_txn txn_list[] = {
+        { .info = __func__, .addr = addr, .rw = PIOS_I2C_TXN_WRITE, .len = 1, .buf = &reg },
+        { .info = __func__, .addr = addr, .rw = PIOS_I2C_TXN_READ,  .len = 1, .buf = out },
+    };
+
+    return PIOS_I2C_Transfer(pios_i2c_baro_id, txn_list, NELEMENTS(txn_list));
+}
+#endif
 #endif
 
 /* ---------------------------------------------------------------------- *
@@ -804,6 +825,138 @@ void PIOS_Board_Init(void)
             }
         }
         printf("\n");
+    }
+
+    /* --- Barometer bus (I2C1, expansion header) ------------------------
+     * Brought up unconditionally so the scan below reports an empty header
+     * as "nothing answered" rather than not running at all. A failure here
+     * is not fatal: the aircraft flies in rate mode without a barometer,
+     * and refusing to boot over a missing add-on sensor would be worse than
+     * losing altitude hold. */
+    if (PIOS_ESP32_I2C_Init(&pios_i2c_baro_id, &pios_i2c_baro_cfg) != 0) {
+        printf("[BOARD] I2C1 init FAILED -- no barometer this boot\n");
+        pios_i2c_baro_id = 0;
+    } else {
+        static const uint8_t bscan[] = { 0x76, 0x77, 0x29, 0x1E, 0x0D };
+        printf("[BOARD] I2C1 scan (SCL=41 SDA=40):");
+        for (unsigned i = 0; i < NELEMENTS(bscan); i++) {
+            if (PIOS_ESP32_I2C_Probe(pios_i2c_baro_id, bscan[i])) {
+                printf(" 0x%02X", bscan[i]);
+            }
+        }
+        printf("\n");
+    }
+#endif
+
+#if defined(PIOS_INCLUDE_I2C) && (defined(PIOS_INCLUDE_BMP388) || defined(PIOS_INCLUDE_BMP280))
+    if (pios_i2c_baro_id) {
+        /* One barometer socket, several parts that might be in it.
+         *
+         * The I2C address does NOT identify the part: 0x76 and 0x77 are shared
+         * by the BMP280, BME280, BMP388 and BMP390, and every breakout brings
+         * out an ADDR/SDO pad that moves its part between the two -- so a
+         * board silkscreened "default 0x77" can perfectly well answer at 0x76.
+         *
+         * The chip ID does identify it, but it lives at a different register
+         * per family: 0x00 on a BMP388/BMP390, 0xD0 on a BMP280/BME280. A
+         * BMP280 therefore cannot answer a BMP388 probe and vice versa, which
+         * looks exactly like a dead sensor.
+         *
+         * So: try both addresses, read both ID registers, and print the raw
+         * bytes whatever the outcome. Guessing which part is fitted from a
+         * build flag is how this wasted a bench session.
+         */
+        static const uint8_t addrs[] = { 0x76, 0x77 };
+        uint8_t baro_addr = 0;
+        uint8_t id_bmp3 = 0;   /* register 0x00 -- BMP388 / BMP390 */
+        uint8_t id_bmp2 = 0;   /* register 0xD0 -- BMP280 / BME280 */
+
+        for (unsigned i = 0; i < NELEMENTS(addrs) && !baro_addr; i++) {
+            uint8_t v;
+
+            if (!PIOS_ESP32_I2C_Probe(pios_i2c_baro_id, addrs[i])) {
+                continue;
+            }
+            baro_addr = addrs[i];
+            if (baro_read_reg(baro_addr, 0x00, &v) == 0) {
+                id_bmp3 = v;
+            }
+            if (baro_read_reg(baro_addr, 0xD0, &v) == 0) {
+                id_bmp2 = v;
+            }
+            printf("[BOARD] baro at 0x%02X: reg0x00=0x%02X reg0xD0=0x%02X\n",
+                   baro_addr, id_bmp3, id_bmp2);
+        }
+
+        if (!baro_addr) {
+            printf("[BOARD] no barometer on I2C1 -- no altitude hold\n");
+            AlarmsSet(SYSTEMALARMS_ALARM_I2C, SYSTEMALARMS_ALARM_WARNING);
+        } else {
+            int32_t brc = -100;
+            const char *part = NULL;
+
+#ifdef PIOS_INCLUDE_BMP388
+            if (id_bmp3 == 0x50 || id_bmp3 == 0x60) {
+                struct pios_bmp388_cfg c = pios_bmp388_cfg;
+                c.i2c_addr = baro_addr;
+                part = (id_bmp3 == 0x60) ? "BMP390" : "BMP388";
+                brc  = PIOS_BMP388_Init(&c, pios_i2c_baro_id);
+                if (brc == 0) {
+                    PIOS_BMP388_Register();
+                    baro_driver = &PIOS_BMP388_Driver;
+                }
+            }
+#endif
+#ifdef PIOS_INCLUDE_BMP280
+            if (!part && id_bmp2 == 0x58) {
+                struct pios_bmp280_cfg c = pios_bmp280_cfg;
+                c.i2c_addr = baro_addr;
+                part = "BMP280";
+                brc  = PIOS_BMP280_Init(&c, pios_i2c_baro_id);
+                if (brc == 0) {
+                    PIOS_BMP280_Register();
+                    baro_driver = &PIOS_BMP280_Driver;
+                }
+            }
+#endif
+            if (!part) {
+                /* Answered, but is not a part we can drive. 0xD0 reading 0x60
+                 * is a BME280 -- same pressure block plus humidity, but a
+                 * different calibration layout, so the BMP280 driver would
+                 * compensate it wrongly rather than fail. */
+                printf("[BOARD] baro at 0x%02X is not a supported part "
+                       "(reg0x00=0x%02X reg0xD0=0x%02X)%s\n",
+                       baro_addr, id_bmp3, id_bmp2,
+                       id_bmp2 == 0x60 ? " -- looks like a BME280" : "");
+                AlarmsSet(SYSTEMALARMS_ALARM_I2C, SYSTEMALARMS_ALARM_CRITICAL);
+            } else if (brc != 0) {
+                /* Right part, rejected the configuration. */
+                printf("[BOARD] %s init failed (%d) -- no altitude hold\n",
+                       part, (int)brc);
+                AlarmsSet(SYSTEMALARMS_ALARM_I2C, SYSTEMALARMS_ALARM_ERROR);
+            } else {
+                printf("[BOARD] %s at 0x%02X initialised\n", part, baro_addr);
+
+                /* Print real readings at boot. A barometer that answers its
+                 * chip ID but returns nonsense is a normal failure (trim
+                 * parsed wrong, half-soldered SDA) and is invisible until
+                 * something tries to hold altitude. Pressure near 1e5 Pa with
+                 * a plausible room temperature is the cheap proof that the
+                 * compensation maths suits THIS part's calibration. */
+                for (int i = 0; i < 4; i++) {
+                    PIOS_DELAY_WaitmS(40);
+                    if (baro_driver->poll(0)) {
+                        PIOS_SENSORS_1Axis_SensorsWithTemp s;
+                        baro_driver->fetch(&s, sizeof(s), 0);
+                        printf("[BOARD] %s sample %d: %.2f Pa  %.2f C  (~%.1f m)\n",
+                               part, i, s.sample, s.temperature,
+                               44330.0f * (1.0f - powf(s.sample / 101325.0f, 1.0f / 5.255f)));
+                    } else {
+                        printf("[BOARD] %s sample %d: not ready\n", part, i);
+                    }
+                }
+            }
+        }
     }
 #endif
 

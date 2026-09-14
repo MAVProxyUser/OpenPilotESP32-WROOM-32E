@@ -31,6 +31,12 @@
 #ifdef PIOS_INCLUDE_ICM20602
 #include <pios_sensors.h>
 #include <pios_icm20602.h>
+#ifdef PIOS_INCLUDE_BMP388
+#include <pios_bmp388.h>
+#endif
+#ifdef PIOS_INCLUDE_BMP280
+#include <pios_bmp280.h>
+#endif
 #endif
 
 /* ---------------------------------------------------------------------- *
@@ -117,7 +123,60 @@ const struct pios_esp32_i2c_cfg pios_i2c_sensors_cfg = {
     .scl_pin  = GPIO_NUM_10,
     .speed_hz = 400000,
 };
+
+/* ---------------------------------------------------------------------- *
+ * I2C1 -- the expansion header pads silkscreened SDA1/SCL1, alongside the
+ * VL53L1X footprint. A barometer goes HERE and not on I2C0 on purpose: I2C0
+ * carries the MPU6050 at 500 Hz and a 15-byte burst already costs ~19% of a
+ * period. A baro sharing that bus would be stealing time from the only
+ * sensor the aircraft cannot fly without.
+ *
+ * 400 kHz. The BMP388 is rated to 3.4 MHz, but the header is a flying-lead
+ * connection on a board full of motor noise, and the baro is read at 50 Hz --
+ * there is nothing to gain from going faster.
+ * ---------------------------------------------------------------------- */
+const struct pios_esp32_i2c_cfg pios_i2c_baro_cfg = {
+    .port     = I2C_NUM_1,
+    .sda_pin  = GPIO_NUM_40,
+    .scl_pin  = GPIO_NUM_41,
+    .speed_hz = 400000,
+};
 #endif /* PIOS_INCLUDE_I2C */
+
+#ifdef PIOS_INCLUDE_BMP388
+/* Bosch's own recommendation for the "drone" use case (datasheet 3.5):
+ * pressure x8, temperature x1, IIR coefficient 2, 50 Hz. Oversampling the
+ * temperature buys nothing here -- it moves slowly and only trims the
+ * pressure compensation -- while pressure oversampling is what sets the
+ * altitude noise floor.
+ *
+ * x8 pressure needs ~13 ms to convert, so 50 Hz (20 ms) has margin. Asking
+ * for 100 Hz would set the conf_err bit and silently repeat samples; Init
+ * checks that bit rather than trusting this comment.
+ */
+const struct pios_bmp388_cfg pios_bmp388_cfg = {
+    .oversampling_pressure    = BMP388_OSR_8,
+    .oversampling_temperature = BMP388_OSR_1,
+    .filter                   = BMP388_FILTER_3,
+    .odr                      = BMP388_ODR_50_HZ,
+    /* 0 lets the driver default to 0x76; the boot scan reports which address
+     * actually answered. */
+    .i2c_addr                 = 0,
+};
+#endif /* PIOS_INCLUDE_BMP388 */
+
+#ifdef PIOS_INCLUDE_BMP280
+/* Bosch's "indoor navigation" recommendation (BMP280 datasheet 3.4): pressure
+ * x16, temperature x2, IIR 16. Note these selectors are NOT the BMP388's --
+ * on the BMP280, 0 means "skip this channel" and the useful values start at
+ * 1, so a config copied between the two parts silently disables a channel. */
+const struct pios_bmp280_cfg pios_bmp280_cfg = {
+    .oversampling_pressure    = BMP280_OSR_16,
+    .oversampling_temperature = BMP280_OSR_2,
+    .filter                   = BMP280_FILTER_16,
+    .i2c_addr                 = 0,   /* 0 -> driver default 0x76 */
+};
+#endif /* PIOS_INCLUDE_BMP280 */
 
 /* ---------------------------------------------------------------------- *
  * ICM-20602 data-ready
