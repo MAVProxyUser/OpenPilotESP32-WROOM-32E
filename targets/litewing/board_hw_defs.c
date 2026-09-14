@@ -166,7 +166,24 @@ const struct pios_esp32_i2c_cfg pios_i2c_baro_cfg = {
  * coefficient x ODR period, so IIR 31 at 25 Hz is ~1.2 s of lag handed to a
  * thrust loop on a 45 g airframe.
  *
- * Now x16 IIR 15 at 25 Hz: 0.8 cm.
+ * Now x8 IIR 7 at 50 Hz: 2.3 cm on the bench, ~140 ms of group delay.
+ *
+ * Chosen from FLIGHT data, not bench data. A log of three altitude-hold
+ * engagements shows the barometer's sample-to-sample noise in a hover is
+ * 2.3-3.6 cm whatever the filter setting -- roughly four times the 0.6 cm it
+ * reads sitting still -- while the altitude signal swings 1-4 m peak to peak.
+ * The large movement is therefore the aircraft, not the sensor, and no amount
+ * of filtering addresses it.
+ *
+ * What filtering does cost is phase. The same log shows a 2-second limit cycle
+ * with thrust saturating every cycle; 600 ms of group delay (the x16 IIR15 at
+ * 25 Hz this replaces) is about 108 degrees of phase at that period, fed
+ * straight into a closed thrust loop. The earlier reasoning -- that lag on the
+ * reference channel of a complementary filter is cheap -- holds only while
+ * nothing is controlling on that channel. Once altitude hold could actually
+ * command thrust, it stopped being true.
+ *
+ * Below, for the record, the bench sweep this was originally chosen from:
  *
  * The earlier choice (x8 IIR 15 at 50 Hz, 1.3 cm) avoided any ODR below the
  * consumer's 50 Hz poll, because a stale read was being fed to the Kalman as
@@ -180,10 +197,10 @@ const struct pios_esp32_i2c_cfg pios_i2c_baro_cfg = {
  * nothing real while the lag is paid in full by the controller.
  */
 const struct pios_bmp388_cfg pios_bmp388_cfg = {
-    .oversampling_pressure    = BMP388_OSR_16,
-    .oversampling_temperature = BMP388_OSR_2,
-    .filter                   = BMP388_FILTER_15,
-    .odr                      = BMP388_ODR_25_HZ,
+    .oversampling_pressure    = BMP388_OSR_8,
+    .oversampling_temperature = BMP388_OSR_1,
+    .filter                   = BMP388_FILTER_7,
+    .odr                      = BMP388_ODR_50_HZ,
     /* 0 lets the driver default to 0x76; the boot scan reports which address
      * actually answered. */
     .i2c_addr                 = 0,
