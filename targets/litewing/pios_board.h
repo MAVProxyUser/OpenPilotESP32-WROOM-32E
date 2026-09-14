@@ -137,6 +137,12 @@ extern uint32_t pios_com_telem_rf_id;
 #define PIOS_RECEIVER_STACK_SIZE       3072
 #define PIOS_MANUAL_STACK_SIZE         3072
 #define PIOS_SYSTEM_STACK_SIZE         4096
+// AltFilter runs Quaternion2R plus half a dozen UAVObject structs on its
+// stack; the altitude loop adds a PID and more of the same. Both shipped with
+// CopterControl-sized stacks (1536 and 512) and both need the same treatment
+// as everything above.
+#define PIOS_ALTFILTER_STACK_SIZE      4096
+#define PIOS_ALTITUDEHOLD_STACK_SIZE   2048
 
 // NOTE the unit change: eventdispatcher.c passes this to the callback
 // scheduler as (STACK_SIZE * 4), so this one is in WORDS, not bytes.
