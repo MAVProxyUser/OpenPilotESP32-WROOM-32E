@@ -955,6 +955,13 @@ void PIOS_Board_Init(void)
                         printf("[BOARD] %s sample %d: not ready\n", part, i);
                     }
                 }
+#ifdef BOARD_BARO_SWEEP
+                {
+                    extern void PIOS_BaroSweep(uint32_t i2c_id, uint8_t addr, bool is_bmp388);
+                    PIOS_BaroSweep(pios_i2c_baro_id, baro_addr,
+                                   baro_driver == &PIOS_BMP388_Driver);
+                }
+#endif
             }
         }
     }

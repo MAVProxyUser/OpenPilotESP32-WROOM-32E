@@ -599,10 +599,57 @@ the hold can be:
 | BMP280 | osr x16, IIR 16 | 1.6 Pa | ~13 cm |
 | BMP388 | osr x8, IIR 3 | 6.6 Pa | ~55 cm |
 
-That gap is the configuration, not the part -- the BMP388 is on Bosch's drone
-recommendation and the BMP280 on the heavier indoor-navigation one. Raise the
-BMP388's oversampling and IIR coefficient in `board_hw_defs.c` if the hold
-turns out to be noise-limited; it costs group delay.
+Both parts were then swept properly rather than left on a datasheet
+recommendation. `firmware/baro_sweep.c`, built with `BOARD_BARO_SWEEP=1` and
+the console temporarily on UART0, walks the fitted part through a table of
+oversampling/IIR/ODR settings, takes 48 samples of each and scores them on the
+**RMS of successive differences**. That metric is the point: a plain standard
+deviation over a ~5 s window is dominated by real room-pressure drift, which
+penalises the slower configs purely for taking longer to collect, while a
+first difference cancels any linear drift and leaves sample-to-sample noise --
+which is what the estimator actually has to reject.
+
+BMP388 @ 0x77, and BMP280 @ 0x76, noise in cm of altitude:
+
+| BMP388 | noise | | BMP280 | noise |
+| --- | --- | --- | --- | --- |
+| x1 IIR off 50Hz | 47.0 | | x1 IIR off | 27.9 |
+| x2 IIR 1 50Hz | 17.2 | | x2 IIR 2 | 12.6 |
+| x4 IIR 3 50Hz | 8.6 | | x4 IIR 4 | 4.9 |
+| x8 IIR 3 50Hz | 4.6 | | x8 IIR 4 | 5.8 |
+| x8 IIR 7 50Hz | 2.3 | | x8 IIR 8 | 3.1 |
+| **x8 IIR 15 50Hz** | **1.3** | | **x8 IIR 16** | **2.3** |
+| x16 IIR 7 25Hz | 2.0 | | x16 IIR 4 | 4.0 |
+| x16 IIR 15 25Hz | 0.8 | | x16 IIR 8 | 1.9 |
+| x16 IIR 31 25Hz | 0.4 | | x16 IIR 16 | 1.7 |
+| x32 IIR 15 12.5Hz | 0.6 | | | |
+| x32 IIR 31 12.5Hz | 0.6 | | | |
+
+**The quietest row is not the chosen one in either column**, for two reasons
+that only show up downstream:
+
+*AltFilter polls at exactly 50 Hz.* An ODR below that hands it the same
+conversion twice, and the Kalman treats a repeat as independent evidence,
+shrinking its covariance on information it never received. Every sub-50 Hz row
+pays that today. It is why the BMP280 runs x8 (~40 Hz) rather than its
+quietest x16 (~26 Hz) for 0.6 cm more noise. Gating the drivers on data-ready,
+so a stale read returns false and AltFilter skips the correction, would make
+the quiet rows safe -- that work is not done.
+
+*The IIR coefficient is group delay.* The time constant is roughly
+coefficient x ODR period, so the 0.4 cm row (IIR 31 at 25 Hz) is ~1.2 s of lag
+handed to a thrust loop on a 45 g airframe.
+
+Chosen: BMP388 **x8 IIR 15 at 50 Hz** (1.3 cm, ~300 ms time constant, 3.5x
+better than the drone recommendation it replaced) and BMP280 **x8 IIR 16**
+(2.3 cm, ~40 Hz). Whichever part is fitted gets its own config, so swapping
+between them needs no reflash.
+
+For scale: `AltFilter` assumes `BARO_NOISE_VAR_M2 = 0.25`, i.e. **50 cm** of
+barometer noise -- 20-40x worse than either part measures here, so the filter
+is discounting the barometer heavily. Resist lowering it on bench numbers
+alone: a board on a desk cannot reproduce prop wash over an open port, which
+is the disturbance that assumption is really carrying.
 
 ## Next steps
 

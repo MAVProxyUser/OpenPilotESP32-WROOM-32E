@@ -135,6 +135,7 @@ set(NINJA_MODULE_SRCS
 set(BOARD_SRCS
     ${BOARD}/firmware/litewing.c
     ${BOARD}/firmware/pios_board.c
+    ${BOARD}/firmware/baro_sweep.c
     ${BOARD}/firmware/InitMods.c
 )
 
@@ -377,6 +378,11 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE
     # attitude filter plus modules/AltFilter. Deliberately NOT defining
     # REVOLUTION, which would drag in the whole navigation chain.
     LITEWING=1
+    # BOARD_BARO_SWEEP: walk the barometer through an oversampling/IIR table at
+    # boot and print noise statistics for each, so the flight config is picked
+    # from measurements. Adds about a minute to boot, needs the console on
+    # UART0 to read, and leaves the part on the LAST config tested. Bench only.
+    # BOARD_BARO_SWEEP=1
 )
 
 # UAVObjectsInitializeAll() wraps EVERY call in #ifdef UAVOBJ_INIT_<name>.

@@ -144,20 +144,37 @@ const struct pios_esp32_i2c_cfg pios_i2c_baro_cfg = {
 #endif /* PIOS_INCLUDE_I2C */
 
 #ifdef PIOS_INCLUDE_BMP388
-/* Bosch's own recommendation for the "drone" use case (datasheet 3.5):
- * pressure x8, temperature x1, IIR coefficient 2, 50 Hz. Oversampling the
- * temperature buys nothing here -- it moves slowly and only trims the
- * pressure compensation -- while pressure oversampling is what sets the
- * altitude noise floor.
+/* Measured, not recommended. Bench sweep of 11 configs (baro_sweep.c, build
+ * with BOARD_BARO_SWEEP=1), 48 samples each, scored on the RMS of successive
+ * differences so that room pressure drift cancels:
  *
- * x8 pressure needs ~13 ms to convert, so 50 Hz (20 ms) has margin. Asking
- * for 100 Hz would set the conf_err bit and silently repeat samples; Init
- * checks that bit rather than trusting this comment.
+ *   x1  IIR off  50Hz   47.0 cm      x16 IIR 7    25Hz    2.0 cm
+ *   x2  IIR 1    50Hz   17.2 cm      x16 IIR 15   25Hz    0.8 cm
+ *   x4  IIR 3    50Hz    8.6 cm      x16 IIR 31   25Hz    0.4 cm
+ *   x8  IIR 3    50Hz    4.6 cm      x32 IIR 15 12.5Hz    0.6 cm
+ *   x8  IIR 7    50Hz    2.3 cm      x32 IIR 31 12.5Hz    0.6 cm
+ *   x8  IIR 15   50Hz    1.3 cm   <- chosen
+ *
+ * The quietest rows are NOT the best choice, for two reasons:
+ *
+ * AltFilter polls at exactly 50 Hz, so an ODR below that hands it the same
+ * conversion twice and the Kalman treats a repeat as independent evidence,
+ * shrinking its own covariance on information it did not receive. Everything
+ * slower than 50 Hz pays that until the drivers gate on data-ready.
+ *
+ * The IIR coefficient is group delay: the time constant is roughly
+ * coefficient x ODR period, so IIR 31 at 25 Hz is ~1.2 s of lag handed to a
+ * thrust loop on a 45 g airframe.
+ *
+ * x8 IIR 15 at 50 Hz is the quietest row that keeps up with the poll rate,
+ * 3.5x better than Bosch's drone recommendation (x8 IIR 3) for ~300 ms of
+ * time constant. x8 pressure converts in ~19 ms, inside the 20 ms period;
+ * Init checks the part's conf_err bit rather than trusting that arithmetic.
  */
 const struct pios_bmp388_cfg pios_bmp388_cfg = {
     .oversampling_pressure    = BMP388_OSR_8,
     .oversampling_temperature = BMP388_OSR_1,
-    .filter                   = BMP388_FILTER_3,
+    .filter                   = BMP388_FILTER_15,
     .odr                      = BMP388_ODR_50_HZ,
     /* 0 lets the driver default to 0x76; the boot scan reports which address
      * actually answered. */
@@ -166,13 +183,25 @@ const struct pios_bmp388_cfg pios_bmp388_cfg = {
 #endif /* PIOS_INCLUDE_BMP388 */
 
 #ifdef PIOS_INCLUDE_BMP280
-/* Bosch's "indoor navigation" recommendation (BMP280 datasheet 3.4): pressure
- * x16, temperature x2, IIR 16. Note these selectors are NOT the BMP388's --
- * on the BMP280, 0 means "skip this channel" and the useful values start at
- * 1, so a config copied between the two parts silently disables a channel. */
+/* Measured the same way as the BMP388 above, 9 configs:
+ *
+ *   x1  IIR off   27.9 cm      x8  IIR 16    2.3 cm   <- chosen
+ *   x2  IIR 2     12.6 cm      x16 IIR 4     4.0 cm
+ *   x4  IIR 4      4.9 cm      x16 IIR 8     1.9 cm
+ *   x8  IIR 4      5.8 cm      x16 IIR 16    1.7 cm
+ *   x8  IIR 8      3.1 cm
+ *
+ * x16 IIR 16 is quietest, and is not chosen. At x16 pressure with x2
+ * temperature the part takes ~38 ms per conversion, about 26 Hz, so roughly
+ * half of AltFilter's 50 Hz polls would read a conversion they have already
+ * seen. x8 runs near 40 Hz and costs only 0.6 cm.
+ *
+ * Note these selectors are NOT the BMP388's: on the BMP280, 0 means "skip
+ * this channel" and the useful values start at 1, so a config copied between
+ * the two parts silently disables a channel. */
 const struct pios_bmp280_cfg pios_bmp280_cfg = {
-    .oversampling_pressure    = BMP280_OSR_16,
-    .oversampling_temperature = BMP280_OSR_2,
+    .oversampling_pressure    = BMP280_OSR_8,
+    .oversampling_temperature = BMP280_OSR_1,
     .filter                   = BMP280_FILTER_16,
     .i2c_addr                 = 0,   /* 0 -> driver default 0x76 */
 };
