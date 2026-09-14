@@ -570,6 +570,40 @@ complementary filter also needs several seconds to converge, and integrating
 its output before then puts the estimate metres from the truth while the
 airframe sits still.
 
+### The altitude hold thrust mode
+
+OpenPilot already has the controller -- `modules/Stabilization/altitudeloop.c`
+and the `ALTITUDEHOLD` / `ALTITUDEVARIO` thrust modes. None of it is new here;
+it was simply behind `#ifdef REVOLUTION`, along with its two call sites in
+`stabilization.c` and `outerloop.c`. Those three guards are now
+`#if defined(REVOLUTION) || defined(LITEWING)`, and this target defines
+`LITEWING=1`. Defining `REVOLUTION` instead would pull in the whole navigation
+chain to win three `#ifdef`s.
+
+The loop also needs `AltitudeHoldSettings` and `AltitudeHoldStatus`
+initialised. Both were already in `UAVO_SYNTH_SRCS` but had no
+`UAVOBJ_INIT_*` flag, which compiles and links silently while leaving the
+objects half-built.
+
+Confirmed on hardware with a BMP388 fitted: `BaroSensor` streaming pressure
+and temperature, every system alarm OK, and both altitude-hold objects
+readable over telemetry.
+
+**Not yet flown.** The loop commands thrust, so `AltitudeHoldSettings` wants
+tuning for a 45 g airframe before anyone trusts it in the air. Barometer noise
+measured over the same telemetry window, which sets the floor for how tight
+the hold can be:
+
+| Part | Config | Spread | ~altitude |
+| --- | --- | --- | --- |
+| BMP280 | osr x16, IIR 16 | 1.6 Pa | ~13 cm |
+| BMP388 | osr x8, IIR 3 | 6.6 Pa | ~55 cm |
+
+That gap is the configuration, not the part -- the BMP388 is on Bosch's drone
+recommendation and the BMP280 on the heavier indoor-navigation one. Raise the
+BMP388's oversampling and IIR coefficient in `board_hw_defs.c` if the hold
+turns out to be noise-limited; it costs group delay.
+
 ## Next steps
 
 Before it flies:

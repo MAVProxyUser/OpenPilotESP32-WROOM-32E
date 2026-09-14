@@ -109,6 +109,7 @@ set(NINJA_MODULE_SRCS
     ${FLIGHT}/modules/Stabilization/innerloop.c
     ${FLIGHT}/modules/Stabilization/outerloop.c
     ${FLIGHT}/modules/Stabilization/cruisecontrol.c
+    ${FLIGHT}/modules/Stabilization/altitudeloop.c
     ${FLIGHT}/modules/Stabilization/virtualflybar.c
     ${FLIGHT}/modules/Stabilization/relay_tuning.c
     ${FLIGHT}/modules/Actuator/actuator.c
@@ -368,6 +369,14 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE
     # leave enabled. Add BOARD_PWM_SELFTEST=1 here to run it again, PROPS OFF,
     # and take it back out afterwards.
     ESP_PLATFORM=1
+    # Board marker. Its only job today is unlocking OpenPilot's existing
+    # altitude outer loop, which is written as "#if defined(REVOLUTION) ||
+    # defined(LITEWING)" in stabilization.c, outerloop.c and altitudeloop.c.
+    # That code needs a barometer plus PositionState/VelocityState Down;
+    # Revolution gets those from StateEstimation, this board from the CC
+    # attitude filter plus modules/AltFilter. Deliberately NOT defining
+    # REVOLUTION, which would drag in the whole navigation chain.
+    LITEWING=1
 )
 
 # UAVObjectsInitializeAll() wraps EVERY call in #ifdef UAVOBJ_INIT_<name>.
@@ -389,6 +398,8 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE
     UAVOBJ_INIT_accelsensor=1
     UAVOBJ_INIT_gyrosensor=1
     UAVOBJ_INIT_barosensor=1
+    UAVOBJ_INIT_altitudeholdsettings=1
+    UAVOBJ_INIT_altitudeholdstatus=1
     UAVOBJ_INIT_revosettings=1
     UAVOBJ_INIT_homelocation=1
     UAVOBJ_INIT_flipstatus=1
