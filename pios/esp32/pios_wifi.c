@@ -125,14 +125,31 @@ static void wifi_server_task(__attribute__((unused)) void *arg)
     TickType_t last_beacon = 0;
 
     for (;;) {
-        /* Advertise while nobody is connected, so tools can find the IP
-         * without a console. */
+        /* Advertise ALWAYS, connected or not, so tools can find the IP
+         * without a console.
+         *
+         * This used to stop the moment a peer appeared, which seemed tidy and
+         * was not: the GCS ages a discovered board out of its device list
+         * after 30 s of silence, so it expired the entry for the board it was
+         * actively talking to, decided the device had gone away, and
+         * disconnected itself mid-session -- then fell back to the manually
+         * configured entry and never came back. The ground side now refuses to
+         * expire a device it holds an open socket to, but the root of it was
+         * here: a board that is flying is exactly the board a ground station
+         * most needs to be able to find. It also means a second tool can
+         * discover it, and that a reconnect after a dropped link has something
+         * to aim at.
+         *
+         * The cost is one 30-byte broadcast every two seconds.
+         *
+         * udp_active is still tracked -- the UDP peer latch and its 10 s
+         * idle timeout are unchanged -- it simply no longer gates the advert.
+         */
         if (wifi.udp_active &&
             (xTaskGetTickCount() - wifi.udp_last_rx) > pdMS_TO_TICKS(10000)) {
             wifi.udp_active = false;
         }
-        if (wifi.client < 0 && !wifi.udp_active &&
-            (xTaskGetTickCount() - last_beacon) > pdMS_TO_TICKS(2000)) {
+        if ((xTaskGetTickCount() - last_beacon) > pdMS_TO_TICKS(2000)) {
             last_beacon = xTaskGetTickCount();
             sendto(beacon, note, notelen, 0, (struct sockaddr *)&bcast,
                    sizeof(bcast));
