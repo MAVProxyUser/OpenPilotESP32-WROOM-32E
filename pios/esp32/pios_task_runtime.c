@@ -49,7 +49,14 @@
  * least-recently-seen task loses its baseline and reports one short
  * interval; it does not break anything. */
 #define RUNTIME_MAX_TRACKED 24
-#define RUNTIME_MAX_TASKS   32
+/* uxTaskGetSystemState() returns 0 -- not a partial list -- when this array is
+ * too small for the number of tasks that exist. The shim then finds nothing,
+ * reports zero runtime for the idle task, and the task monitor concludes 0%
+ * idle, i.e. 100% CPU and a Critical CPUOverload alarm on a board that is
+ * barely working. Adding two tasks (AltFilter and the altitude-hold callback)
+ * to a system already carrying WiFi crossed the old limit of 32 and did
+ * exactly that. Sized well clear of the real count, which is around 30. */
+#define RUNTIME_MAX_TASKS   48
 
 struct runtime_entry {
     TaskHandle_t handle;
@@ -81,6 +88,20 @@ UBaseType_t uxTaskGetRunTime(TaskHandle_t xTask)
     UBaseType_t count = uxTaskGetSystemState(status, RUNTIME_MAX_TASKS, NULL);
     uint32_t    total = 0;
     bool        found = false;
+
+    if (count == 0) {
+        /* Buffer too small for the live task count. Say so once: the symptom
+         * downstream is a permanent 100% CPU reading and a Critical alarm that
+         * blocks arming, which looks nothing like "raise a compile-time
+         * constant". */
+        static bool warned;
+        if (!warned) {
+            warned = true;
+            printf("[TASKRT] uxTaskGetSystemState returned 0 -- more than %d tasks; "
+                   "CPU load will read 100%%\n", RUNTIME_MAX_TASKS);
+        }
+        return 0;
+    }
 
     for (UBaseType_t i = 0; i < count; i++) {
         if (status[i].xHandle == xTask) {

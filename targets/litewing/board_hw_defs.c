@@ -166,16 +166,24 @@ const struct pios_esp32_i2c_cfg pios_i2c_baro_cfg = {
  * coefficient x ODR period, so IIR 31 at 25 Hz is ~1.2 s of lag handed to a
  * thrust loop on a 45 g airframe.
  *
- * x8 IIR 15 at 50 Hz is the quietest row that keeps up with the poll rate,
- * 3.5x better than Bosch's drone recommendation (x8 IIR 3) for ~300 ms of
- * time constant. x8 pressure converts in ~19 ms, inside the 20 ms period;
- * Init checks the part's conf_err bit rather than trusting that arithmetic.
+ * Now x16 IIR 15 at 25 Hz: 0.8 cm.
+ *
+ * The earlier choice (x8 IIR 15 at 50 Hz, 1.3 cm) avoided any ODR below the
+ * consumer's 50 Hz poll, because a stale read was being fed to the Kalman as
+ * if it were a fresh measurement. The drivers now gate on data-ready and
+ * report "no new sample" instead, so the slower, quieter rows are safe.
+ *
+ * Not the quietest row, deliberately. x16 IIR 31 measured 0.4 cm but carries
+ * ~1.2 s of group delay (the IIR time constant is roughly coefficient x ODR
+ * period), against ~0.6 s here. Below about 1 cm the white noise is an order
+ * of magnitude under the part's thermal drift, so further filtering buys
+ * nothing real while the lag is paid in full by the controller.
  */
 const struct pios_bmp388_cfg pios_bmp388_cfg = {
-    .oversampling_pressure    = BMP388_OSR_8,
-    .oversampling_temperature = BMP388_OSR_1,
+    .oversampling_pressure    = BMP388_OSR_16,
+    .oversampling_temperature = BMP388_OSR_2,
     .filter                   = BMP388_FILTER_15,
-    .odr                      = BMP388_ODR_50_HZ,
+    .odr                      = BMP388_ODR_25_HZ,
     /* 0 lets the driver default to 0x76; the boot scan reports which address
      * actually answered. */
     .i2c_addr                 = 0,
