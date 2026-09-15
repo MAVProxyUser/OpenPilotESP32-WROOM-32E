@@ -72,6 +72,10 @@
 #define PIOS_ICM20602_WHOAMI                   0x75
 /* The only value this driver accepts. MPU6000 answers 0x68, MPU6500 0x70. */
 #define PIOS_ICM20602_WHOAMI_ID                0x12
+/* Same driver, other parts on the same register map. PIOS_Board_Init() and
+ * PIOS_ICM20602_Test() both accept all three. */
+#define PIOS_MPU6000_WHOAMI_ID                 0x68
+#define PIOS_MPU6500_WHOAMI_ID                 0x70
 
 /* FIFO enable for storing different values */
 #define PIOS_ICM20602_FIFO_TEMP_OUT            0x80

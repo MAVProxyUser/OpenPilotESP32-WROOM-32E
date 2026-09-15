@@ -69,6 +69,7 @@ set(PIOS_COMMON_SRCS
     # a separate driver rather than an exception in the shared one.
     ${ESP32PORT}/pios/esp32/pios_icm20602.c
     ${FLIGHT}/pios/common/pios_bmp388.c
+    ${FLIGHT}/pios/common/pios_hmc5x83.c
     ${FLIGHT}/pios/common/pios_bmp280.c
     ${FLIGHT}/pios/common/pios_notify.c
 )
@@ -101,10 +102,27 @@ set(LIB_SRCS
 
 # --- Modules -----------------------------------------------------------
 # KEEP IN SYNC with InitMods.c. A module here but not there never starts.
-# Rate-mode-only: Attitude is the standalone complementary filter, not the
-# StateEstimation chain.
+# Navigation build: Sensors publishes the *Sensor objects and StateEstimation
+# turns them into AttitudeState/PositionState/VelocityState, exactly as on
+# Revolution. This replaces the standalone complementary filter in
+# modules/Attitude AND modules/AltFilter, both of which are now gone: the
+# stock filter chain covers what each of them did (filtercf.c/filtercfm.c for
+# attitude, filteraltitude.c + filterbaro.c for the vertical channel) and is
+# the code the rest of the navigation chain was written against.
 set(NINJA_MODULE_SRCS
-    ${FLIGHT}/modules/Attitude/attitude.c
+    ${FLIGHT}/modules/Sensors/sensors.c
+    ${FLIGHT}/modules/StateEstimation/stateestimation.c
+    ${FLIGHT}/modules/StateEstimation/filterair.c
+    ${FLIGHT}/modules/StateEstimation/filteraltitude.c
+    ${FLIGHT}/modules/StateEstimation/filterbaro.c
+    ${FLIGHT}/modules/StateEstimation/filtercf.c
+    ${FLIGHT}/modules/StateEstimation/filterekf.c
+    ${FLIGHT}/modules/StateEstimation/filterlla.c
+    ${FLIGHT}/modules/StateEstimation/filtermag.c
+    ${FLIGHT}/modules/StateEstimation/filterstationary.c
+    ${FLIGHT}/modules/StateEstimation/filtervelocity.c
+    # The 13-state INS behind FusionAlgorithm INS13Indoor / GPS Navigation.
+    ${FLIGHT}/libraries/insgps13state.c
     ${FLIGHT}/modules/Stabilization/stabilization.c
     ${FLIGHT}/modules/Stabilization/innerloop.c
     ${FLIGHT}/modules/Stabilization/outerloop.c
@@ -124,11 +142,71 @@ set(NINJA_MODULE_SRCS
     ${FLIGHT}/modules/Telemetry/telemetry.c
     ${FLIGHT}/modules/RemoteID/remoteid.c
     ${FLIGHT}/modules/System/systemmod.c
-    # Altitude estimator. Polls whatever PIOS_SENSORS baro is registered (the
-    # BMP388 on I2C1), publishes BaroSensor, and runs the 3-state Kalman that
-    # produces PositionState/VelocityState Down. The CC complementary filter in
-    # modules/Attitude owns AttitudeState; this owns only the vertical channel.
-    ${FLIGHT}/modules/AltFilter/altfilter.c
+    # GPS. UBX is the live protocol (see pios_config.h for why NMEA does not
+    # work with this receiver); NMEA.c stays for a different module.
+    # PathFollower is IN and stable. PathPlanner (multi-waypoint missions) is
+    # OUT: it alone panics this board, and position hold / return-to-home do
+    # NOT need it -- ManualControl/pathfollowerhandler.c calls
+    # plan_setup_positionHold() and plan_setup_returnToBase() directly, and
+    # PathFollower executes the resulting PathDesired. PathPlanner only
+    # sequences PathPlan waypoints.
+    #
+    # The PathPlanner fault, for whoever picks it up: on the first
+    # VelocityState update the board takes StoreProhibited at address 8 in
+    # PIOS_CALLBACKSCHEDULER_Dispatch's xSemaphoreGive(cbinfo->task->signal),
+    # reached from altitudeloop.c -- i.e. an unrelated callback's scheduler
+    # task pointer is corrupt. RULED OUT by measurement: callback stack size
+    # (tested 1K/3K/8K/16K, verified in effect via the task table), heap
+    # (~159KB free), and the callback priority-array bounds. It appears only
+    # when PathPlanner creates a FIFTH callback scheduler task
+    # (CALLBACK_TASK_NAVIGATION); moving it onto an existing task makes the
+    # symptom vanish, which looks like changed heap layout MASKING the
+    # corruption rather than fixing it -- so that workaround was NOT taken.
+    # Prime remaining suspect: the mission-persistence restorePathPlan() path
+    # in PathPlannerStart(), which reads a stored plan through a flashfs this
+    # target does not have (pios_user_fs_id is a stub).
+    # OLD NOTE follows:
+    # STAGE 3 (navigation) -- BUILT AND LINKS, BUT DISABLED: with these in, the
+    # board panics on the first VelocityState update. StoreProhibited at
+    # address 8 inside PIOS_CALLBACKSCHEDULER_Dispatch's
+    # xSemaphoreGive(cbinfo->task->signal), reached from altitudeloop.c's
+    # VelocityStateUpdatedCb -- i.e. the altitude-hold callback's scheduler
+    # task pointer is NULL. NOT a stack or heap problem: trimming the new
+    # stacks changed nothing and ~159KB of heap is free at init. Re-enable
+    # together with the InitMods.c entries once that is understood.
+    # Navigation. PathFollower turns PathDesired into a velocity/attitude
+    # command (VtolPathFollower for a multirotor); PathPlanner sequences
+    # waypoints and is what ReturnToBase drives. Both are stock; every
+    # UAVObject they need was already in this build.
+    ${FLIGHT}/modules/PathFollower/pathfollower.cpp
+    ${FLIGHT}/modules/PathFollower/pathfollowercontrol.cpp
+    ${FLIGHT}/modules/PathFollower/pidcontroldown.cpp
+    ${FLIGHT}/modules/PathFollower/pidcontrolne.cpp
+    # pathfollower.cpp constructs every frame-type controller unconditionally,
+    # so the fixed-wing and ground ones link in even on a multirotor.
+    ${FLIGHT}/modules/PathFollower/fixedwingflycontroller.cpp
+    ${FLIGHT}/modules/PathFollower/grounddrivecontroller.cpp
+    ${FLIGHT}/modules/PathFollower/vtolflycontroller.cpp
+    ${FLIGHT}/modules/PathFollower/vtolvelocitycontroller.cpp
+    ${FLIGHT}/modules/PathFollower/vtolbrakecontroller.cpp
+    ${FLIGHT}/modules/PathFollower/vtolbrakefsm.cpp
+    ${FLIGHT}/modules/PathFollower/vtollandcontroller.cpp
+    ${FLIGHT}/modules/PathFollower/vtollandfsm.cpp
+#    ${FLIGHT}/modules/PathPlanner/pathplanner.c
+    # Path geometry (path_progress/path_intercept) and the canned flight plans
+    # -- plans.c is where return-to-base and land are actually constructed.
+    ${FLIGHT}/libraries/paths.c
+    ${FLIGHT}/libraries/plans.c
+    ${FLIGHT}/modules/GPS/GPS.c
+    ${FLIGHT}/modules/GPS/NMEA.c
+    ${FLIGHT}/modules/GPS/UBX.c
+    ${FLIGHT}/modules/GPS/ubx_autoconfig.c
+    # UBX.c publishes the module's optional magnetometer through this shared
+    # helper; without it the link fails on auxmagsupport_publish_samples.
+    ${FLIGHT}/libraries/auxmagsupport.c
+    # HomeLocation.Be for the mag heading reference (filtercf.c) and the
+    # home point for return-to-home; used by GPS.c under PIOS_GPS_SETS_HOMELOCATION.
+    ${FLIGHT}/libraries/WorldMagModel.c
 )
 
 # --- Board -------------------------------------------------------------
@@ -136,6 +214,7 @@ set(BOARD_SRCS
     ${BOARD}/firmware/litewing.c
     ${BOARD}/firmware/pios_board.c
     ${BOARD}/firmware/baro_sweep.c
+    ${BOARD}/firmware/gps_sniff.c
     ${BOARD}/firmware/InitMods.c
 )
 
@@ -302,7 +381,11 @@ idf_component_register(
         ${FLIGHT}/modules/RemoteID/inc
         ${FLIGHT}/libraries/opendroneid
         ${FLIGHT}/modules/System/inc
-        ${FLIGHT}/modules/AltFilter/inc
+        ${FLIGHT}/modules/StateEstimation/inc
+        ${FLIGHT}/modules/Sensors/inc
+        ${FLIGHT}/modules/PathFollower/inc
+        ${FLIGHT}/modules/PathPlanner/inc
+        ${FLIGHT}/modules/GPS/inc
         ${UAVOSYNTH}
         # pios_instrumentation.h and friends include "FreeRTOS.h" without
         # the freertos/ prefix IDF normally requires.
@@ -358,6 +441,15 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE
     # got longer when WiFi added five tasks -- a periodic global stall. Turn
     # it back on when hunting a task-level problem.
     # DIAG_TASKS=1
+    # MODULE_GPS_BUILTIN: the stock Makefile build emits a MODULE_<NAME>_BUILTIN
+    # define for every module it compiles in; this CMake build never did, so
+    # GPS.c fell through to its runtime gate on HwSettings.OptionalModules.GPS,
+    # which defaults to Disabled. The module silently never started -- the task
+    # was never created, the port never opened, and GPSPositionSensor.Status sat
+    # at NoGPS with no GPS alarm to say why (the alarm only exists once the task
+    # runs). UART1 is physically dedicated to the GPS header on this board, so
+    # there is nothing for a runtime switch to decide: make it builtin.
+    MODULE_GPS_BUILTIN=1
     # BOARD_ESC_CAL: USB-free ESC endpoint calibration at power-up (max 6s,
     # then min). Flash it, UNPLUG USB, connect battery, listen for the tones,
     # reflash normal firmware. PROPS OFF. Never ship enabled. This exists
@@ -383,6 +475,10 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE
     # from measurements. Adds about a minute to boot, needs the console on
     # UART0 to read, and leaves the part on the LAST config tested. Bench only.
     # BOARD_BARO_SWEEP=1
+    # BOARD_GPS_SNIFF: listen on UART1 (GPIO17/18) at each candidate baud and
+    # report whether a GPS is talking. Borrows the console's UART, so the
+    # console must be moved to UART0 to read the result. Bench only.
+    # BOARD_GPS_SNIFF=1
 )
 
 # UAVObjectsInitializeAll() wraps EVERY call in #ifdef UAVOBJ_INIT_<name>.
@@ -404,6 +500,11 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE
     UAVOBJ_INIT_accelsensor=1
     UAVOBJ_INIT_gyrosensor=1
     UAVOBJ_INIT_barosensor=1
+    UAVOBJ_INIT_gpstime=1
+    UAVOBJ_INIT_gpssatellites=1
+    UAVOBJ_INIT_gpsextendedstatus=1
+    UAVOBJ_INIT_auxmagsensor=1
+    UAVOBJ_INIT_auxmagsettings=1
     UAVOBJ_INIT_altitudeholdsettings=1
     UAVOBJ_INIT_altitudeholdstatus=1
     UAVOBJ_INIT_revosettings=1

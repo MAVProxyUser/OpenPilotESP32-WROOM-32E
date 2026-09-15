@@ -48,6 +48,11 @@
 struct pios_esp32_usart_dev {
     const struct pios_esp32_usart_cfg *cfg;
     pios_com_callback rx_in_cb;
+    /* RX accounting, for the once-a-second report in usart_rx_task(). */
+    uint32_t rx_bytes;
+    uint32_t rx_dropped;
+    uint32_t rx_reported;
+    uint32_t rx_report_ms;
     uint32_t rx_in_context;
     pios_com_callback tx_out_cb;
     uint32_t tx_out_context;
@@ -85,15 +90,46 @@ static void usart_rx_task(void *arg)
         }
 
         bool woken = false;
+        uint16_t headroom = 0;
         uint16_t consumed = (dev->rx_in_cb)(dev->rx_in_context, buf,
-                                            (uint16_t)len, NULL, &woken);
-        if (consumed < len) {
-            /* COM layer's receive buffer is full. Dropping is the honest
-             * outcome -- there is nowhere to push back to -- but say so,
-             * because silent RX loss on a telemetry link is miserable to
-             * diagnose from the far end. */
-            printf("[PIOS] USART%d: dropped %d rx bytes (COM buffer full)\n",
-                   (int)dev->cfg->port, (int)(len - consumed));
+                                            (uint16_t)len, &headroom, &woken);
+
+        dev->rx_bytes += (uint32_t)len;
+        dev->rx_dropped += (uint32_t)(len - consumed);
+
+        /* COM layer's receive buffer is full. Dropping is the honest outcome
+         * -- there is nowhere to push back to -- but say so, because silent RX
+         * loss is miserable to diagnose from the far end.
+         *
+         * Rate limited to one line a second, and reporting totals plus the
+         * COM fifo headroom rather than a bare per-chunk count: an unrated
+         * print of every dropped chunk is itself enough console traffic to
+         * change the timing of the thing being diagnosed, and the headroom is
+         * what distinguishes "nobody is reading this port" (stuck at 0) from
+         * "a reader that briefly fell behind" (recovers). */
+        if (dev->rx_bytes != dev->rx_reported) {
+            uint32_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
+            if (now - dev->rx_report_ms >= 1000) {
+                printf("[PIOS] USART%d rx: %lu bytes, %lu dropped, fifo headroom %u\n",
+                       (int)dev->cfg->port,
+                       (unsigned long)dev->rx_bytes,
+                       (unsigned long)dev->rx_dropped,
+                       (unsigned)headroom);
+#ifdef PIOS_USART_RX_DUMP
+                /* Show the chunk itself. Whether the bytes are clean ASCII
+                 * sentences or framing hash is the one thing the counters
+                 * above cannot tell you, and it is the difference between a
+                 * parser problem and a baud problem. */
+                printf("[PIOS] USART%d raw: ", (int)dev->cfg->port);
+                for (int i = 0; i < len && i < 96; i++) {
+                    putchar((buf[i] >= 32 && buf[i] < 127) ? buf[i]
+                            : (buf[i] == '\r' || buf[i] == '\n') ? '~' : '.');
+                }
+                printf("\n");
+#endif
+                dev->rx_report_ms = now;
+                dev->rx_reported = dev->rx_bytes;
+            }
         }
     }
 }

@@ -104,21 +104,24 @@ CONFIG_HEAP_TRACING_STANDALONE=n
 # like flaky request/reply rather than corruption -- the GCS is stricter and
 # simply never links.
 #
-# The console moves to UART1 on GPIO17 (TX) / GPIO18 (RX). GPIO 22-25 DO NOT
-# EXIST on the ESP32-S3 (SOC_GPIO_VALID_GPIO_MASK masks bits 22-25), which is
-# where the esp32wroom target puts them -- copying that verbatim gives a
-# console on pins that cannot exist. These are LiteWing expansion pins.
-# uses. Boot log and panics are still reachable with a second USB-serial
-# adapter on GPIO17/18; UART0 is left to PIOS alone.
+# The console lives on UART0 at GPIO43 (TX) / GPIO44 (RX) -- the CH340K that
+# the USB socket already goes to, so the boot log and panics need no second
+# adapter.
+#
+# It USED to sit on UART1 (GPIO17/18). That moved when the GPS was fitted:
+# UART1 is now the u-blox M10's port, and the ESP32-S3 has exactly three
+# UARTs. Do not put it back without moving the GPS first.
+#
+# GPIO 22-25 DO NOT EXIST on the ESP32-S3 (SOC_GPIO_VALID_GPIO_MASK masks bits
+# 22-25), which is where the esp32wroom target puts its console -- copying that
+# target verbatim gives a console on pins that cannot exist.
 CONFIG_ESP_CONSOLE_UART_CUSTOM=y
-CONFIG_ESP_CONSOLE_UART_CUSTOM_NUM_1=y
-# 22/23 are the Qwiic I2C pins, unused here. NOT 13/14 -- 14 is the IMU
-# chip select on this board.
-CONFIG_ESP_CONSOLE_UART_TX_GPIO=17
-CONFIG_ESP_CONSOLE_UART_RX_GPIO=18
-# Match PIOS's telemetry rate so a console temporarily moved to UART0 stays
-# readable across the handover. ROM bootloader lines still arrive at 115200.
-CONFIG_ESP_CONSOLE_UART_BAUDRATE=57600
+# CONFIG_ESP_CONSOLE_UART_CUSTOM_NUM_1 is not set
+CONFIG_ESP_CONSOLE_UART_TX_GPIO=43
+CONFIG_ESP_CONSOLE_UART_RX_GPIO=44
+# 115200 to match the ROM bootloader, so esptool output and the application
+# log read at one rate.
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
 
 # --- LiteWing / ESP32-S3 -----------------------------------------------------
 # The board reports "WiFi, BLE" with no PSRAM, and GPIO35/36/37 -- the octal

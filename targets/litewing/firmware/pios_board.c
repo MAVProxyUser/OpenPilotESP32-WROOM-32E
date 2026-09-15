@@ -41,6 +41,9 @@
 #include <math.h>   /* powf(), for the barometer sanity print at boot */
 #include <flightstatus.h>
 #include <systemalarms.h>
+#include <gpspositionsensor.h>
+#include <gpssettings.h>
+#include <homelocation.h>
 #include "driver/gpio.h"
 #include "esp_system.h"
 #include <taskinfo.h>
@@ -98,6 +101,33 @@ static int32_t baro_read_reg(uint8_t addr, uint8_t reg, uint8_t *out)
  * means an id got set without a real backend behind it, so it says so rather
  * than returning plausible zeros.
  * ---------------------------------------------------------------------- */
+
+/*
+ * PIOS_DEBUGLOG_Printf: console stand-in.
+ *
+ * pios/common/pios_debuglog.c stores entries through PIOS_FLASHFS_Obj*() on
+ * pios_user_fs_id, and this target has no user flash filesystem yet (same
+ * reason as the stubs above), so that implementation cannot be built here.
+ * modules/PathPlanner calls this unconditionally -- there is no no-op path in
+ * pios_debuglog.h -- so the symbol has to exist for navigation to link.
+ *
+ * These are low-rate mission events (waypoint reached, mission resumed), so
+ * putting them on the console loses persistence but keeps the information.
+ * Replace this with the real driver once there is a user FS to log into --
+ * pulling logs off the board after a flight is the point of the real one.
+ */
+void PIOS_DEBUGLOG_Printf(char *format, ...)
+{
+    va_list args;
+
+    va_start(args, format);
+    printf("[LOG] ");
+    vprintf(format, args);
+    printf("\n");
+    va_end(args);
+}
+
+/* ---------------------------------------------------------------------- */
 /* pios/common/pios_board_info.c is not built for this target: it places the
  * blob in a .boardinfo section that only the PiOS bootloader's linker script
  * defines, and it derives fw_base/fw_size from BL_/FW_BANK values that have no
@@ -137,6 +167,7 @@ void PIOS_DEBUGLOG_UAVObject(__attribute__((unused)) uint32_t objid,
                              __attribute__((unused)) uint8_t *data)
 {}
 
+uint32_t pios_com_gps_id;
 uintptr_t pios_uavo_settings_fs_id;
 uintptr_t pios_user_fs_id;
 
@@ -615,6 +646,190 @@ static void board_pwm_selftest(void)
 #endif /* BOARD_PWM_SELFTEST */
 
 
+#ifdef BOARD_CPU_REPORT
+/*
+ * Per-core idle reporting. SystemStats.CPULoad is
+ * 100 - PIOS_TASK_MONITOR_GetIdlePercentage(), which samples
+ * xTaskGetIdleTaskHandle() -- the idle task of whichever core the caller is
+ * on. This port pins every flight task to core 1 and leaves WiFi on core 0,
+ * so that number describes core 1 alone and says nothing about the other
+ * core. When it reads 100%, this says whether core 1 is genuinely saturated
+ * or the measurement is lying.
+ */
+static void board_cpu_report_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(2000));
+
+        UBaseType_t n = uxTaskGetNumberOfTasks();
+        TaskStatus_t *st = pios_malloc(n * sizeof(TaskStatus_t));
+        if (!st) {
+            continue;
+        }
+        uint32_t total = 0;
+        n = uxTaskGetSystemState(st, n, &total);
+        if (!total) {
+            vPortFree(st);
+            continue;
+        }
+        uint32_t idle0 = 0, idle1 = 0, busiest = 0;
+        const char *busiest_name = "?";
+        for (UBaseType_t i = 0; i < n; i++) {
+            if (!strcmp(st[i].pcTaskName, "IDLE0")) {
+                idle0 = st[i].ulRunTimeCounter;
+            } else if (!strcmp(st[i].pcTaskName, "IDLE1")) {
+                idle1 = st[i].ulRunTimeCounter;
+            } else if (st[i].ulRunTimeCounter > busiest) {
+                busiest = st[i].ulRunTimeCounter;
+                busiest_name = st[i].pcTaskName;
+            }
+        }
+        /* ulRunTimeCounter is cumulative since boot, so a raw print is a
+         * since-boot AVERAGE that keeps converging and understates what the
+         * board is doing now. Difference against the previous sample. Per-task
+         * deltas need the previous value kept per task; match on the handle,
+         * which is stable for the life of the task. */
+#define CPUREP_MAX 48
+        static TaskHandle_t p_h[CPUREP_MAX];
+        static uint32_t p_rt[CPUREP_MAX];
+        static uint32_t p_total, p_idle0, p_idle1;
+        uint32_t d_total = total - p_total;
+
+        if (d_total) {
+            printf("[BOARD] ==== 2s ====  core0 idle %lu%%  core1 idle %lu%%\n",
+                   (unsigned long)(100ULL * (idle0 - p_idle0) / d_total),
+                   (unsigned long)(100ULL * (idle1 - p_idle1) / d_total));
+            for (UBaseType_t i = 0; i < n; i++) {
+                uint32_t prev = 0;
+                for (int k = 0; k < CPUREP_MAX; k++) {
+                    if (p_h[k] == st[i].xHandle) { prev = p_rt[k]; break; }
+                }
+                uint32_t d = st[i].ulRunTimeCounter - prev;
+                unsigned pct = (unsigned)(1000ULL * d / d_total);
+                if (pct >= 3) {
+                    /* TaskStatus_t carries no core id in this IDF; ask the
+                     * kernel for the task's affinity instead. */
+                    BaseType_t core = xTaskGetCoreID(st[i].xHandle);
+                    printf("[BOARD]   %-16s core%-3s %2u.%u%%\n",
+                           st[i].pcTaskName,
+                           (core == 0) ? "0" : (core == 1) ? "1" : "any",
+                           pct / 10, pct % 10);
+                }
+            }
+        }
+        for (UBaseType_t i = 0; i < n && i < CPUREP_MAX; i++) {
+            p_h[i] = st[i].xHandle; p_rt[i] = st[i].ulRunTimeCounter;
+        }
+        p_total = total; p_idle0 = idle0; p_idle1 = idle1;
+        vPortFree(st);
+    }
+}
+#endif
+
+/*
+ * Status LEDs.
+ *
+ * The board carries three LEDs (BLUE GPIO7, RED GPIO8, GREEN GPIO9) and the
+ * firmware only ever used the blue one. Before a GPS-assisted flight you need
+ * to know two things from across the field, without a laptop: may it arm, and
+ * will position hold actually hold. So:
+ *
+ *   RED    off          disarmed, nothing blocking
+ *          fast blink   CANNOT ARM - an arm-blocking alarm is set
+ *          solid        ARMED
+ *
+ *   GREEN  off          no 3D fix
+ *          slow blink   3D fix, but NOT good enough for position hold
+ *          solid        position hold is ready
+ *
+ * Green deliberately mirrors filterlla.c's own admission test (Fix3D, plus
+ * Satellites and PDOP against GPSSettings) and adds HomeLocation.Set. That is
+ * the exact condition under which PositionState North/East stop being zero, so
+ * a solid green means the brake-and-hold has real position to work with --
+ * rather than merely meaning "a GPS is plugged in", which is the thing that
+ * would get a quad flown into a fence.
+ *
+ * Runs on core 0 with the rest of the housekeeping; see the affinity table in
+ * pios_esp32.h.
+ */
+static void board_status_led_task(__attribute__((unused)) void *arg)
+{
+    /* UAVObjects are registered by the module init that runs after this task
+     * is created, so wait for the ones we read rather than racing them. */
+    while (!GPSPositionSensorHandle() || !FlightStatusHandle()
+           || !SystemAlarmsHandle() || !HomeLocationHandle()
+           || !GPSSettingsHandle()) {
+        vTaskDelay(pdMS_TO_TICKS(250));
+    }
+
+    uint32_t tick = 0;
+
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+        tick++;
+
+        /* ---- RED: arming ---- */
+        uint8_t armed = FLIGHTSTATUS_ARMED_DISARMED;
+        FlightStatusArmedGet(&armed);
+
+        if (armed == FLIGHTSTATUS_ARMED_ARMED) {
+            PIOS_LED_On(PIOS_LED_ARMED);
+        } else {
+            /* Same rule armhandler.c:okToArm() applies: any Critical alarm
+             * blocks, except GPS and Telemetry. */
+            SystemAlarmsData alarms;
+            SystemAlarmsGet(&alarms);
+            bool blocked = false;
+            for (uint8_t i = 0; i < SYSTEMALARMS_ALARM_NUMELEM; i++) {
+                if (i == SYSTEMALARMS_ALARM_GPS || i == SYSTEMALARMS_ALARM_TELEMETRY) {
+                    continue;
+                }
+                if (SystemAlarmsAlarmToArray(alarms.Alarm)[i] >= SYSTEMALARMS_ALARM_CRITICAL) {
+                    blocked = true;
+                    break;
+                }
+            }
+            if (blocked) {
+                if (tick & 1) {         /* ~5Hz */
+                    PIOS_LED_On(PIOS_LED_ARMED);
+                } else {
+                    PIOS_LED_Off(PIOS_LED_ARMED);
+                }
+            } else {
+                PIOS_LED_Off(PIOS_LED_ARMED);
+            }
+        }
+
+        /* ---- GREEN: navigation readiness ---- */
+        GPSPositionSensorData gps;
+        GPSSettingsData gpsSettings;
+        HomeLocationData home;
+
+        GPSPositionSensorGet(&gps);
+        GPSSettingsGet(&gpsSettings);
+        HomeLocationGet(&home);
+
+        bool fix3d = (gps.Status == GPSPOSITIONSENSOR_STATUS_FIX3D);
+        bool navReady = fix3d
+                        && (gps.Satellites >= gpsSettings.MinSatellites)
+                        && (gps.PDOP < gpsSettings.MaxPDOP)
+                        && (home.Set == HOMELOCATION_SET_TRUE);
+
+        if (navReady) {
+            PIOS_LED_On(PIOS_LED_NAVREADY);
+        } else if (fix3d) {
+            if ((tick % 10) < 5) {      /* ~1Hz */
+                PIOS_LED_On(PIOS_LED_NAVREADY);
+            } else {
+                PIOS_LED_Off(PIOS_LED_NAVREADY);
+            }
+        } else {
+            PIOS_LED_Off(PIOS_LED_NAVREADY);
+        }
+    }
+}
+
 void PIOS_Board_Init(void)
 {
     PIOS_DELAY_Init();
@@ -742,6 +957,15 @@ void PIOS_Board_Init(void)
     AlarmsInitialize();
 
     /* --- Telemetry / console ------------------------------------------ */
+#ifdef PIOS_INCLUDE_GPS
+    /* UART1 on the expansion header. Brought up unconditionally: a module that
+     * is not plugged in simply never sends anything, and modules/GPS raises its
+     * own alarm for that, which is more useful than a silent absence. */
+    board_com_init(&pios_com_gps_id, &pios_usart_gps_cfg,
+                   PIOS_COM_GPS_RX_BUF_LEN, PIOS_COM_GPS_TX_BUF_LEN);
+    printf("[BOARD] GPS UART1 up on RX=GPIO18 TX=GPIO17 @115200\n");
+#endif
+
     board_com_init(&pios_com_telem_rf_id, &pios_usart_telem_cfg,
                    PIOS_COM_TELEM_RF_RX_BUF_LEN, PIOS_COM_TELEM_RF_TX_BUF_LEN);
 
@@ -845,6 +1069,13 @@ void PIOS_Board_Init(void)
             }
         }
         printf("\n");
+    }
+#endif
+
+#ifdef BOARD_GPS_SNIFF
+    {
+        extern void PIOS_GPS_Sniff(void);
+        PIOS_GPS_Sniff();
     }
 #endif
 
@@ -1018,6 +1249,77 @@ void PIOS_Board_Init(void)
         AlarmsSet(SYSTEMALARMS_ALARM_BOOTFAULT, SYSTEMALARMS_ALARM_CRITICAL);
     }
 #endif /* PIOS_INCLUDE_ICM20602 */
+
+
+#ifdef BOARD_CPU_REPORT
+    xTaskCreate(board_cpu_report_task, "CPUReport", 3072 / 4, NULL,
+                tskIDLE_PRIORITY + 1, NULL);
+#endif
+
+    /* Identify whatever is sitting at 0x1E on I2C1. A genuine HMC5883L/HMC5983
+     * returns 'H','4','3' from its three ID registers (0x0A-0x0C); the QMC5883L
+     * that is commonly sold under the same name lives at 0x0D instead and has a
+     * different register map entirely. Check before registering: a magnetometer
+     * that answers but misidentifies would fail PIOS_SENSORS_Test(), and
+     * SensorsTask responds to that by parking without reloading its watchdog
+     * flag -- i.e. a silent board-wide reboot loop. */
+    {
+        uint8_t ida = 0, idb = 0, idc = 0;
+        if (PIOS_ESP32_I2C_Probe(pios_i2c_baro_id, 0x1E)) {
+            baro_read_reg(0x1E, 0x0A, &ida);
+            baro_read_reg(0x1E, 0x0B, &idb);
+            baro_read_reg(0x1E, 0x0C, &idc);
+            printf("[BOARD] mag at 0x1E: id='%c%c%c' (0x%02X 0x%02X 0x%02X) -> %s\n",
+                   (ida >= 32 && ida < 127) ? ida : '.',
+                   (idb >= 32 && idb < 127) ? idb : '.',
+                   (idc >= 32 && idc < 127) ? idc : '.',
+                   ida, idb, idc,
+                   (ida == 'H' && idb == '4' && idc == '3') ? "HMC5883L/5983"
+                                                            : "UNKNOWN part");
+        }
+    }
+
+#ifdef PIOS_INCLUDE_HMC5X83
+    /* Bring the mag up only if it actually answered and identified above.
+     * PIOS_SENSORS_Register()ing a part that then fails PIOS_SENSORS_Test()
+     * makes SensorsTask park without reloading its watchdog flag, which the
+     * board experiences as a silent reboot loop with no mention of the mag. */
+    {
+        uint8_t ida = 0, idb = 0, idc = 0;
+        if (PIOS_ESP32_I2C_Probe(pios_i2c_baro_id, 0x1E)
+            && baro_read_reg(0x1E, 0x0A, &ida) == 0
+            && baro_read_reg(0x1E, 0x0B, &idb) == 0
+            && baro_read_reg(0x1E, 0x0C, &idc) == 0
+            && ida == 'H' && idb == '4' && idc == '3') {
+            pios_hmc5x83_dev_t mag = PIOS_HMC5x83_Init(&pios_hmc5x83_cfg,
+                                                       pios_i2c_baro_id, 0);
+            if (mag) {
+                PIOS_HMC5x83_Register(mag);
+                printf("[BOARD] HMC5883L at 0x1E registered\n");
+            } else {
+                printf("[BOARD] HMC5883L at 0x1E failed to initialise\n");
+            }
+        }
+    }
+#endif /* PIOS_INCLUDE_HMC5X83 */
+
+    xTaskCreate(board_status_led_task, "StatusLED", 3072 / 4, NULL,
+                tskIDLE_PRIORITY + 1, NULL);
+
+    /* Report what modules/Sensors will find. Its SensorsTask runs the same
+     * PIOS_SENSORS_Test() over this list and, if ANY of them fails, parks in a
+     * `while (1) vTaskDelay(10)` that never reloads its watchdog flag -- so a
+     * single failing sensor shows up as a board-wide watchdog reboot loop with
+     * both cores idle and nothing naming the sensor. Say which one here. */
+    {
+        const PIOS_SENSORS_Instance *list = PIOS_SENSORS_GetList();
+        PIOS_SENSORS_Instance *si;
+        LL_FOREACH((PIOS_SENSORS_Instance *)list, si) {
+            printf("[BOARD] sensor type=0x%02X polled=%d test=%s\n",
+                   (unsigned)si->type, (int)si->driver->is_polled,
+                   PIOS_SENSORS_Test(si) ? "PASS" : "FAIL");
+        }
+    }
 
     /* --- Actuator outputs --------------------------------------------- */
 #ifdef PIOS_INCLUDE_SERVO

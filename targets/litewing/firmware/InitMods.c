@@ -11,51 +11,62 @@
  * KEEP IN SYNC with the NINJA_MODULE_SRCS list in esp-idf/main/CMakeLists.txt.
  * A module compiled in but missing here simply never starts, silently.
  *
- * CC-class build: Attitude is the standalone complementary filter
- * (modules/Attitude/attitude.c), not the StateEstimation chain. Every
- * Stabilization mode (Rate, Attitude, AxisLock, Rattitude, ...) is available;
- * what is absent is navigation (no baro/mag/GPS modules).
+ * Navigation build: Sensors publishes the *Sensor objects and StateEstimation
+ * runs the stock filter chain selected by RevoSettings.FusionAlgorithm,
+ * producing AttitudeState/PositionState/VelocityState. This replaced the
+ * standalone complementary filter (modules/Attitude) and modules/AltFilter.
+ *
+ * ORDER MATTERS: Sensors must initialize before StateEstimation, which
+ * connects callbacks to the *Sensor objects StateEstimation consumes.
  * @see        The GNU Public License (GPL) Version 3
  *****************************************************************************/
 
-extern unsigned int AttitudeInitialize(void);
+extern unsigned int SensorsInitialize(void);
+extern unsigned int StateEstimationInitialize(void);
 extern unsigned int StabilizationInitialize(void);
 extern unsigned int ActuatorInitialize(void);
 extern unsigned int ReceiverInitialize(void);
 extern unsigned int ManualControlInitialize(void);
 extern unsigned int TelemetryInitialize(void);
 extern unsigned int RemoteIDInitialize(void);
-extern unsigned int AltFilterInitialize(void);
+extern unsigned int GPSInitialize(void);
+extern unsigned int PathFollowerInitialize(void);
 
-extern unsigned int AttitudeStart(void);
+extern unsigned int SensorsStart(void);
+extern unsigned int StateEstimationStart(void);
 extern unsigned int StabilizationStart(void);
 extern unsigned int ActuatorStart(void);
 extern unsigned int ReceiverStart(void);
 extern unsigned int ManualControlStart(void);
 extern unsigned int TelemetryStart(void);
 extern unsigned int RemoteIDStart(void);
-extern unsigned int AltFilterStart(void);
+extern unsigned int GPSStart(void);
+extern unsigned int PathFollowerStart(void);
 
 void InitModules(void)
 {
-    AttitudeInitialize();
+    SensorsInitialize();
+    StateEstimationInitialize();
     StabilizationInitialize();
     ActuatorInitialize();
     ReceiverInitialize();
     ManualControlInitialize();
     TelemetryInitialize();
     RemoteIDInitialize();
-    AltFilterInitialize();
+    GPSInitialize();
+    PathFollowerInitialize();
 }
 
 void StartModules(void)
 {
-    AttitudeStart();
+    SensorsStart();
+    StateEstimationStart();
     StabilizationStart();
     ActuatorStart();
     ReceiverStart();
     ManualControlStart();
     TelemetryStart();
     RemoteIDStart();
-    AltFilterStart();
+    GPSStart();
+    PathFollowerStart();
 }

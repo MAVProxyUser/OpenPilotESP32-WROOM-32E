@@ -35,9 +35,13 @@
 // ------------------------
 // PIOS_LED
 // ------------------------
-#define PIOS_LED_HEARTBEAT     0
-#define PIOS_LED_ALARM         1
-#define PIOS_LED_NUM           1
+#define PIOS_LED_HEARTBEAT     0   /* BLUE,  GPIO7  */
+#define PIOS_LED_ARMED         1   /* RED,   GPIO8  */
+#define PIOS_LED_NAVREADY      2   /* GREEN, GPIO9  */
+/* PIOS_LED_ALARM is what shared code reaches for; point it at the red one
+ * rather than leaving it aliased to the heartbeat. */
+#define PIOS_LED_ALARM         PIOS_LED_ARMED
+#define PIOS_LED_NUM           3
 
 // ------------------------
 // PIOS_WDG
@@ -57,6 +61,10 @@
 #define PIOS_WDG_ATTITUDE      0x0004
 #define PIOS_WDG_MANUAL        0x0008
 #define PIOS_WDG_AUTOTUNE      0x0010
+// modules/Sensors, which replaced modules/Attitude as the thing reading the
+// IMU. PIOS_WDG_ATTITUDE stays defined because attitude.c still references it
+// and is still part of the tree -- this board just no longer builds it.
+#define PIOS_WDG_SENSORS       0x0020
 
 // ------------------------
 // Sensor sample rate
@@ -66,7 +74,7 @@
 // a 240MHz LX6 with a hardware FPU has considerably more headroom, so 500 is
 // a starting point and not a ceiling. Raise it once you have measured the
 // real loop margin on hardware.
-#define PIOS_SENSOR_RATE       500.0f
+#define PIOS_SENSOR_RATE       250.0f
 
 // ------------------------
 // Receiver
@@ -100,7 +108,7 @@
 // ------------------------
 // COM
 // ------------------------
-#define PIOS_COM_MAX_DEVS      3
+#define PIOS_COM_MAX_DEVS      4   /* telemetry RF, telemetry serial, GPS, spare */
 
 /* Must hold a whole GCS burst: on connect it requests every object and
  * its metaobject back to back (~150 requests of ~13 bytes in a few
@@ -114,6 +122,14 @@
 // defined in pios_board.c.
 extern uint32_t pios_com_telem_rf_id;
 #define PIOS_COM_TELEM_RF      (pios_com_telem_rf_id)
+
+/* GPS on UART1. 512 in is a little over three seconds of 115200 NMEA at the
+ * rates a module emits between reads; the out buffer only carries the
+ * occasional configuration sentence. */
+#define PIOS_COM_GPS_RX_BUF_LEN 512
+#define PIOS_COM_GPS_TX_BUF_LEN 128
+extern uint32_t pios_com_gps_id;
+#define PIOS_COM_GPS           (pios_com_gps_id)
 
 #define TELEM_QUEUE_SIZE       20
 
@@ -143,6 +159,22 @@ extern uint32_t pios_com_telem_rf_id;
 // as everything above.
 #define PIOS_ALTFILTER_STACK_SIZE      4096
 #define PIOS_ALTITUDEHOLD_STACK_SIZE   2048
+// modules/GPS ships 580 bytes (NMEA, PIOS_GPS_MINIMAL) -- a CopterControl
+// number. On this board that stack never survived a single parse: the COM
+// ring filled and the driver logged a steady "USART1: dropped 64 rx bytes
+// (COM buffer full)" because nothing was draining it, and GPSPositionSensor
+// sat at NoGPS with the module apparently running.
+#define PIOS_GPS_STACK_SIZE            4096
+// StateEstimation chain (replaces modules/Attitude + modules/AltFilter).
+// Sensors drives the PIOS_SENSORS drivers; the StateEstimation floor is what
+// the EKF's callback task actually gets, since stateestimation.c maxes its
+// own STACK_SIZE_BYTES against each filter's request (highest is 2048).
+#define PIOS_SENSORS_STACK_SIZE        4096
+#define PIOS_STATEESTIMATION_STACK_SIZE 8192
+// Navigation. PathFollower runs the VTOL velocity/position PIDs and the
+// land/brake FSMs; PathPlanner sequences waypoints and builds RTH.
+#define PIOS_PATHFOLLOWER_STACK_SIZE   16384
+#define PIOS_PATHPLANNER_STACK_SIZE    8192
 
 // NOTE the unit change: eventdispatcher.c passes this to the callback
 // scheduler as (STACK_SIZE * 4), so this one is in WORDS, not bytes.

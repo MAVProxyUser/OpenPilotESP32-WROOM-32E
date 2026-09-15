@@ -37,6 +37,9 @@
 #ifdef PIOS_INCLUDE_BMP280
 #include <pios_bmp280.h>
 #endif
+#ifdef PIOS_INCLUDE_HMC5X83
+#include <pios_hmc5x83.h>
+#endif
 #endif
 
 /* ---------------------------------------------------------------------- *
@@ -51,7 +54,18 @@ static const struct pios_esp32_led board_leds[] = {
     {
         /* GPIO13 is the plain STAT LED on a Thing Plus. GPIO2 there drives a
          * WS2812 RGB LED, which will not respond to a simple level. */
-        .pin        = GPIO_NUM_7,   /* LED_BLUE on LiteWing (RED 8, GREEN 9) */
+        .pin        = GPIO_NUM_7,   /* LED_BLUE on LiteWing */
+        .active_low = false,
+    },
+    {
+        /* RED, GPIO8: arming state. Was fitted but never wired up in firmware
+         * -- the board has three LEDs and only ever used one. */
+        .pin        = GPIO_NUM_8,
+        .active_low = false,
+    },
+    {
+        /* GREEN, GPIO9: navigation readiness. */
+        .pin        = GPIO_NUM_9,
         .active_low = false,
     },
 };
@@ -207,6 +221,30 @@ const struct pios_bmp388_cfg pios_bmp388_cfg = {
 };
 #endif /* PIOS_INCLUDE_BMP388 */
 
+#ifdef PIOS_INCLUDE_HMC5X83
+/* HMC5883L on I2C1 at 0x1E, alongside the BMP388 at 0x77 (the VL53L1X pads:
+ * VIN/GND/SCL1=GPIO41/SDA1=GPIO40). Confirmed genuine by its ID registers
+ * reading 'H','4','3' -- the QMC5883L widely sold under the same name answers
+ * at 0x0D with a different register map and is NOT this driver's part.
+ *
+ * 75Hz is the part's maximum and costs nothing here: modules/Sensors polls it,
+ * and a magnetometer is a slow heading correction, so the only thing rate buys
+ * is a shorter worst-case age on each sample.
+ *
+ * Gain 1.9 Ga full scale: earth field is ~0.5 Ga, leaving better than 3x
+ * headroom for the throttle-dependent field the motor leads add. Dropping to
+ * 1.3 would buy resolution but risks saturating on current spikes, which
+ * presents as heading that lurches with throttle rather than as a clean error. */
+const struct pios_hmc5x83_cfg pios_hmc5x83_cfg = {
+    .M_ODR            = PIOS_HMC5x83_ODR_75,
+    .Meas_Conf        = PIOS_HMC5x83_MEASCONF_NORMAL,
+    .Gain             = PIOS_HMC5x83_GAIN_1_9,
+    .Mode             = PIOS_HMC5x83_MODE_CONTINUOUS,
+    .TempCompensation = false,
+    .Driver           = &PIOS_HMC5x83_I2C_DRIVER,
+};
+#endif /* PIOS_INCLUDE_HMC5X83 */
+
 #ifdef PIOS_INCLUDE_BMP280
 /* Measured the same way as the BMP388 above, 9 configs:
  *
@@ -264,7 +302,17 @@ const struct pios_icm20602_cfg pios_icm20602_cfg = {
     .Fifo_store          = PIOS_ICM20602_FIFO_TEMP_OUT | PIOS_ICM20602_FIFO_GYRO_X_OUT |
                            PIOS_ICM20602_FIFO_GYRO_Y_OUT | PIOS_ICM20602_FIFO_GYRO_Z_OUT,
     .Smpl_rate_div_no_dlp = 0,
-    .Smpl_rate_div_dlp    = 1,     /* 1kHz internal / (1+1) = 500Hz          */
+    /* 1kHz internal / (2+1) = 333Hz, DELIBERATELY faster than the 250Hz
+     * PIOS_SENSOR_RATE that modules/Sensors polls at. Matching the two exactly
+     * makes every poll marginal by construction: SensorsTask waits exactly one
+     * sensor period for the primary sample, so any jitter at all leaves the
+     * queue empty, which it counts as a sensor failure (PIOS_SENSOR_Reset plus
+     * SYSTEMALARMS_ALARM_SENSORS Critical, which in turn flaps the Attitude
+     * alarm and can block arming). Running the producer ~33% ahead means a
+     * sample is always already waiting. SensorsTask drains and averages
+     * whatever it finds on each pass, so the surplus costs nothing. */
+    .Smpl_rate_div_dlp    = 2,     /* 1kHz/(2+1) = 333Hz, ahead of the 250Hz
+                                    * PIOS_SENSOR_RATE the consumer polls at. */
     .interrupt_cfg        = PIOS_ICM20602_INT_CLR_ANYRD,
     .interrupt_en         = PIOS_ICM20602_INTEN_DATA_RDY,
     /* MUST be 0 here. USERCTL_DIS_I2C is bit 4 = I2C_IF_DIS, which on the
@@ -306,7 +354,15 @@ const struct pios_icm20602_cfg pios_icm20602_cfg = {
     .orientation          = PIOS_ICM20602_TOP_0DEG,
     .fast_prescaler       = PIOS_SPI_PRESCALER_4,
     .std_prescaler        = PIOS_SPI_PRESCALER_64,
-    .max_downsample       = 1,
+    /* Queue depth is max_downsample + 1, so 1 gave a 2-sample buffer -- about
+     * 8ms at 250Hz. This platform has documented ~4ms SMP/lwIP stalls, so a
+     * single hiccup left the queue empty at modules/Sensors' next poll, which
+     * counts as a primary-sensor miss: it calls PIOS_SENSOR_Reset() and raises
+     * SYSTEMALARMS_ALARM_SENSORS Critical. (modules/Attitude never noticed,
+     * because it read the IMU itself rather than through this queue.)
+     * SensorsTask drains and averages everything waiting on each pass, so a
+     * deeper queue costs nothing but ~32ms of slack to absorb the stalls. */
+    .max_downsample       = 7,
 };
 
 #endif /* PIOS_INCLUDE_ICM20602 */
@@ -327,6 +383,28 @@ const struct pios_esp32_usart_cfg pios_usart_telem_cfg = {
     .init_baud      = 115200,
     .rx_buffer_size = 512,
     .tx_buffer_size = 512,
+    .invert_rx      = false,
+};
+
+/* GPS, on UART1 and the expansion header's GPIO17/18.
+ *
+ * 115200 because that is what the module actually does: a bench sniff of a
+ * Sequre M10-12 (firmware/gps_sniff.c) found NMEA and UBX sync bytes there,
+ * and nothing intelligible at 9600, which is what older u-blox parts default
+ * to and what the wiring guides all assume.
+ *
+ * This is the pin pair the IDF console used to sit on. The ESP32-S3 has three
+ * UARTs and all three are now spoken for -- UART0 to the CH340K and the GCS,
+ * UART1 here, UART2 to the DSM satellite -- so the console has to move to
+ * UART0 or go away entirely. See sdkconfig.defaults.
+ */
+const struct pios_esp32_usart_cfg pios_usart_gps_cfg = {
+    .port           = UART_NUM_1,
+    .rx_pin         = GPIO_NUM_18,  /* board RX <- GPS TX */
+    .tx_pin         = GPIO_NUM_17,  /* board TX -> GPS RX */
+    .init_baud      = 115200,
+    .rx_buffer_size = 512,
+    .tx_buffer_size = 256,
     .invert_rx      = false,
 };
 

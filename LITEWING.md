@@ -480,32 +480,92 @@ What is verified, and what is not:
 | Compiles into the target | **yes**, twin still boots 0x1302 with brushed endpoints intact |
 | I2C transactions, real silicon | **untested** — no BMP280 on a posix twin's nonexistent bus |
 
-### GPS + compass — Matek M9N-5883
+### GPS + compass — fitted and working
 
-u-blox NEO-M9N on UART, **QMC5883L** compass on I2C, JST-GH 6-pin
-(`5V, G, TX, RX, DA, CL`), 32×32×10 mm, 14.5 g, 38400 baud default.
+Not the Matek M9N-5883 this section used to plan for. What is on the board:
 
-| module pin | LiteWing |
-| --- | --- |
-| TX (GNSS) | any free GPIO as UART RX, e.g. **GPIO18** |
-| RX (GNSS) | any free GPIO as UART TX, e.g. **GPIO17** |
-| DA / CL | **GPIO40 / GPIO41** (I2C1) — *not* I2C0, keep the 500 Hz IMU bus clear |
-| G | GND |
-| 5V | **see below** |
+| part | bus | address / pins | state |
+| --- | --- | --- | --- |
+| **Sequre M10-12** (u-blox M10) | UART1 | RX **GPIO18**, TX **GPIO17**, 115200 | Fix3D, UBX |
+| **HMC5883L** | I2C1 | **0x1E** (SCL 41 / SDA 40) | reading, uncalibrated |
+| BMP388 | I2C1 | 0x77 | working |
 
-Two blockers before ordering a cable:
+Both sensors share I2C1 with the barometer — the VL53L1X pads
+(`VIN / GND / SCL1 / SDA1`). The GPS runs on **3.3 V**, not the 5 V its manual
+asks for; no boost converter was needed.
 
-- **Power.** The module wants 4–6 V. LiteWing has no 5 V rail in flight: the
-  header offers 3V3 and VBUS, and VBUS only exists with USB plugged in. On a
-  1S pack this needs a boost converter.
-- **The compass is QMC5883L**, which despite the name is a different part from
-  the HMC5883L that `pios_hmc5x83.c` covers. It needs its own driver.
+**The M10 must run UBX, not NMEA.** It leaves the factory emitting UBX binary
+*and* NMEA interleaved on the same port, and `parse_nmea_stream()` abandons its
+whole input buffer on any non-`$` byte outside a sentence — so every UBX frame
+took the NMEA following it down too. Checksum-valid `$GNRMC`/`$GNGSA` arrived
+continuously at ~4.7 kB/s and the parser still completed about one sentence a
+minute, leaving `GPSPositionSensor.Status` at `NoGPS`. UBX is the right answer
+anyway: `ubx_autoconfig` silences the NMEA at source, and the NAV solution
+carries velocity and accuracy estimates NMEA does not.
 
-The GPS side is the easy half: `modules/GPS` already has `UBX.c` and
-`ubx_autoconfig.c`, so a u-blox M9N is enable-and-wire. GPS is also what turns
-the Remote ID broadcast from standards-shaped into actually compliant.
+**Verify the compass part before wiring.** Most modules sold as "HMC5883L" —
+the blue GY-271 especially — are actually **QMC5883L**: address 0x0D, different
+register map, no in-tree driver. A genuine HMC answers at **0x1E** and its ID
+registers (0x0A-0x0C) read `H`, `4`, `3`. The board prints this at boot:
+
+    [BOARD] I2C1 scan (SCL=41 SDA=40): 0x77 0x1E
+    [BOARD] mag at 0x1E: id='H43' (0x48 0x34 0x33) -> HMC5883L/5983
+    [BOARD] HMC5883L at 0x1E registered
+
+A genuine HMC needs **no new driver** — `pios/common/pios_hmc5x83.c` is in-tree
+and `PIOS_I2C_Transfer` already exists in this port. Two fixes were needed to
+use it here, both upstream-safe:
+
+- The driver sets `data_ready` **only** in its DRDY interrupt handler, yet
+  declares `is_polled = true`. With no DRDY wire it registered, passed
+  `PIOS_SENSORS_Test()`, and then silently never produced a sample. It now
+  reads the part's own status register (0x09 bit 0) when
+  `PIOS_HMC5X83_HAS_GPIOS` is undefined. STM32 targets are untouched.
+- Its SPI half uses the STM32 StdPeriph name `SPI_BaudRatePrescaler_16`;
+  aliased to `PIOS_SPI_PRESCALER_16` in `pios/esp32/pios_esp32.h`. Dead code
+  here, but it still has to compile.
+
+#### HomeLocation, and a WMM bug worth knowing about
+
+`HomeLocation.Be` — the earth's field vector at home — is what `filtermag.c`
+scores every magnetometer sample against. Without a valid one the Magnetometer
+alarm sits at Critical and `armhandler.c` refuses to arm, in **every** fusion
+mode.
+
+`libraries/WorldMagModel.c` had a **use-after-free** that made this impossible
+to satisfy: `WMM_GetMagVector()` assigned `B[]` in nT, FREE()d
+`GeoMagneticElements`, and then read back through the dangling pointer to
+rescale to milligauss. Zeros on a host build, about -1.7e36 on the ESP32 —
+while returning success. A perfectly good GPS fix still produced an unarmable
+board. Fixed by scaling inside the success branch.
+
+(Separately, `WMM_DateToYear()` validates month and day but never the year, and
+the coefficients are WMM-2010. The date is now clamped to their 2015 validity;
+that is an accuracy fix, worth a degree or two of declination, and was *not*
+the cause of the garbage.)
+
+Home is now set two ways: the GPS sets and **persists** it on the first
+qualifying fix, and a hand-entered lat/lon gets its `Be` computed by the
+board's own WMM. That second path exists because the GCS carries no magnetic
+model at all — nothing outside the firmware can produce `Be`.
+
+#### The thresholds that gate everything
+
+`GPSSettings.MaxPDOP` (3.5) and `MinSatellites` (7) gate **three** things at
+once: auto-home, `filterlla.c` converting GPS lat/lon into NED, and therefore
+`PositionState` North/East, `TakeOffLocation` and return-to-home. Below them
+PositionState horizontal stays exactly 0.00 and position hold has nothing to
+hold. Indoors at a window this board reaches 5-6 sats / PDOP 4-8, so none of it
+engages; open sky is not optional.
 
 ### Altitude hold -- fitted and working
+
+> **Superseded.** This section describes the `modules/AltFilter` era. That
+> module has been removed — the vertical channel now comes from stock
+> StateEstimation (`filteraltitude.c` + `filterbaro.c`). The barometer
+> measurements and the sensor-rate reasoning below still hold; the references
+> to AltFilter's own constants do not. See **The navigation stack**.
+
 
 A barometer is on the expansion header and the chain behind it is compiled in.
 Wiring, on the pads next to the VL53L1X footprint:
@@ -651,21 +711,132 @@ is discounting the barometer heavily. Resist lowering it on bench numbers
 alone: a board on a desk cannot reproduce prop wash over an open port, which
 is the disturbance that assumption is really carrying.
 
+## The navigation stack
+
+`modules/Attitude` (the standalone complementary filter) and the hand-written
+`modules/AltFilter` are **out**. The board now runs stock `modules/Sensors` +
+`modules/StateEstimation`, the same chain Revolution uses, plus
+`modules/PathFollower`. Validated against the old filter at the same physical
+pose: roll 2.7137 -> 2.7043, pitch 1.4918 -> 1.5198, identical 0.0008 deg noise.
+
+Port traps this uncovered, all of the same shape — shared code carrying
+CopterControl assumptions:
+
+- `PIOS_ICM20602_Test()` accepted only WHO_AM_I 0x12 while this board's part
+  answers 0x68. Nothing called it until Sensors did, and the symptom was **not**
+  "IMU failed": a failing sensor makes SensorsTask park in a
+  `while (1) vTaskDelay(10)` that never reloads its watchdog flag, so the board
+  became a silent watchdog reboot loop with both cores idle and no mention of
+  the IMU.
+- Stack sizes again (`PIOS_SENSORS_STACK_SIZE`, `PIOS_STATEESTIMATION_STACK_SIZE`,
+  `PIOS_PATHFOLLOWER_STACK_SIZE`). The StateEstimation one is a FLOOR —
+  stateestimation.c maxes it against each filter's own request.
+- `PIOS_WDG_SENSORS` did not exist in the board header.
+
+**PathPlanner is deliberately NOT built.** It alone panics this board:
+StoreProhibited at address 8 inside `PIOS_CALLBACKSCHEDULER_Dispatch`, reached
+from altitudeloop.c, i.e. an unrelated callback's scheduler-task pointer is
+corrupt. Ruled out by measurement: callback stack size (1K/3K/8K/16K, each
+verified in effect), heap (~159 KB free), the priority-array bounds. It appears
+only when PathPlanner creates a fifth callback scheduler task
+(`CALLBACK_TASK_NAVIGATION`); moving it onto an existing task makes the symptom
+vanish, which looks like heap layout masking the corruption rather than fixing
+it, so that workaround was not taken. Prime suspect is `restorePathPlan()`,
+which restores a stored mission through a flashfs this target does not have.
+
+Position hold and return-to-home do **not** need it:
+`ManualControl/pathfollowerhandler.c` calls `plan_setup_positionHold()` and
+`plan_setup_returnToBase()` directly and PathFollower executes the resulting
+PathDesired. PathPlanner only sequences multi-waypoint missions.
+
+### Flight mode 2: Rattitude + GPS Assist
+
+Acro at the stick edges, self-levelling in the middle, and let go to brake and
+park in 3D:
+
+    FlightModeSettings.Stabilization2Settings = Rattitude, Rattitude, AxisLock, CruiseControl
+    StabilizationSettings.FlightModeAssistMap = None, GPSAssist, None, None, None, None
+
+`isAssistedFlightMode()` keys only on `FlightModeAssistMap[position]` and the
+bank's **thrust** mode — never on the roll/pitch/yaw modes — so Rattitude is
+orthogonal to the assist. CruiseControl thrust gives full `GPSASSIST` (auto
+thrust, true 3D hold); AltitudeHold/Vario would give
+`GPSASSIST_PRIMARYTHRUST`, leaving you the throttle.
+
+**You cannot arm in this position.** `armhandler.c:296-308` refuses both ways:
+AltitudeHold/Vario thrust returns false, and `GPSASSIST` returns false ("as it
+sits waiting to launch, it will move to hold, and auto thrust will auto launch
+otherwise"). Arm in position 1, take off, then switch.
+
+"Let go" is `flagRollPitchHasInput = |Roll| > 0 || |Pitch| > 0` — an EXACT
+zero. That only works because `receiver.c` forces `DeadbandAssistedControl`
+(0.08 here) whenever assist is active; with no deadband, stick noise would
+never let it enter BRAKE.
+
+### Status LEDs
+
+The board has **three** LEDs and the firmware drove one. BLUE GPIO7 (heartbeat,
+unchanged), RED GPIO8, GREEN GPIO9, driven by `board_status_led_task` on core 0:
+
+| LED | state | meaning |
+| --- | --- | --- |
+| RED | off | disarmed, nothing blocking |
+| RED | fast blink | **cannot arm** — an arm-blocking alarm is set |
+| RED | solid | armed |
+| GREEN | off | no 3D fix |
+| GREEN | slow blink | 3D fix, but not good enough to hold position |
+| GREEN | solid | position hold is ready |
+
+Green mirrors `filterlla.c`'s own admission test plus `HomeLocation.Set`, so
+solid green means PositionState North/East are genuinely non-zero — not merely
+that a GPS is attached.
+
+## CPU budget
+
+Measured per-task, not guessed (`BOARD_CPU_REPORT` prints per-interval
+percentages from `uxTaskGetSystemState` deltas; cumulative counters understate
+badly).
+
+The `xTaskCreate` shim used to pin **everything** to core 1 while core 0 sat
+98.8% idle. It now has a name-based affinity table in `pios/esp32/pios_esp32.h`:
+System, TelTx/TelRx, PIOS_UART_RX, GPS, RemoteID and StatusLED go to core 0.
+Sensors, StateEstimation, the callback schedulers, Stabilization, Actuator,
+Receiver, PIOS_DSM (stick input is control path) and the IMU data-ready task
+stay on core 1. Result: **core-1 load 100% -> ~74%**.
+
+That exposed a trap worth remembering: `PIOS_TASK_MONITOR_GetIdlePercentage()`
+calls `xTaskGetIdleTaskHandle()`, which returns the idle task of the **calling**
+core — so the moment systemmod moved to core 0, `SystemStats.CPULoad` silently
+started reporting core 0 (29%!) and the CPUOverload alarm stopped watching the
+control core. It now asks for core 1 explicitly. `CPULOAD_LIMIT_CRITICAL` is
+95, and armhandler blocks on any Critical alarm, so that number is an arming
+gate, not a curiosity.
+
+Per-callback share of callback-task time: EventDispatcher 35.8, StateEstimation
+35.2, AltitudeHold 13.3, Stabilization1 10.8, Stabilization0 2.3,
+ManualControl 2.2, **PathFollower 0.4**. The remaining levers, largest first,
+are EventDispatcher and AltitudeHold — both driven by PositionState/VelocityState
+publishing at the full sensor rate from `filteraltitude.c`'s predict step.
+
+`PIOS_SENSOR_RATE` is **250 Hz** with the IMU divider at 333 Hz, deliberately
+running the producer ahead of the consumer: matching them exactly makes every
+poll marginal, because SensorsTask waits exactly one sensor period for the
+primary sample and counts a timeout as a sensor failure.
+
 ## Next steps
 
-Before it flies:
+Before the next flight:
 
-1. **Six-point accel calibration.** Measured -101 mg on Z with gain inside
-   spec, so the part is fine, but it is uncorrected and AltFilter integrates
-   accel.
-2. **Re-tune Bank1 for 45 g.** The current gains are 4-inch-class. This will
-   not flip the airframe the way a bad output map does -- it shows up as
-   oscillation or mush once airborne, so be ready to put it down rather than
-   fight it.
+1. **Six-point magnetometer calibration.** The Magnetometer alarm is the only
+   remaining arm-blocker: measured field is ~986 mGa against a correct 529 mGa
+   reference, i.e. uncalibrated hard iron. Configuration -> Attitude.
+2. **Fly it outdoors.** 7 satellites / PDOP < 3.5 is what turns PositionState
+   North/East from zero into real numbers; a window will not do it.
+3. **Verify the red/green LED polarity.** Assumed `active_low = false` to match
+   blue. If they read inverted, flip the field in `board_hw_defs.c`.
 
-After that:
+Then:
 
-3. Fit the BMP388 (better than the BMP280 for this job -- see below), then
-   compile in `Sensors` + `AltitudeHold` and close the altitude loop on the
-   twin first, with a simulated baro feeding `BaroSensor`.
-4. Confirm the module's PSRAM suffix before trusting the flow SPI pins.
+4. Position hold and RTH on `Complementary+Mag+GPSOutdoor` (measured 76%, so it
+   fits). INS13 is the heavier EKF and would need the CPU conversation above.
+5. Find the PathPlanner fault if multi-waypoint missions are wanted.

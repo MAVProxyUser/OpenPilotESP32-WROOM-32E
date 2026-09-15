@@ -106,8 +106,49 @@ static inline BaseType_t pios_esp32_task_create(TaskFunction_t fn, const char *n
      * negotiation. Anything that genuinely belongs on core 0 bypasses the
      * shim by parenthesizing the call -- see pios_wifi.c.
      */
+    /*
+     * Core assignment.
+     *
+     * The default is core 1 (see above): WiFi, lwIP and IDF housekeeping stay
+     * on core 0, so the network stack can never preempt a flight task.
+     *
+     * But pinning EVERYTHING to core 1 left core 0 measured 98.8% idle while
+     * core 1 ran out of headroom. These tasks are not in the control path --
+     * they are housekeeping, links and parsers, all tolerant of the few ms of
+     * jitter core 0 can add -- so they go there and give core 1 the room back:
+     *
+     *   System  1Hz housekeeping, and with DIAG_TASKS its task-table walk runs
+     *           with the scheduler SUSPENDED; on core 0 that stall stops
+     *           landing on the control loop at all.
+     *   TelTx/TelRx, PIOS_UART_RX  telemetry and UART plumbing.
+     *   GPS     NMEA/UBX parsing on 5Hz data.
+     *   RemoteID  beacon housekeeping.
+     *
+     * Deliberately NOT moved: Sensors, Attitude/StateEstimation, the callback
+     * schedulers, Stabilization, Actuator, Receiver and PIOS_DSM (stick input
+     * IS control path), and the IMU data-ready task -- anything whose timing
+     * the control loop depends on.
+     */
+    static const char *const core0_tasks[] = {
+        "System", "TelTx", "TelRx", "PIOS_UART_RX", "GPS", "RemoteID",
+        "StatusLED",
+    };
+    BaseType_t core = 1;
+
+    for (unsigned i = 0; i < sizeof(core0_tasks) / sizeof(core0_tasks[0]); i++) {
+        const char *a = name, *b = core0_tasks[i];
+        while (*a && *a == *b) {
+            a++;
+            b++;
+        }
+        if (*a == '\0' && *b == '\0') {
+            core = 0;
+            break;
+        }
+    }
+
     BaseType_t rc = (xTaskCreatePinnedToCore)(fn, name, stack_words * 4,
-                                              param, prio, handle, 1);
+                                              param, prio, handle, core);
 
     /* PiOS ignores this return value at every call site, so a failed creation
      * is otherwise completely silent and only surfaces much later as a NULL
@@ -123,6 +164,21 @@ static inline BaseType_t pios_esp32_task_create(TaskFunction_t fn, const char *n
 
 #define xTaskCreate(fn, name, depth, param, prio, handle) \
     pios_esp32_task_create((fn), (name), (uint32_t)(depth), (param), (prio), (handle))
+#endif
+
+/*
+ * STM32 StdPeriph spelling used by shared drivers.
+ *
+ * pios_hmc5x83.c's SPI path calls PIOS_SPI_SetClockSpeed() with
+ * SPI_BaudRatePrescaler_16 -- a name that only exists on STM32 targets, where
+ * stm32fxxx_spi.h is in scope. PiOS's own portable enum for the same thing is
+ * PIOS_SPI_PRESCALER_16 in pios_spi.h. Alias it rather than editing the shared
+ * driver: we drive that part over I2C here, so the SPI half is dead code that
+ * still has to compile (it is gated on PIOS_INCLUDE_SPI, which this board
+ * needs for the IMU).
+ */
+#ifndef SPI_BaudRatePrescaler_16
+#define SPI_BaudRatePrescaler_16 PIOS_SPI_PRESCALER_16
 #endif
 
 #include <pios_mem.h>

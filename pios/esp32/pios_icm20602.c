@@ -30,6 +30,7 @@
  */
 
 #include "pios.h"
+#include "esp_timer.h"
 #include <pios_icm20602.h>
 #ifdef PIOS_INCLUDE_ICM20602
 #include <stdint.h>
@@ -737,7 +738,19 @@ static int32_t PIOS_ICM20602_Test(void)
     if (id < 0) {
         return -1;
     }
-    return (id == PIOS_ICM20602_WHOAMI_ID) ? 0 : -2;
+    /* Accept the whole MPU/ICM family this driver actually drives, not just
+     * the ICM-20602 it is named after. LiteWing's part answers 0x68, and
+     * PIOS_Board_Init() has always accepted 0x68/0x70/0x12 -- keep the two
+     * lists saying the same thing.
+     *
+     * Nothing called this until modules/Sensors replaced modules/Attitude.
+     * When it did, the mismatch did not present as "IMU test failed": a
+     * failing sensor makes SensorsTask park in a `while (1) vTaskDelay(10)`
+     * that never reloads its watchdog flag, so the board became a silent
+     * watchdog reboot loop with both cores idle and no mention of the IMU. */
+    return (id == PIOS_ICM20602_WHOAMI_ID
+            || id == PIOS_MPU6000_WHOAMI_ID
+            || id == PIOS_MPU6500_WHOAMI_ID) ? 0 : -2;
 }
 
 /**
@@ -837,6 +850,28 @@ static bool PIOS_ICM20602_HandleData()
     }
 
     BaseType_t higherPriorityTaskWoken;
+    /* Producer-side gap tracking. modules/Sensors waits exactly one sensor
+     * period for a sample and calls anything longer a sensor failure, so the
+     * question "is the producer late, or is the consumer late?" decides where
+     * that fault actually lives. Record the worst gap between pushes. */
+    {
+        extern uint32_t pios_icm20602_push_gap_max_us;
+        extern uint32_t pios_icm20602_push_gaps_over_4ms;
+        extern uint32_t pios_icm20602_pushes;
+        static uint32_t last_push_us;
+        uint32_t now_us = (uint32_t)esp_timer_get_time();
+        if (last_push_us) {
+            uint32_t gap = now_us - last_push_us;
+            if (gap > pios_icm20602_push_gap_max_us) {
+                pios_icm20602_push_gap_max_us = gap;
+            }
+            if (gap > 4000) {
+                pios_icm20602_push_gaps_over_4ms++;
+            }
+        }
+        last_push_us = now_us;
+        pios_icm20602_pushes++;
+    }
     xQueueSendToBackFromISR(dev->queue, (void *)queue_data, &higherPriorityTaskWoken);
     return higherPriorityTaskWoken == pdTRUE;
 }
@@ -870,8 +905,18 @@ bool PIOS_ICM20602_driver_Test(__attribute__((unused)) uintptr_t context)
     return !PIOS_ICM20602_Test();
 }
 
+/* Counts how often modules/Sensors found the queue empty at its deadline and
+ * declared a primary-sensor miss. Each one raises SYSTEMALARMS_ALARM_SENSORS
+ * Critical, which armhandler.c treats as arm-blocking. Read by the board's
+ * CPU report. */
+uint32_t pios_icm20602_driver_resets;
+uint32_t pios_icm20602_push_gap_max_us;
+uint32_t pios_icm20602_push_gaps_over_4ms;
+uint32_t pios_icm20602_pushes;
+
 void PIOS_ICM20602_driver_Reset(__attribute__((unused)) uintptr_t context)
 {
+    pios_icm20602_driver_resets++;
     PIOS_ICM20602_DummyReadGyros();
 }
 

@@ -71,6 +71,38 @@
 #define PIOS_ACTUATOR_BRUSHED_CHANNELS 4     /* channels that reach a pin */
 
 #define PIOS_INCLUDE_DSM
+
+/* GPS on UART1: a u-blox M10, driven over UBX.
+ *
+ * NMEA was tried first and does not work with this module, for a reason worth
+ * recording. The M10 leaves the factory emitting UBX binary AND NMEA on the
+ * same port, interleaved. parse_nmea_stream() abandons its whole input buffer
+ * the moment it meets a byte that is not '$' outside a sentence, so every
+ * chunk carrying a UBX frame took the NMEA that followed it down too: clean,
+ * checksum-valid $GNRMC/$GNGSA sentences arrived continuously at ~4.7 kB/s and
+ * the parser still completed only a couple of sentences a minute, leaving
+ * GPSPositionSensor.Status at NoGPS.
+ *
+ * UBX is also simply the right protocol here: ubx_autoconfig configures the
+ * receiver (which turns the NMEA output off, ending the interleaving at the
+ * source), and the NAV solution carries velocity and per-axis accuracy
+ * estimates that NMEA does not -- both of which position hold and return-to-
+ * home consume. NMEA stays compiled in as a fallback for a different module.
+ *
+ * PIOS_GPS_MINIMAL is deliberately NOT set: it compiles out ubx_autoconfig
+ * and the GPSSettings callback, which are the parts doing the work above. */
+#define PIOS_INCLUDE_GPS
+#define PIOS_INCLUDE_GPS_UBX_PARSER
+#define PIOS_INCLUDE_GPS_NMEA_PARSER
+/* Let the GPS set HomeLocation once it has a 3D fix. This is not optional
+ * here: filtercf.c's mag variant rotates HomeLocation.Be as its heading
+ * reference, so with Be = {0,0,0} the correction is degenerate and the
+ * attitude estimate collapses toward zero instead of converging. It is also
+ * what return-to-home needs a home to BE. Pulls in libraries/WorldMagModel.c,
+ * which computes Be from lat/lon/alt, and raises the GPS task stack to 1024
+ * (see STACK_SIZE_BYTES in GPS.c) for the WMM arithmetic -- our
+ * PIOS_GPS_STACK_SIZE override already sits well above that. */
+#define PIOS_GPS_SETS_HOMELOCATION
 #define PIOS_INCLUDE_GCSRCVR
 #define PIOS_INCLUDE_RID_WIFI   /* Remote ID as a beacon vendor element (pios_rid_wifi.c) */
 /* PPM disabled: the RMT receiver on an unconnected pin collects coupled
@@ -105,7 +137,11 @@
  * That gate is in shared flight code, so widening it is a decision for you,
  * not something this port should do behind your back. A genuine MPU6000 or
  * MPU6050 (0x68) works as-is. */
-/* #define PIOS_INCLUDE_HMC5X83 */
+/* HMC5883L magnetometer on I2C1 (0x1E), next to the baro. Heading is what
+ * rotates a NED position error into roll/pitch, so GPS position hold and RTH
+ * need this: without it heading is unobservable at a hover and the vehicle
+ * drifts or circles. */
+#define PIOS_INCLUDE_HMC5X83
 /* #define PIOS_INCLUDE_MS5611 */
 #define PIOS_INCLUDE_I2C
 
@@ -133,7 +169,7 @@
 /* #define PIOS_INCLUDE_SDCARD */
 /* #define PIOS_INCLUDE_RTC */
 
-#define PIOS_SENSOR_RATE               500.0f
+#define PIOS_SENSOR_RATE               250.0f
 
 /* --- Stabilization ---------------------------------------------------- */
 #define PIOS_QUATERNION_STABILIZATION
